@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Description: {{ specimen.species_name }}{% endblock %}
+{% block content %}
+<h1>Description: <em>{{ specimen.species_name }}</em></h1>
+<div class="card">
+    <div class="description-text" id="descText">{{ description }}</div>
+    <div style="margin-top:1rem; display:flex; gap:0.5rem;">
+        <button class="btn btn-outline" onclick="regenerate()">Regenerate</button>
+        <a href="{{ url_for('descriptions.species_descriptions', project_id=project.id) }}" class="btn btn-outline">Back</a>
+    </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+function regenerate() {
+    fetch(`/api/project/{{ project.id }}/descriptions/{{ specimen.id }}/regenerate`, {method: 'POST'})
+        .then(r => r.json()).then(data => {
+            document.getElementById('descText').textContent = data.description;
+        });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Export - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Export</h1>
+
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem; max-width:800px;">
+    <div class="card">
+        <h3>Character Matrix</h3>
+        <div style="display:flex; flex-direction:column; gap:0.5rem;">
+            <a href="{{ url_for('export.download_csv', project_id=project.id) }}" class="btn btn-primary">CSV (simple)</a>
+            <a href="{{ url_for('export.download_csv_detailed', project_id=project.id) }}" class="btn btn-outline">CSV (with confidence)</a>
+            <a href="{{ url_for('export.download_nexus', project_id=project.id) }}" class="btn btn-outline">NEXUS</a>
+            <a href="{{ url_for('export.download_tnt', project_id=project.id) }}" class="btn btn-outline">TNT</a>
+        </div>
+        <p style="font-size:0.8rem; color:var(--gray-500); margin-top:0.5rem;">
+            Add <code>?dna_only=1</code> to URL for DNA-only species.
+            Add <code>?structure_type=hook</code> for single structure.
+        </p>
+    </div>
+
+    <div class="card">
+        <h3>Descriptions & Diagnoses</h3>
+        <div style="display:flex; flex-direction:column; gap:0.5rem;">
+            <a href="{{ url_for('export.download_descriptions', project_id=project.id) }}" class="btn btn-outline">Species Descriptions (text)</a>
+            <a href="{{ url_for('export.download_diagnoses', project_id=project.id) }}" class="btn btn-outline">Group Diagnoses (text)</a>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3>Full Project</h3>
+        <a href="{{ url_for('export.download_json', project_id=project.id) }}" class="btn btn-outline">JSON (complete project data)</a>
+        <p style="font-size:0.8rem; color:var(--gray-500); margin-top:0.5rem;">
+            Includes all landmarks, boundaries, characters, matrix, corrections.
+        </p>
+    </div>
+</div>
+{% endblock %}

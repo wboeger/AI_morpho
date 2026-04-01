@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Add Specimen - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Add Specimen to {{ project.name }}</h1>
+<div class="card" style="max-width:600px;">
+    <form method="POST" enctype="multipart/form-data">
+        <div class="form-group">
+            <label>Species Name</label>
+            <input type="text" name="species_name" required placeholder="e.g., Gyrodactylus salaris">
+        </div>
+        <div class="form-group">
+            <label>Specimen ID / Label</label>
+            <input type="text" name="specimen_id_label" placeholder="e.g., GenBank accession, voucher number">
+        </div>
+        <div class="form-group">
+            <label>Image (optional)</label>
+            <input type="file" name="image" accept="image/*">
+        </div>
+        <div class="form-group">
+            <label>Notes</label>
+            <textarea name="notes" placeholder="Optional notes"></textarea>
+        </div>
+        <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
+            <legend style="font-weight:600; font-size:0.9rem;">DNA Sequences Available</legend>
+            {% for marker in ['ITS', '18S', 'COI'] %}
+            <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.3rem;">
+                <label style="display:flex; align-items:center; gap:0.3rem; font-weight:normal;">
+                    <input type="checkbox" name="dna_{{ marker }}"> {{ marker }}
+                </label>
+                <input type="text" name="accession_{{ marker }}" placeholder="Accession" style="width:200px; font-size:0.85rem;">
+            </div>
+            {% endfor %}
+        </fieldset>
+        <button type="submit" class="btn btn-primary">Add Specimen</button>
+        <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+    </form>
+</div>
+{% endblock %}

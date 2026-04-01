@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}New Character - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Create New Character</h1>
+
+<div class="card" style="max-width:800px;">
+    <form method="POST" id="charForm">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+            <div class="form-group">
+                <label>Code</label>
+                <input type="text" name="code" required placeholder="e.g., C13, B_NEW_01">
+            </div>
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" name="name" required placeholder="e.g., Point asymmetry">
+            </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+            <div class="form-group">
+                <label>Structure Type</label>
+                <select name="structure_type" id="structureType" required onchange="updateParts()">
+                    <option value="">-- Select --</option>
+                    <option value="hook">Hook</option>
+                    <option value="anchor">Anchor</option>
+                    <option value="superficial_bar">Superficial Bar</option>
+                    <option value="deep_bar">Deep Bar</option>
+                    <option value="mco">MCO</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Computation Type</label>
+                <select name="computation_type" id="compType" onchange="toggleGeometric()">
+                    <option value="manual">Manual (visual coding)</option>
+                    <option value="geometric">Geometric (computed from landmarks)</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Description</label>
+            <textarea name="description" placeholder="How this character is defined and measured"></textarea>
+        </div>
+
+        <div class="form-group">
+            <label>Parts Involved (comma-separated)</label>
+            <input type="text" name="parts_involved" id="partsInput" placeholder="e.g., Point, Shaft">
+            <div id="partsHint" style="font-size:0.8rem; color:var(--gray-500);"></div>
+        </div>
+
+        <!-- Geometric-only fields -->
+        <div id="geometricFields" style="display:none;">
+            <div class="form-group">
+                <label>Geometric Operation</label>
+                <select name="geometric_operation">
+                    <option value="">-- Select --</option>
+                    {% for key, op in operations.items() %}
+                    <option value="{{ key }}">{{ op.label }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Formula</label>
+                <input type="text" name="formula" placeholder="e.g., arc_length(Point) / arc_length(Shaft)">
+            </div>
+        </div>
+
+        <!-- States -->
+        <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
+            <legend style="font-weight:600;">States</legend>
+            <div id="statesContainer"></div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="addState()">+ Add State</button>
+        </fieldset>
+
+        <!-- Dependencies -->
+        <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
+            <legend style="font-weight:600;">Dependencies (optional)</legend>
+            <div id="depsContainer"></div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="addDep()">+ Add Dependency</button>
+            <p style="font-size:0.8rem; color:var(--gray-500);">
+                "This character is inapplicable when [character] = [state]"
+            </p>
+        </fieldset>
+
+        <button type="submit" class="btn btn-primary">Create Character</button>
+        <a href="{{ url_for('characters.workshop', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+    </form>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const structureParts = {{ structure_parts|tojson }};
+let stateCount = 0;
+let depCount = 0;
+
+function updateParts() {
+    const st = document.getElementById('structureType').value;
+    const parts = structureParts[st] || [];
+    document.getElementById('partsHint').textContent = parts.length ? `Available: ${parts.join(', ')}` : '';
+}
+
+function toggleGeometric() {
+    const isGeo = document.getElementById('compType').value === 'geometric';
+    document.getElementById('geometricFields').style.display = isGeo ? 'block' : 'none';
+}
+
+function addState() {
+    const i = stateCount++;
+    const html = `
+    <div style="display:grid; grid-template-columns: 60px 1fr 2fr; gap:0.5rem; margin-bottom:0.5rem; align-items:start;">
+        <input type="text" name="state_code_${i}" placeholder="Code" value="${i}">
+        <input type="text" name="state_name_${i}" placeholder="State name" required>
+        <input type="text" name="state_desc_${i}" placeholder="Description">
+        <div></div>
+        <div style="display:flex; gap:0.3rem;">
+            <input type="number" name="state_threshold_min_${i}" placeholder="Min" step="any" style="width:100px;">
+            <input type="number" name="state_threshold_max_${i}" placeholder="Max" step="any" style="width:100px;">
+        </div>
+    </div>`;
+    document.getElementById('statesContainer').insertAdjacentHTML('beforeend', html);
+}
+
+function addDep() {
+    const i = depCount++;
+    const html = `
+    <div style="display:flex; gap:0.5rem; margin-bottom:0.3rem; align-items:center;">
+        <span style="font-size:0.85rem;">If</span>
+        <input type="text" name="dep_char_${i}" placeholder="Character code" style="width:100px;">
+        <span style="font-size:0.85rem;">=</span>
+        <input type="text" name="dep_state_${i}" placeholder="State" style="width:80px;">
+        <span style="font-size:0.85rem;">then inapplicable</span>
+    </div>`;
+    document.getElementById('depsContainer').insertAdjacentHTML('beforeend', html);
+}
+
+// Start with 2 states
+addState(); addState();
+</script>
+{% endblock %}

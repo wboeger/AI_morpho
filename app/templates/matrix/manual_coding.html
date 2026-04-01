@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Code: {{ specimen.species_name }} - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Manual Coding: <em>{{ specimen.species_name }}</em></h1>
+<p style="color:var(--gray-500);">{{ structure.structure_type.replace('_', ' ').title() }}</p>
+
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+    <!-- Image -->
+    <div class="card">
+        {% if image_url %}
+        <img src="{{ image_url }}" style="max-width:100%;">
+        {% else %}
+        <p style="color:var(--gray-500);">No image available.</p>
+        {% endif %}
+    </div>
+
+    <!-- Characters -->
+    <div>
+        {% for char in characters %}
+        <div class="card" id="char_{{ char.code }}">
+            <h3>{{ char.code }}: {{ char.name }}</h3>
+            {% if char.description %}<p style="font-size:0.85rem; color:var(--gray-500);">{{ char.description }}</p>{% endif %}
+
+            <div class="state-buttons">
+                {% set val = values.get(char.code) %}
+                {% for s in (char.states_json or []) %}
+                <button class="state-btn {% if val and val.state == s.code %}active{% endif %}"
+                    onclick="assignState({{ structure.id }}, {{ char.id }}, '{{ s.code }}', this)"
+                    title="{{ s.get('description', '') }}">
+                    {{ s.code }}: {{ s.name }}
+                </button>
+                {% endfor %}
+                <button class="state-btn {% if val and val.state == '?' %}active{% endif %}"
+                    onclick="assignState({{ structure.id }}, {{ char.id }}, '?', this)">? Skip</button>
+            </div>
+
+            {% if char.dependencies_json %}
+            <p style="font-size:0.75rem; color:var(--gray-500);">
+                Dependency: {% for d in char.dependencies_json %}if {{ d.if_character }}={{ d.if_state }} then inapplicable{% endfor %}
+            </p>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = {{ project.id }};
+function assignState(structureId, characterId, state, btn) {
+    fetch(`/api/project/${projectId}/matrix/assign`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({structure_id: structureId, character_id: characterId, state: state})
+    }).then(r => r.json()).then(data => {
+        const container = btn.parentElement;
+        container.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    });
+}
+</script>
+{% endblock %}

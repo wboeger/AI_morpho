@@ -1,0 +1,152 @@
+{% extends "base.html" %}
+{% block title %}Characters - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Character Workshop</h1>
+
+<div class="filters">
+    <span class="filter-label">Filter:</span>
+    <a href="{{ url_for('characters.workshop', project_id=project.id) }}"
+       class="btn btn-sm {% if not structure_filter %}btn-primary{% else %}btn-outline{% endif %}">All</a>
+    {% for st in structure_types %}
+    <a href="{{ url_for('characters.workshop', project_id=project.id, structure_type=st) }}"
+       class="btn btn-sm {% if structure_filter == st %}btn-primary{% else %}btn-outline{% endif %}">
+        {{ st.replace('_', ' ').title() }}
+    </a>
+    {% endfor %}
+    <a href="{{ url_for('characters.new_character', project_id=project.id) }}"
+       class="btn btn-primary" style="margin-left:auto;">Add New Character</a>
+</div>
+
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>Code</th>
+                <th>Name</th>
+                <th>Structure</th>
+                <th>Type</th>
+                <th>States</th>
+                <th>Active</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for c in characters %}
+            <tr>
+                <td><strong>{{ c.code }}</strong></td>
+                <td>{{ c.name }}</td>
+                <td>{{ c.structure_type.replace('_', ' ') }}</td>
+                <td>
+                    <span style="font-size:0.8rem; padding:0.1rem 0.4rem; border-radius:3px;
+                        background:{% if c.computation_type == 'geometric' %}#d4edda{% else %}#fff3cd{% endif %};">
+                        {{ c.computation_type }}
+                    </span>
+                </td>
+                <td>{{ (c.states_json|length) if c.states_json else 'count' }}</td>
+                <td>
+                    <button class="btn btn-sm {% if c.active %}btn-success{% else %}btn-outline{% endif %}"
+                        onclick="toggleChar({{ c.id }}, this)">
+                        {{ 'On' if c.active else 'Off' }}
+                    </button>
+                </td>
+                <td>
+                    <a href="{{ url_for('characters.edit_character', project_id=project.id, char_id=c.id) }}"
+                       class="btn btn-sm btn-outline">Edit</a>
+                    {% if c.computation_type == 'geometric' %}
+                    <button class="btn btn-sm btn-outline" onclick="showDistribution({{ c.id }})">Distribution</button>
+                    {% endif %}
+                    <button class="btn btn-sm btn-danger" onclick="deleteChar({{ c.id }}, '{{ c.code }}')">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Distribution modal -->
+<div class="modal-overlay" id="distModal">
+    <div class="modal">
+        <h3 id="distTitle">Distribution</h3>
+        <div class="histogram-container" id="histogramContainer"></div>
+        <div id="distStats" style="font-size:0.85rem; margin-top:0.5rem;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="document.getElementById('distModal').classList.remove('active')">Close</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = {{ project.id }};
+
+function toggleChar(charId, btn) {
+    fetch(`/api/project/${projectId}/characters/${charId}/toggle`, {method: 'POST'})
+        .then(r => r.json()).then(data => {
+            btn.textContent = data.active ? 'On' : 'Off';
+            btn.className = `btn btn-sm ${data.active ? 'btn-success' : 'btn-outline'}`;
+        });
+}
+
+function deleteChar(charId, code) {
+    if (!confirm(`Delete character ${code}? This will remove all its values.`)) return;
+    fetch(`/api/project/${projectId}/characters/${charId}/delete`, {method: 'DELETE'})
+        .then(() => location.reload());
+}
+
+function showDistribution(charId) {
+    fetch(`/api/project/${projectId}/characters/${charId}/distribution`)
+        .then(r => r.json()).then(data => {
+            document.getElementById('distModal').classList.add('active');
+            if (data.type === 'geometric') {
+                renderHistogram(data);
+                document.getElementById('distStats').innerHTML =
+                    `Min: ${data.stats.min.toFixed(3)} | Max: ${data.stats.max.toFixed(3)} | ` +
+                    `Mean: ${data.stats.mean.toFixed(3)} | Median: ${data.stats.median.toFixed(3)} | ` +
+                    `N: ${data.values.length}`;
+            } else {
+                const container = document.getElementById('histogramContainer');
+                container.innerHTML = '<p>Manual character. State counts:</p><ul>' +
+                    Object.entries(data.state_counts).map(([s, c]) => `<li>State ${s}: ${c}</li>`).join('') +
+                    '</ul>';
+                document.getElementById('distStats').innerHTML = '';
+            }
+        });
+}
+
+function renderHistogram(data) {
+    const container = document.getElementById('histogramContainer');
+    container.innerHTML = '';
+    const width = 600, height = 280, margin = {top: 20, right: 20, bottom: 40, left: 50};
+    const svg = d3.select(container).append('svg').attr('viewBox', `0 0 ${width} ${height}`);
+
+    const values = data.values;
+    if (values.length === 0) { container.innerHTML = '<p>No data</p>'; return; }
+
+    const x = d3.scaleLinear().domain(d3.extent(values)).nice().range([margin.left, width - margin.right]);
+    const bins = d3.bin().domain(x.domain()).thresholds(20)(values);
+    const y = d3.scaleLinear().domain([0, d3.max(bins, d => d.length)]).nice().range([height - margin.bottom, margin.top]);
+
+    svg.selectAll('rect').data(bins).join('rect')
+        .attr('x', d => x(d.x0) + 1).attr('y', d => y(d.length))
+        .attr('width', d => Math.max(0, x(d.x1) - x(d.x0) - 1))
+        .attr('height', d => y(0) - y(d.length))
+        .attr('fill', '#3a7bb5');
+
+    svg.append('g').attr('transform', `translate(0,${height - margin.bottom})`).call(d3.axisBottom(x));
+    svg.append('g').attr('transform', `translate(${margin.left},0)`).call(d3.axisLeft(y));
+
+    // Draw threshold lines
+    (data.states || []).forEach(state => {
+        [state.threshold_min, state.threshold_max].forEach(t => {
+            if (t !== null && t !== undefined) {
+                svg.append('line')
+                    .attr('x1', x(t)).attr('x2', x(t))
+                    .attr('y1', margin.top).attr('y2', height - margin.bottom)
+                    .attr('stroke', '#e74c3c').attr('stroke-width', 2).attr('stroke-dasharray', '4,4');
+            }
+        });
+    });
+}
+</script>
+{% endblock %}

@@ -1,0 +1,304 @@
+{% extends "base.html" %}
+{% block title %}Import from Folders - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Import Landmarks from Folders</h1>
+<p style="color:var(--gray-500); margin-bottom:1rem;">
+    Specify local folders containing CSV landmark files. Each folder is mapped to a structure type.
+    Species names are parsed from filenames automatically. You can add as many folders as needed.
+</p>
+
+<div class="card" style="max-width:900px;">
+    <form method="POST" id="importForm">
+        <div id="foldersContainer"></div>
+
+        <button type="button" class="btn btn-outline" onclick="addFolder()" style="margin-bottom:1rem;">
+            + Add Folder
+        </button>
+
+        <div style="display:flex; gap:0.5rem;">
+            <button type="submit" class="btn btn-primary">Import All</button>
+            <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<!-- Preview panel for CSV folders -->
+<div class="card" id="previewPanel" style="max-width:900px; display:none; margin-top:1rem;">
+    <h3>Preview</h3>
+    <div id="previewContent"></div>
+</div>
+
+<hr style="margin:2rem 0;">
+
+<h1>Import Part Boundaries from JSON</h1>
+<p style="color:var(--gray-500); margin-bottom:1rem;">
+    Specify JSON files containing part boundary definitions. Each file maps specimen names to
+    anatomical part indices (Point, Shaft, Toe, etc.). Specimens must already exist in the project
+    (import landmarks first).
+</p>
+
+<div class="card" style="max-width:900px;">
+    <form method="POST" action="{{ url_for('project.import_boundaries', project_id=project.id) }}" id="jsonForm">
+        <div id="jsonContainer"></div>
+
+        <button type="button" class="btn btn-outline" onclick="addJsonFile()" style="margin-bottom:1rem;">
+            + Add JSON File
+        </button>
+
+        <div style="display:flex; gap:0.5rem;">
+            <button type="submit" class="btn btn-primary">Import Boundaries</button>
+            <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<!-- Preview panel for JSON -->
+<div class="card" id="jsonPreviewPanel" style="max-width:900px; display:none; margin-top:1rem;">
+    <h3>JSON Preview</h3>
+    <div id="jsonPreviewContent"></div>
+</div>
+
+<hr style="margin:2rem 0;">
+
+<h1>Import Images from Folder</h1>
+<p style="color:var(--gray-500); margin-bottom:1rem;">
+    Specify a folder containing specimen images (PNG, JPG, GIF). Images are matched to existing
+    specimens by species name from the filename (e.g., "Gyrodactylus salaris.png").
+</p>
+
+<div class="card" style="max-width:900px;">
+    <form method="POST" action="{{ url_for('project.import_images', project_id=project.id) }}" id="imgForm">
+        <div class="form-group">
+            <label>Image Folder Path</label>
+            <input type="text" name="image_folder" id="imgFolder"
+                placeholder="/path/to/images/hooks"
+                style="font-family:monospace; font-size:0.85rem;">
+        </div>
+        <div class="form-group">
+            <label>Structure Type</label>
+            <select name="image_type">
+                <option value="hook">Marginal Hook</option>
+                <option value="anchor">Anchor</option>
+                <option value="superficial_bar">Superficial Bar</option>
+                <option value="deep_bar">Deep Bar</option>
+                <option value="mco">MCO</option>
+            </select>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+            <button type="button" class="btn btn-outline" onclick="scanImages()">Scan</button>
+            <button type="submit" class="btn btn-primary">Import Images</button>
+            <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+        </div>
+    </form>
+</div>
+
+<div class="card" id="imgPreviewPanel" style="max-width:900px; display:none; margin-top:1rem;">
+    <h3>Image Preview</h3>
+    <div id="imgPreviewContent"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = {{ project.id }};
+let folderCount = 0;
+let jsonCount = 0;
+
+/* ── CSV Folder entries ── */
+
+function addFolder() {
+    const i = folderCount++;
+    const html = `
+    <div class="folder-entry" id="folder_${i}" style="border:1px solid var(--gray-300); border-radius:6px; padding:0.75rem; margin-bottom:0.75rem;">
+        <div style="display:flex; gap:0.5rem; align-items:end; margin-bottom:0.5rem;">
+            <div class="form-group" style="flex:2; margin-bottom:0;">
+                <label>Folder Path</label>
+                <input type="text" name="folder_path_${i}" id="path_${i}"
+                    placeholder="/path/to/landmark/csvs"
+                    style="font-family:monospace; font-size:0.85rem;">
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0;">
+                <label>Structure Type</label>
+                <select name="folder_type_${i}" id="type_${i}">
+                    <option value="hook">Marginal Hook</option>
+                    <option value="anchor">Anchor</option>
+                    <option value="superficial_bar">Superficial Bar</option>
+                    <option value="deep_bar">Deep Bar</option>
+                    <option value="mco">MCO</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="scanFolder(${i})">Scan</button>
+            <button type="button" class="btn btn-sm btn-danger" onclick="removeFolder(${i})">Remove</button>
+        </div>
+        <div id="scan_${i}" style="font-size:0.85rem; color:var(--gray-500);"></div>
+    </div>`;
+    document.getElementById('foldersContainer').insertAdjacentHTML('beforeend', html);
+}
+
+function removeFolder(i) {
+    const el = document.getElementById('folder_' + i);
+    if (el) el.remove();
+}
+
+function scanFolder(i) {
+    const path = document.getElementById('path_' + i).value.trim();
+    if (!path) { alert('Enter a folder path first.'); return; }
+
+    const scanDiv = document.getElementById('scan_' + i);
+    scanDiv.textContent = 'Scanning...';
+
+    fetch(`/api/project/${projectId}/scan_folder`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: path})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            scanDiv.innerHTML = `<span style="color:var(--danger);">${data.error}</span>`;
+            return;
+        }
+
+        scanDiv.innerHTML = `<strong>${data.count} CSV files found</strong>`;
+
+        const panel = document.getElementById('previewPanel');
+        panel.style.display = 'block';
+        const content = document.getElementById('previewContent');
+
+        let html = `<p style="margin-bottom:0.5rem;"><strong>${path}</strong> (${data.count} files)</p>`;
+        html += '<table><thead><tr><th>Filename</th><th>Species</th><th>Accession</th><th>Landmarks</th></tr></thead><tbody>';
+        data.files.forEach(f => {
+            const cls = f.species.startsWith('(') ? 'style="color:var(--danger);"' : '';
+            html += `<tr>
+                <td style="font-family:monospace; font-size:0.8rem;">${f.filename}</td>
+                <td ${cls}><em>${f.species}</em></td>
+                <td>${f.accession}</td>
+                <td>${f.landmarks}</td>
+            </tr>`;
+        });
+        if (data.count > 50) {
+            html += `<tr><td colspan="4" style="color:var(--gray-500);">...and ${data.count - 50} more</td></tr>`;
+        }
+        html += '</tbody></table>';
+        content.innerHTML = html;
+    });
+}
+
+/* ── JSON Boundary entries ── */
+
+function addJsonFile() {
+    const i = jsonCount++;
+    const html = `
+    <div class="json-entry" id="json_${i}" style="border:1px solid var(--gray-300); border-radius:6px; padding:0.75rem; margin-bottom:0.75rem;">
+        <div style="display:flex; gap:0.5rem; align-items:end; margin-bottom:0.5rem;">
+            <div class="form-group" style="flex:2; margin-bottom:0;">
+                <label>JSON File Path</label>
+                <input type="text" name="json_path_${i}" id="jpath_${i}"
+                    placeholder="/path/to/part_boundaries_hooks.json"
+                    style="font-family:monospace; font-size:0.85rem;">
+            </div>
+            <div class="form-group" style="flex:1; margin-bottom:0;">
+                <label>Structure Type</label>
+                <select name="json_type_${i}" id="jtype_${i}">
+                    <option value="hook">Marginal Hook</option>
+                    <option value="anchor">Anchor</option>
+                    <option value="superficial_bar">Superficial Bar</option>
+                    <option value="deep_bar">Deep Bar</option>
+                    <option value="mco">MCO</option>
+                </select>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="scanJson(${i})">Scan</button>
+            <button type="button" class="btn btn-sm btn-danger" onclick="removeJson(${i})">Remove</button>
+        </div>
+        <div id="jscan_${i}" style="font-size:0.85rem; color:var(--gray-500);"></div>
+    </div>`;
+    document.getElementById('jsonContainer').insertAdjacentHTML('beforeend', html);
+}
+
+function removeJson(i) {
+    const el = document.getElementById('json_' + i);
+    if (el) el.remove();
+}
+
+function scanJson(i) {
+    const path = document.getElementById('jpath_' + i).value.trim();
+    if (!path) { alert('Enter a JSON file path first.'); return; }
+
+    const scanDiv = document.getElementById('jscan_' + i);
+    scanDiv.textContent = 'Scanning...';
+
+    fetch(`/api/project/${projectId}/scan_json`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: path})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            scanDiv.innerHTML = `<span style="color:var(--danger);">${data.error}</span>`;
+            return;
+        }
+
+        const matched = data.specimens.filter(s => s.matched).length;
+        scanDiv.innerHTML = `<strong>${data.count} specimens in file, ${matched} matched in project</strong>`;
+
+        const panel = document.getElementById('jsonPreviewPanel');
+        panel.style.display = 'block';
+        const content = document.getElementById('jsonPreviewContent');
+
+        let html = `<p style="margin-bottom:0.5rem;"><strong>${path}</strong> (${data.count} specimens)</p>`;
+        html += '<table><thead><tr><th>Key</th><th>Species</th><th>Parts</th><th>Matched</th></tr></thead><tbody>';
+        data.specimens.forEach(s => {
+            const cls = s.species.startsWith('(') ? 'style="color:var(--danger);"' : '';
+            const matchCls = s.matched ? 'style="color:var(--success);"' : 'style="color:var(--gray-400);"';
+            html += `<tr>
+                <td style="font-family:monospace; font-size:0.8rem;">${s.key}</td>
+                <td ${cls}><em>${s.species}</em></td>
+                <td style="font-size:0.8rem;">${s.parts.join(', ')}</td>
+                <td ${matchCls}>${s.matched ? '&#10003;' : '&#10007;'}</td>
+            </tr>`;
+        });
+        if (data.count > 50) {
+            html += `<tr><td colspan="4" style="color:var(--gray-500);">...and ${data.count - 50} more</td></tr>`;
+        }
+        html += '</tbody></table>';
+        content.innerHTML = html;
+    });
+}
+
+/* ── Image scan ── */
+function scanImages() {
+    const path = document.getElementById('imgFolder').value.trim();
+    if (!path) { alert('Enter a folder path first.'); return; }
+
+    fetch(`/api/project/${projectId}/scan_images`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({path: path})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) { alert(data.error); return; }
+        const panel = document.getElementById('imgPreviewPanel');
+        panel.style.display = 'block';
+        const content = document.getElementById('imgPreviewContent');
+        const matched = data.files.filter(f => f.matched).length;
+        let html = `<p><strong>${data.count} images found, ${matched} matched to specimens</strong></p>`;
+        html += '<table><thead><tr><th>Filename</th><th>Species</th><th>Matched</th></tr></thead><tbody>';
+        data.files.forEach(f => {
+            const mcls = f.matched ? 'style="color:var(--success);"' : 'style="color:var(--gray-400);"';
+            html += `<tr>
+                <td style="font-family:monospace;font-size:0.8rem;">${f.filename}</td>
+                <td><em>${f.species}</em></td>
+                <td ${mcls}>${f.matched ? '&#10003;' : '&#10007;'}</td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        content.innerHTML = html;
+    });
+}
+
+// Start with one folder entry
+addFolder();
+</script>
+{% endblock %}

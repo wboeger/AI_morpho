@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}Matrix - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Character Matrix</h1>
+
+<div class="filters">
+    <span class="filter-label">Structure:</span>
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}"
+       class="btn btn-sm {% if not structure_filter %}btn-primary{% else %}btn-outline{% endif %}">All</a>
+    {% for st in ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco'] %}
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id, structure_type=st) }}"
+       class="btn btn-sm {% if structure_filter == st %}btn-primary{% else %}btn-outline{% endif %}">
+        {{ st.replace('_', ' ').title() }}
+    </a>
+    {% endfor %}
+
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id, dna_only=1, structure_type=structure_filter) }}"
+       class="btn btn-sm {% if dna_only %}btn-warning{% else %}btn-outline{% endif %}">DNA Only</a>
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id, unconfirmed=1, structure_type=structure_filter) }}"
+       class="btn btn-sm {% if unconfirmed_only %}btn-warning{% else %}btn-outline{% endif %}">Unconfirmed</a>
+
+    <!-- Tree upload -->
+    <form id="treeForm" style="margin-left:auto; display:flex; gap:0.3rem; align-items:center;">
+        <input type="file" id="treeFile" accept=".nwk,.newick,.tre,.tree" style="width:200px; font-size:0.8rem;">
+        <button type="button" class="btn btn-sm btn-outline" onclick="uploadTree()">Upload Tree</button>
+    </form>
+</div>
+
+<div class="tree-matrix-container">
+    <div class="tree-panel" id="treePanel" style="display:none;">
+        <svg id="treeSvg"></svg>
+    </div>
+
+    <div class="matrix-container">
+        <table class="matrix-table">
+            <thead>
+                <tr>
+                    <th style="writing-mode:horizontal-tb; text-align:left;">Species</th>
+                    {% for c in characters %}
+                    <th title="{{ c.name }} ({{ c.structure_type }})">
+                        <a href="{{ url_for('matrix.gallery_view', project_id=project.id, char_id=c.id) }}"
+                           style="color:inherit;">{{ c.code }}</a>
+                    </th>
+                    {% endfor %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for row in matrix_data %}
+                <tr>
+                    <td class="species-name">{{ row.specimen.species_name }}</td>
+                    {% for c in characters %}
+                    {% set val = row.cells[c.code] %}
+                    <td class="matrix-cell
+                        {% if val %}
+                            {% if val.state == '-' %}cell-na
+                            {% elif val.state == '?' %}cell-unset
+                            {% elif val.confidence and val.confidence >= 0.85 %}cell-high
+                            {% elif val.confidence and val.confidence >= 0.60 %}cell-med
+                            {% elif val.confidence and val.confidence < 0.60 %}cell-low
+                            {% else %}cell-high{% endif %}
+                        {% else %}cell-unset{% endif %}"
+                        {% if val %}onclick="showDetail({{ val.id }})"{% endif %}
+                        title="{{ c.name }}">
+                        {{ val.state if val and val.state is not none else '?' }}
+                    </td>
+
+
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<!-- Cell detail modal -->
+<div class="modal-overlay" id="detailModal">
+    <div class="modal">
+        <h3 id="detailTitle">Cell Detail</h3>
+        <div id="detailContent"></div>
+        <div id="detailOverride" style="margin-top:1rem; display:none;">
+            <label style="font-weight:600;">Override State:</label>
+            <div class="state-buttons" id="overrideButtons"></div>
+            <div class="form-group">
+                <label>Reason</label>
+                <input type="text" id="overrideReason" placeholder="Reason for override">
+            </div>
+            <button class="btn btn-primary btn-sm" onclick="submitOverride()">Save Override</button>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="document.getElementById('detailModal').classList.remove('active')">Close</button>
+            <button class="btn btn-warning" onclick="document.getElementById('detailOverride').style.display='block'">Override</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = {{ project.id }};
+let currentValueId = null;
+
+function showDetail(valueId) {
+    currentValueId = valueId;
+    fetch(`/api/project/${projectId}/matrix/cell_detail?value_id=${valueId}`)
+        .then(r => r.json()).then(data => {
+            document.getElementById('detailTitle').textContent = `${data.code}: ${data.character}`;
+
+            let html = `<p><strong>Species:</strong> <em>${data.species}</em></p>`;
+            html += `<p><strong>State:</strong> ${data.state}</p>`;
+            if (data.raw_value !== null) html += `<p><strong>Raw value:</strong> ${data.raw_value.toFixed(4)}</p>`;
+            html += `<p><strong>Confidence:</strong> ${(data.confidence * 100).toFixed(0)}%</p>`;
+            html += `<p><strong>Type:</strong> ${data.computation_type}</p>`;
+            if (data.override_reason) html += `<p><strong>Override reason:</strong> ${data.override_reason}</p>`;
+
+            if (data.image_url) {
+                html += `<img src="${data.image_url}" style="max-width:100%; max-height:200px; margin-top:0.5rem;">`;
+            }
+            document.getElementById('detailContent').innerHTML = html;
+
+            // Override buttons
+            const btns = document.getElementById('overrideButtons');
+            btns.innerHTML = '';
+            (data.states || []).forEach(s => {
+                const btn = document.createElement('button');
+                btn.className = `state-btn ${s.code === data.state ? 'active' : ''}`;
+                btn.textContent = `${s.code}: ${s.name}`;
+                btn.onclick = () => {
+                    btns.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    btn.dataset.state = s.code;
+                };
+                btn.dataset.state = s.code;
+                btns.appendChild(btn);
+            });
+
+            document.getElementById('detailOverride').style.display = 'none';
+            document.getElementById('detailModal').classList.add('active');
+        });
+}
+
+function submitOverride() {
+    const activeBtn = document.querySelector('#overrideButtons .state-btn.active');
+    if (!activeBtn) return;
+    const state = activeBtn.dataset.state;
+    const reason = document.getElementById('overrideReason').value;
+
+    fetch(`/api/project/${projectId}/matrix/override`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({value_id: currentValueId, state: state, reason: reason})
+    }).then(() => location.reload());
+}
+
+function uploadTree() {
+    const file = document.getElementById('treeFile').files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('tree_file', file);
+    fetch(`/project/${projectId}/tree/upload`, {method: 'POST', body: formData})
+        .then(r => r.json()).then(() => loadTree());
+}
+
+function loadTree() {
+    fetch(`/api/project/${projectId}/tree`).then(r => r.json()).then(data => {
+        if (!data.newick) return;
+        document.getElementById('treePanel').style.display = 'block';
+        // Simple Newick rendering with D3
+        renderNewickTree(data.newick);
+    });
+}
+
+function renderNewickTree(newick) {
+    // Basic Newick parser and renderer
+    const svg = d3.select('#treeSvg');
+    svg.selectAll('*').remove();
+    svg.attr('width', 350).attr('height', Math.max(400, {{ matrix_data|length }} * 20));
+
+    // Parse Newick (simplified)
+    const tree = parseNewick(newick);
+    if (!tree) return;
+
+    const leaves = getLeaves(tree);
+    const maxDepth = getMaxDepth(tree);
+    const h = leaves.length * 20;
+    svg.attr('height', h + 40);
+
+    let leafIdx = 0;
+    function layout(node, depth) {
+        if (!node.children || node.children.length === 0) {
+            node.x = depth;
+            node.y = leafIdx++;
+            return;
+        }
+        node.children.forEach(c => layout(c, depth + (c.length || 1)));
+        node.x = depth;
+        node.y = d3.mean(node.children, c => c.y);
+    }
+    layout(tree, 0);
+
+    const xScale = d3.scaleLinear().domain([0, maxDepth]).range([10, 250]);
+    const yScale = d3.scaleLinear().domain([0, leaves.length - 1]).range([20, h + 20]);
+
+    function drawNode(node) {
+        if (node.children) {
+            node.children.forEach(c => {
+                svg.append('line')
+                    .attr('x1', xScale(node.x)).attr('y1', yScale(node.y))
+                    .attr('x2', xScale(node.x)).attr('y2', yScale(c.y))
+                    .attr('stroke', '#666').attr('stroke-width', 1);
+                svg.append('line')
+                    .attr('x1', xScale(node.x)).attr('y1', yScale(c.y))
+                    .attr('x2', xScale(c.x)).attr('y2', yScale(c.y))
+                    .attr('stroke', '#666').attr('stroke-width', 1);
+                drawNode(c);
+            });
+        } else {
+            svg.append('text')
+                .attr('x', xScale(node.x) + 5).attr('y', yScale(node.y) + 4)
+                .text(node.name || '').attr('font-size', '10px').attr('font-style', 'italic');
+        }
+    }
+    drawNode(tree);
+}
+
+function parseNewick(s) {
+    s = s.trim().replace(/;$/, '');
+    let i = 0;
+    function parse() {
+        const node = {children: []};
+        if (s[i] === '(') {
+            i++; // skip (
+            node.children.push(parse());
+            while (s[i] === ',') { i++; node.children.push(parse()); }
+            i++; // skip )
+        }
+        let name = '';
+        while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ':' && s[i] !== ';') {
+            name += s[i++];
+        }
+        node.name = name.trim();
+        if (s[i] === ':') {
+            i++;
+            let len = '';
+            while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ';') { len += s[i++]; }
+            node.length = parseFloat(len) || 1;
+        } else {
+            node.length = 1;
+        }
+        return node;
+    }
+    try { return parse(); } catch(e) { return null; }
+}
+function getLeaves(node) {
+    if (!node.children || node.children.length === 0) return [node];
+    return node.children.flatMap(getLeaves);
+}
+function getMaxDepth(node, depth = 0) {
+    if (!node.children || node.children.length === 0) return depth + (node.length || 1);
+    return Math.max(...node.children.map(c => getMaxDepth(c, depth + (c.length || 1))));
+}
+
+// Auto-load tree if exists
+loadTree();
+</script>
+{% endblock %}

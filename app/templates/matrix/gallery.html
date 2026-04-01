@@ -1,0 +1,159 @@
+{% extends "base.html" %}
+{% block title %}Gallery: {{ char.code }} - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Gallery: {{ char.code }} - {{ char.name }}</h1>
+<p style="color:var(--gray-500); margin-bottom:1rem;">
+    {{ char.structure_type.replace('_', ' ').title() }} | {{ char.computation_type }}
+    {% if char.states_json %}
+    | States: {% for s in char.states_json %}{{ s.code }}={{ s.name }}{% if not loop.last %}, {% endif %}{% endfor %}
+    {% endif %}
+</p>
+
+{% if parts %}
+<div style="margin-bottom:1rem; font-size:0.8rem; display:flex; gap:1rem; flex-wrap:wrap;">
+    {% for p in parts %}
+    <span><span class="part-dot" data-part="{{ loop.index0 }}"></span> {{ p }}</span>
+    {% endfor %}
+</div>
+{% endif %}
+
+<div class="gallery-grid">
+    {% for e in entries %}
+    <div class="gallery-item">
+        {% if e.landmarks %}
+        <canvas id="canvas_{{ loop.index0 }}" width="180" height="140" style="width:100%; background:#f8f8f8; border-radius:4px;"></canvas>
+        {% elif e.image_url %}
+        <img src="{{ e.image_url }}" alt="{{ e.specimen.species_name }}">
+        {% else %}
+        <div style="height:100px; background:var(--gray-200); display:flex; align-items:center; justify-content:center; font-size:0.8rem; color:var(--gray-500);">No data</div>
+        {% endif %}
+        <div class="species">{{ e.specimen.species_name }}</div>
+        {% if e.value %}
+        <div>
+            <span class="state-badge" style="background:
+                {% if e.value.state == '-' %}var(--gray-300)
+                {% elif e.value.state == '?' %}white; border:1px solid var(--gray-300)
+                {% else %}var(--primary){% endif %}; color:
+                {% if e.value.state == '?' %}var(--gray-700){% else %}white{% endif %};">
+                {{ e.value.state }}
+            </span>
+            {% if e.value.raw_value is not none %}
+            <span style="font-size:0.75rem; color:var(--gray-500);">{{ '%.3f'|format(e.value.raw_value) }}</span>
+            {% endif %}
+        </div>
+
+        <!-- Quick assign -->
+        <div class="state-buttons" style="justify-content:center; margin-top:0.3rem;">
+            {% for s in (char.states_json or []) %}
+            <button class="state-btn btn-sm {% if e.value.state == s.code %}active{% endif %}"
+                onclick="assignState({{ e.structure.id }}, {{ char.id }}, '{{ s.code }}', this)"
+                title="{{ s.name }}">{{ s.code }}</button>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = {{ project.id }};
+const PART_COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
+const PART_NAMES = {{ parts | tojson }};
+
+/* Landmark shape data passed from server */
+const shapeData = [
+{% for e in entries %}
+{% if e.landmarks %}
+{idx: {{ loop.index0 }}, landmarks: {{ e.landmarks | tojson }}, boundaries: {{ e.boundaries | tojson }}},
+{% endif %}
+{% endfor %}
+];
+
+function drawShape(canvasId, landmarks, boundaries) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    const pad = 12;
+
+    if (!landmarks || landmarks.length < 3) return;
+
+    // Compute bounding box
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    landmarks.forEach(p => {
+        minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+        minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+    });
+
+    const rangeX = maxX - minX || 1;
+    const rangeY = maxY - minY || 1;
+    const scale = Math.min((W - 2*pad) / rangeX, (H - 2*pad) / rangeY);
+    const offX = (W - rangeX * scale) / 2;
+    const offY = (H - rangeY * scale) / 2;
+
+    function tx(p) {
+        return [offX + (p[0] - minX) * scale, offY + (p[1] - minY) * scale];
+    }
+
+    // Build index-to-part mapping using PART_NAMES order (matches legend)
+    const partMap = {};
+    if (boundaries) {
+        PART_NAMES.forEach((name, pi) => {
+            (boundaries[name] || []).forEach(idx => { partMap[idx] = pi; });
+        });
+    }
+
+    // Draw outline segments colored by part
+    ctx.lineWidth = 2;
+    for (let i = 0; i < landmarks.length; i++) {
+        const j = (i + 1) % landmarks.length;
+        const partIdx = partMap[i];
+        ctx.strokeStyle = partIdx !== undefined ? PART_COLORS[partIdx % PART_COLORS.length] : '#999';
+        const [x1, y1] = tx(landmarks[i]);
+        const [x2, y2] = tx(landmarks[j]);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+    }
+
+    // Draw dots
+    landmarks.forEach((p, i) => {
+        const [x, y] = tx(p);
+        const partIdx = partMap[i];
+        ctx.fillStyle = partIdx !== undefined ? PART_COLORS[partIdx % PART_COLORS.length] : '#999';
+        ctx.beginPath();
+        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+    });
+}
+
+// Render all shapes
+shapeData.forEach(d => {
+    drawShape('canvas_' + d.idx, d.landmarks, d.boundaries);
+});
+
+function assignState(structureId, characterId, state, btn) {
+    fetch(`/api/project/${projectId}/matrix/assign`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({structure_id: structureId, character_id: characterId, state: state})
+    }).then(r => r.json()).then(() => {
+        const container = btn.parentElement;
+        container.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    });
+}
+</script>
+
+<style>
+.part-dot {
+    display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 3px; vertical-align: middle;
+}
+{% for p in parts %}
+.part-dot[data-part="{{ loop.index0 }}"] { background: {{ ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'][loop.index0 % 8] }}; }
+{% endfor %}
+</style>
+{% endblock %}

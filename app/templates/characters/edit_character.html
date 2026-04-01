@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ char.code }} - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Edit Character {{ char.code }}: {{ char.name }}</h1>
+
+<div class="card" style="max-width:800px;">
+    <form method="POST">
+        <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
+            <div class="form-group">
+                <label>Name</label>
+                <input type="text" name="name" value="{{ char.name }}" required>
+            </div>
+            <div class="form-group">
+                <label>Structure: {{ char.structure_type.replace('_', ' ') }} | Type: {{ char.computation_type }}</label>
+            </div>
+        </div>
+
+        <div class="form-group">
+            <label>Description</label>
+            <textarea name="description">{{ char.description or '' }}</textarea>
+        </div>
+
+        <div class="form-group">
+            <label>Parts Involved (comma-separated)</label>
+            <input type="text" name="parts_involved" value="{{ (char.parts_involved or [])|join(', ') }}">
+        </div>
+
+        {% if char.computation_type == 'geometric' %}
+        <div class="form-group">
+            <label>Geometric Operation</label>
+            <select name="geometric_operation">
+                {% for key, op in operations.items() %}
+                <option value="{{ key }}" {% if char.geometric_operation == key %}selected{% endif %}>{{ op.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Formula</label>
+            <input type="text" name="formula" value="{{ char.formula or '' }}">
+        </div>
+        {% endif %}
+
+        <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
+            <legend style="font-weight:600;">States</legend>
+            <div id="statesContainer">
+                {% for s in (char.states_json or []) %}
+                <div style="display:grid; grid-template-columns: 60px 1fr 2fr; gap:0.5rem; margin-bottom:0.5rem;">
+                    <input type="text" name="state_code_{{ loop.index0 }}" value="{{ s.code }}">
+                    <input type="text" name="state_name_{{ loop.index0 }}" value="{{ s.name }}">
+                    <input type="text" name="state_desc_{{ loop.index0 }}" value="{{ s.get('description', '') }}">
+                    <div></div>
+                    <div style="display:flex; gap:0.3rem;">
+                        <input type="number" name="state_threshold_min_{{ loop.index0 }}"
+                            value="{{ s.threshold_min if s.threshold_min is not none else '' }}" placeholder="Min" step="any" style="width:100px;">
+                        <input type="number" name="state_threshold_max_{{ loop.index0 }}"
+                            value="{{ s.threshold_max if s.threshold_max is not none else '' }}" placeholder="Max" step="any" style="width:100px;">
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="addState()">+ Add State</button>
+        </fieldset>
+
+        <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
+            <legend style="font-weight:600;">Dependencies</legend>
+            <div id="depsContainer">
+                {% for d in (char.dependencies_json or []) %}
+                <div style="display:flex; gap:0.5rem; margin-bottom:0.3rem; align-items:center;">
+                    <span>If</span>
+                    <input type="text" name="dep_char_{{ loop.index0 }}" value="{{ d.if_character }}" style="width:100px;">
+                    <span>=</span>
+                    <input type="text" name="dep_state_{{ loop.index0 }}" value="{{ d.if_state }}" style="width:80px;">
+                    <span>then inapplicable</span>
+                </div>
+                {% endfor %}
+            </div>
+            <button type="button" class="btn btn-sm btn-outline" onclick="addDep()">+ Add Dependency</button>
+        </fieldset>
+
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="{{ url_for('characters.workshop', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+    </form>
+</div>
+
+{% if char.history_json %}
+<div class="card" style="max-width:800px; margin-top:1rem;">
+    <h3>History</h3>
+    <ul style="font-size:0.85rem;">
+        {% for h in char.history_json %}
+        <li>{{ h.timestamp[:16] }} - {{ h.action }} - {{ h.details }}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+let stateCount = {{ (char.states_json or [])|length }};
+let depCount = {{ (char.dependencies_json or [])|length }};
+
+function addState() {
+    const i = stateCount++;
+    const html = `<div style="display:grid; grid-template-columns: 60px 1fr 2fr; gap:0.5rem; margin-bottom:0.5rem;">
+        <input type="text" name="state_code_${i}" placeholder="Code" value="${i}">
+        <input type="text" name="state_name_${i}" placeholder="Name">
+        <input type="text" name="state_desc_${i}" placeholder="Description">
+        <div></div>
+        <div style="display:flex; gap:0.3rem;">
+            <input type="number" name="state_threshold_min_${i}" placeholder="Min" step="any" style="width:100px;">
+            <input type="number" name="state_threshold_max_${i}" placeholder="Max" step="any" style="width:100px;">
+        </div>
+    </div>`;
+    document.getElementById('statesContainer').insertAdjacentHTML('beforeend', html);
+}
+function addDep() {
+    const i = depCount++;
+    const html = `<div style="display:flex; gap:0.5rem; margin-bottom:0.3rem; align-items:center;">
+        <span>If</span>
+        <input type="text" name="dep_char_${i}" placeholder="Code" style="width:100px;">
+        <span>=</span>
+        <input type="text" name="dep_state_${i}" placeholder="State" style="width:80px;">
+        <span>then inapplicable</span>
+    </div>`;
+    document.getElementById('depsContainer').insertAdjacentHTML('beforeend', html);
+}
+</script>
+{% endblock %}

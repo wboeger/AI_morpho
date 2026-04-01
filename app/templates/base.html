@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}GyroMorpho v2{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    {% block head %}{% endblock %}
+</head>
+<body>
+    <nav class="navbar">
+        <a href="{{ url_for('project.dashboard') }}" class="nav-brand">GyroMorpho v2</a>
+        {% if current_user.is_authenticated %}
+        <div class="nav-links">
+            {% if project is defined and project %}
+            <a href="{{ url_for('project.view_project', project_id=project.id) }}">Specimens</a>
+            <a href="{{ url_for('characters.workshop', project_id=project.id) }}">Characters</a>
+            <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}">Matrix</a>
+            <a href="{{ url_for('descriptions.species_descriptions', project_id=project.id) }}">Descriptions</a>
+            <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}">Diagnoses</a>
+            <a href="{{ url_for('export.export_page', project_id=project.id) }}">Export</a>
+            {% endif %}
+            <span class="nav-user">{{ current_user.username }}</span>
+            <a href="{{ url_for('auth.logout') }}">Logout</a>
+        </div>
+        {% endif %}
+    </nav>
+
+    <main class="container">
+        {% block back_button %}
+        <a href="javascript:history.back()" class="btn btn-sm btn-outline" style="margin-bottom:0.75rem; display:inline-block;">&larr; Back</a>
+        {% endblock %}
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+        <div class="flash-messages">
+            {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        {% endwith %}
+
+        {% block content %}{% endblock %}
+    </main>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

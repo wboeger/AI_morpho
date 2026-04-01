@@ -1,0 +1,199 @@
+{% extends "base.html" %}
+{% block title %}Landmarks - {{ specimen.species_name }}{% endblock %}
+{% block content %}
+<h1>Landmark Editor: <em>{{ specimen.species_name }}</em> ({{ structure.structure_type.replace('_', ' ') }})</h1>
+
+<div class="editor-container">
+    <div class="editor-canvas">
+        <canvas id="landmarkCanvas" width="800" height="600"></canvas>
+    </div>
+    <div class="editor-sidebar">
+        <div class="card">
+            <h3>Controls</h3>
+            <p>Points: <strong id="pointCount">0</strong>
+                {% if fixed_count %} / {{ fixed_count }}{% endif %}
+            </p>
+            <p style="font-size:0.8rem; color:var(--gray-500);">
+                Drag to move points. Click to add. Right-click to delete.
+            </p>
+
+            <div style="margin-top:0.75rem;">
+                <form action="{{ url_for('landmarks.upload_landmarks', structure_id=structure.id) }}"
+                      method="POST" enctype="multipart/form-data" style="margin-bottom:0.5rem;">
+                    <label style="font-size:0.85rem; font-weight:600;">Upload CSV</label>
+                    <input type="file" name="csv_file" accept=".csv" style="font-size:0.8rem;">
+                    <button type="submit" class="btn btn-sm btn-outline" style="margin-top:0.3rem;">Upload</button>
+                </form>
+
+                <form action="{{ url_for('landmarks.import_boundaries_json', structure_id=structure.id) }}"
+                      method="POST" enctype="multipart/form-data" style="margin-bottom:0.5rem;">
+                    <label style="font-size:0.85rem; font-weight:600;">Import JSON (AI_morpho format)</label>
+                    <input type="file" name="json_file" accept=".json" style="font-size:0.8rem;">
+                    <button type="submit" class="btn btn-sm btn-outline" style="margin-top:0.3rem;">Import</button>
+                </form>
+            </div>
+
+            {% if not fixed_count %}
+            <div style="margin-top:0.5rem;">
+                <label style="font-size:0.85rem; font-weight:600;">Resample</label>
+                <div style="display:flex; gap:0.3rem;">
+                    <input type="number" id="resampleCount" value="100" min="50" max="200" style="width:80px;">
+                    <button class="btn btn-sm btn-outline" onclick="resampleLandmarks()">Resample</button>
+                    <button class="btn btn-sm btn-outline" onclick="suggestCount()">Suggest</button>
+                </div>
+            </div>
+            {% endif %}
+
+            <div style="margin-top:1rem; display:flex; gap:0.5rem;">
+                <button class="btn btn-primary" onclick="confirmLandmarks()">Confirm</button>
+                <button class="btn btn-outline" onclick="resetLandmarks()">Reset</button>
+            </div>
+
+            {% if structure.landmarks_confirmed %}
+            <p style="margin-top:0.5rem; color:var(--success); font-weight:600;">Confirmed</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const structureId = {{ structure.id }};
+const imageUrl = {{ image_url|tojson if image_url else 'null' }};
+let landmarks = {{ structure.landmarks_json|tojson if structure.landmarks_json else '[]' }};
+let dragging = null;
+let originalLandmarks = JSON.parse(JSON.stringify(landmarks));
+
+const canvas = document.getElementById('landmarkCanvas');
+const ctx = canvas.getContext('2d');
+let img = null;
+let scale = 1;
+let offsetX = 0, offsetY = 0;
+
+if (imageUrl) {
+    img = new Image();
+    img.onload = () => {
+        scale = Math.min(canvas.width / img.width, canvas.height / img.height);
+        offsetX = (canvas.width - img.width * scale) / 2;
+        offsetY = (canvas.height - img.height * scale) / 2;
+        draw();
+    };
+    img.src = imageUrl;
+} else {
+    draw();
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (img) {
+        ctx.drawImage(img, offsetX, offsetY, img.width * scale, img.height * scale);
+    }
+    // Draw outline
+    if (landmarks.length > 1) {
+        ctx.beginPath();
+        ctx.strokeStyle = '#2c5f8a';
+        ctx.lineWidth = 1.5;
+        const [sx, sy] = toScreen(landmarks[0]);
+        ctx.moveTo(sx, sy);
+        for (let i = 1; i < landmarks.length; i++) {
+            const [px, py] = toScreen(landmarks[i]);
+            ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+    }
+    // Draw points
+    landmarks.forEach((pt, i) => {
+        const [sx, sy] = toScreen(pt);
+        ctx.beginPath();
+        ctx.arc(sx, sy, 3, 0, Math.PI * 2);
+        ctx.fillStyle = (i === 0) ? '#e74c3c' : '#2c5f8a';
+        ctx.fill();
+    });
+    document.getElementById('pointCount').textContent = landmarks.length;
+}
+
+function toScreen(pt) {
+    return [pt[0] * scale + offsetX, pt[1] * scale + offsetY];
+}
+function toData(sx, sy) {
+    return [(sx - offsetX) / scale, (sy - offsetY) / scale];
+}
+function findNearest(sx, sy, threshold = 10) {
+    let best = -1, bestDist = Infinity;
+    landmarks.forEach((pt, i) => {
+        const [px, py] = toScreen(pt);
+        const d = Math.hypot(sx - px, sy - py);
+        if (d < threshold && d < bestDist) { best = i; bestDist = d; }
+    });
+    return best;
+}
+
+canvas.addEventListener('mousedown', e => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    if (e.button === 2) { // right-click: delete
+        const idx = findNearest(sx, sy);
+        if (idx >= 0) { landmarks.splice(idx, 1); draw(); }
+        return;
+    }
+    const idx = findNearest(sx, sy);
+    if (idx >= 0) { dragging = idx; }
+    else {
+        // Add point: insert at nearest segment
+        const [dx, dy] = toData(sx, sy);
+        let bestIdx = landmarks.length;
+        let bestDist = Infinity;
+        for (let i = 0; i < landmarks.length - 1; i++) {
+            const mid = [(landmarks[i][0]+landmarks[i+1][0])/2, (landmarks[i][1]+landmarks[i+1][1])/2];
+            const d = Math.hypot(dx - mid[0], dy - mid[1]);
+            if (d < bestDist) { bestDist = d; bestIdx = i + 1; }
+        }
+        landmarks.splice(bestIdx, 0, [dx, dy]);
+        draw();
+    }
+});
+canvas.addEventListener('mousemove', e => {
+    if (dragging === null) return;
+    const rect = canvas.getBoundingClientRect();
+    const [dx, dy] = toData(e.clientX - rect.left, e.clientY - rect.top);
+    landmarks[dragging] = [dx, dy];
+    draw();
+});
+canvas.addEventListener('mouseup', () => { dragging = null; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+function confirmLandmarks() {
+    fetch(`/api/structure/${structureId}/landmarks`, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({landmarks: landmarks, confirmed: true})
+    }).then(r => r.json()).then(() => location.reload());
+}
+function resetLandmarks() {
+    landmarks = JSON.parse(JSON.stringify(originalLandmarks));
+    draw();
+}
+function resampleLandmarks() {
+    const count = parseInt(document.getElementById('resampleCount').value);
+    fetch(`/api/structure/${structureId}/landmarks/resample`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({count: count})
+    }).then(r => r.json()).then(data => {
+        landmarks = data.landmarks;
+        originalLandmarks = JSON.parse(JSON.stringify(landmarks));
+        draw();
+    });
+}
+function suggestCount() {
+    fetch(`/api/structure/${structureId}/landmarks/suggest_count`)
+        .then(r => r.json()).then(data => {
+            document.getElementById('resampleCount').value = data.suggested_count;
+            alert(`Suggested: ${data.suggested_count} landmarks (curvature variance: ${data.curvature_variance.toFixed(5)})`);
+        });
+}
+
+draw();
+</script>
+{% endblock %}

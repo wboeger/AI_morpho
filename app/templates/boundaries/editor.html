@@ -1,0 +1,419 @@
+{% extends "base.html" %}
+{% block title %}Boundaries - {{ specimen.species_name }}{% endblock %}
+
+{% block content %}
+<style>
+    .boundary-layout { display:flex; gap:1rem; height:calc(100vh - 120px); }
+    .boundary-canvas-wrap { flex:1; position:relative; overflow:hidden; background:#fafafa; border:1px solid var(--gray-200); border-radius:8px; }
+    .boundary-canvas-wrap canvas { position:absolute; top:0; left:0; }
+    .boundary-sidebar { width:280px; display:flex; flex-direction:column; gap:0.75rem; }
+
+    .mode-btns { display:flex; gap:4px; }
+    .mode-btns button { flex:1; font-size:0.8rem; padding:4px 8px; }
+    .mode-btns button.active { background:var(--primary); color:white; border-color:var(--primary); }
+
+    .part-btn { display:flex; align-items:center; padding:6px 10px; border:2px solid transparent; border-radius:6px; cursor:pointer; margin-bottom:3px; font-size:0.85rem; background:white; width:100%; text-align:left; }
+    .part-btn:hover { filter:brightness(0.95); }
+    .part-btn.active { border-color:#333; box-shadow:0 0 0 1px #333; }
+    .part-btn .dot { width:12px; height:12px; border-radius:50%; margin-right:8px; flex-shrink:0; }
+    .part-btn .cnt { margin-left:auto; font-size:0.75rem; color:#888; background:#f0f0f0; padding:1px 6px; border-radius:10px; }
+
+    .toolbar-row { display:flex; gap:4px; align-items:center; padding:6px 10px; background:white; border-bottom:1px solid var(--gray-200); border-radius:8px 8px 0 0; font-size:0.85rem; position:absolute; top:0; left:0; right:0; z-index:5; }
+    .toolbar-row label { font-size:0.8rem; display:flex; align-items:center; gap:3px; }
+
+    .assignment-summary { font-size:0.8rem; overflow-y:auto; flex:1; }
+    .assignment-summary .arow { margin-bottom:4px; }
+
+    .range-inputs { display:flex; gap:4px; align-items:center; margin-top:6px; }
+    .range-inputs input { width:50px; padding:3px 5px; border:1px solid var(--gray-300); border-radius:4px; font-size:0.8rem; text-align:center; }
+    .range-inputs span { font-size:0.8rem; color:var(--gray-500); }
+
+    #bTooltip { position:absolute; background:rgba(0,0,0,0.8); color:white; padding:3px 8px; border-radius:4px; font-size:0.75rem; pointer-events:none; display:none; z-index:50; }
+</style>
+
+<h1 style="font-size:1.1rem; margin-bottom:0.5rem;">Boundary Editor: <em>{{ specimen.species_name }}</em> &mdash; {{ structure.structure_type.replace('_', ' ') }}</h1>
+
+<div class="boundary-layout">
+    <!-- Canvas -->
+    <div class="boundary-canvas-wrap" id="canvasWrap">
+        <div class="toolbar-row">
+            <button onclick="zoomIn()" style="padding:2px 8px;">+</button>
+            <button onclick="zoomOut()" style="padding:2px 8px;">&minus;</button>
+            <button onclick="resetView()" style="padding:2px 8px;">Fit</button>
+            <span id="zoomLbl" style="color:var(--gray-500); min-width:40px;">100%</span>
+            <div style="width:1px; height:18px; background:var(--gray-300); margin:0 4px;"></div>
+            <label><input type="checkbox" id="chkNums" checked onchange="draw()"> #</label>
+            <label><input type="checkbox" id="chkLines" checked onchange="draw()"> Lines</label>
+            <label><input type="checkbox" id="chkDots" checked onchange="draw()"> Dots</label>
+            <label><input type="checkbox" id="chkEvery5" onchange="draw()"> 5th only</label>
+            <div style="flex:1;"></div>
+            <span id="modeLabel" style="font-weight:600; font-size:0.8rem;">Click</span>
+        </div>
+        <canvas id="bCanvas"></canvas>
+        <div id="bTooltip"></div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="boundary-sidebar">
+        <div class="card" style="margin-bottom:0;">
+            <h3 style="font-size:0.9rem;">Selection Mode</h3>
+            <div class="mode-btns">
+                <button id="mClick" class="btn btn-sm active" onclick="setMode('click')">Click</button>
+                <button id="mRange" class="btn btn-sm" onclick="setMode('range')">Range</button>
+                <button id="mLasso" class="btn btn-sm" onclick="setMode('lasso')">Lasso</button>
+            </div>
+            <div id="rangeRow" class="range-inputs" style="display:none;">
+                <input type="number" id="rFrom" min="1" placeholder="From">
+                <span>to</span>
+                <input type="number" id="rTo" placeholder="To">
+                <button class="btn btn-sm btn-outline" onclick="applyRange()">Add</button>
+            </div>
+            <p style="font-size:0.7rem; color:var(--gray-500); margin-top:4px;">
+                Keys: 1-{{ parts|length }} = parts &bull; C/R/L = mode &bull; Ctrl+Z = undo &bull; Alt+drag = pan
+            </p>
+        </div>
+
+        <div class="card" style="margin-bottom:0; flex:1; overflow-y:auto;">
+            <h3 style="font-size:0.9rem;">Parts</h3>
+            <div id="partBtns"></div>
+            <hr style="margin:0.5rem 0;">
+            <div class="assignment-summary" id="assignSummary"></div>
+        </div>
+
+        <div class="card" style="margin-bottom:0;">
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <button class="btn btn-sm btn-primary" onclick="confirmBoundaries()">Confirm</button>
+                <button class="btn btn-sm btn-outline" onclick="saveDraft()">Save Draft</button>
+                <button class="btn btn-sm btn-outline" onclick="copyFromSimilar()">Copy Similar</button>
+                <button class="btn btn-sm btn-outline" onclick="undoAction()">Undo</button>
+                <button class="btn btn-sm btn-outline" style="color:var(--danger);" onclick="clearAll()">Clear</button>
+            </div>
+            {% if structure.boundary_confirmed %}
+            <p style="margin-top:0.4rem; color:var(--success); font-weight:600; font-size:0.85rem;">Confirmed</p>
+            {% endif %}
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const structureId = {{ structure.id }};
+const partNames = {{ parts|tojson }};
+const COLORS = {
+    'Point':'#e74c3c','Shaft':'#3498db','Toe':'#2ecc71','Shelf':'#f39c12',
+    'Base':'#9b59b6','Heel':'#1abc9c','SuperficialRoot':'#e67e22','DeepRoot':'#34495e',
+    'BarProper':'#3498db','Shield':'#2ecc71','ShieldDistalEnd':'#f39c12',
+    'AnterolateralProcesses':'#9b59b6','Bulb':'#e74c3c','PrincipalSpine':'#3498db',
+    'Spinelets':'#2ecc71','unassigned':'#bdc3c7'
+};
+function partColor(p) { return COLORS[p] || '#bdc3c7'; }
+
+let landmarks = {{ structure.landmarks_json|tojson if structure.landmarks_json else '[]' }};
+let boundaries = {{ structure.boundary_json|tojson if structure.boundary_json else '{}' }};
+let activePart = partNames[0] || null;
+let mode = 'click'; // click, range, lasso
+let undoStack = [];
+let lassoPoints = [];
+let zoom = 1, panX = 0, panY = 0;
+let isPanning = false, lastMouse = null;
+let hoveredLM = -1;
+
+const wrap = document.getElementById('canvasWrap');
+const canvas = document.getElementById('bCanvas');
+const ctx = canvas.getContext('2d');
+const tooltip = document.getElementById('bTooltip');
+
+/* ── Part buttons ── */
+function buildPartBtns() {
+    const div = document.getElementById('partBtns');
+    div.innerHTML = '';
+    partNames.forEach(p => {
+        const btn = document.createElement('button');
+        btn.className = 'part-btn' + (p === activePart ? ' active' : '');
+        btn.dataset.part = p;
+        const cnt = (boundaries[p] || []).length;
+        btn.innerHTML = `<span class="dot" style="background:${partColor(p)}"></span>${p}<span class="cnt" id="cnt-${p}">${cnt}</span>`;
+        btn.onclick = () => { activePart = p; updatePartBtns(); };
+        div.appendChild(btn);
+    });
+}
+function updatePartBtns() {
+    document.querySelectorAll('.part-btn').forEach(b => b.classList.toggle('active', b.dataset.part === activePart));
+    partNames.forEach(p => {
+        const el = document.getElementById('cnt-' + p);
+        if (el) el.textContent = (boundaries[p] || []).length;
+    });
+    updateSummary();
+}
+
+function updateSummary() {
+    const div = document.getElementById('assignSummary');
+    let total = 0, html = '';
+    partNames.forEach(p => {
+        const idx = boundaries[p] || [];
+        total += idx.length;
+        if (idx.length > 0) {
+            html += `<div class="arow"><span style="color:${partColor(p)};font-weight:bold;">&#9679;</span> <strong>${p}</strong> (${idx.length}): ${compressRanges(idx)}</div>`;
+        }
+    });
+    const un = landmarks.length - total;
+    if (un > 0) html += `<div style="color:var(--gray-400);">Unassigned: ${un}</div>`;
+    div.innerHTML = html;
+}
+
+function compressRanges(indices) {
+    if (!indices.length) return '';
+    const s = [...indices].sort((a,b)=>a-b);
+    const r = []; let st = s[0], en = s[0];
+    for (let i=1;i<s.length;i++) {
+        if (s[i]===en+1) en=s[i];
+        else { r.push(st===en?`${st+1}`:`${st+1}-${en+1}`); st=s[i]; en=s[i]; }
+    }
+    r.push(st===en?`${st+1}`:`${st+1}-${en+1}`);
+    return r.join(', ');
+}
+
+/* ── Mode ── */
+function setMode(m) {
+    mode = m;
+    document.getElementById('mClick').classList.toggle('active', m==='click');
+    document.getElementById('mRange').classList.toggle('active', m==='range');
+    document.getElementById('mLasso').classList.toggle('active', m==='lasso');
+    document.getElementById('rangeRow').style.display = m==='range' ? 'flex' : 'none';
+    document.getElementById('modeLabel').textContent = m.charAt(0).toUpperCase()+m.slice(1);
+    lassoPoints = [];
+    draw();
+}
+
+/* ── Canvas sizing ── */
+function resizeCanvas() {
+    canvas.width = wrap.clientWidth;
+    canvas.height = wrap.clientHeight;
+    draw();
+}
+window.addEventListener('resize', resizeCanvas);
+new ResizeObserver(resizeCanvas).observe(wrap);
+
+/* ── Transform ── */
+// Toolbar overlaps the top of the canvas
+const TOOLBAR_H = 38;
+
+function getTransform() {
+    if (!landmarks.length) return {scale:1, ox:0, oy:0, flipY:false};
+    let mnX=Infinity,mxX=-Infinity,mnY=Infinity,mxY=-Infinity;
+    landmarks.forEach(([x,y])=>{mnX=Math.min(mnX,x);mxX=Math.max(mxX,x);mnY=Math.min(mnY,y);mxY=Math.max(mxY,y);});
+    const dw=mxX-mnX||1, dh=mxY-mnY||1;
+    const padL=40, padR=40, padT=TOOLBAR_H+30, padB=30;
+    const availW=canvas.width-padL-padR, availH=canvas.height-padT-padB;
+    const sc=Math.min(availW/dw, availH/dh)*zoom;
+    const cx=(mnX+mxX)/2, cy=(mnY+mxY)/2;
+    // Drawing area center
+    const drawCX=padL+availW/2, drawCY=padT+availH/2;
+    // Use direct Y (image coords: Y increases downward) — no flip
+    return {scale:sc, ox:drawCX-cx*sc+panX, oy:drawCY-cy*sc+panY};
+}
+function toScreen(x,y,tf){return[x*tf.scale+tf.ox, y*tf.scale+tf.oy];}
+function fromScreen(sx,sy,tf){return[(sx-tf.ox)/tf.scale, (sy-tf.oy)/tf.scale];}
+
+function getLMPart(idx) {
+    for (const p of partNames) {
+        if (boundaries[p] && boundaries[p].includes(idx)) return p;
+    }
+    return null;
+}
+
+/* ── Draw ── */
+function draw() {
+    if (!canvas.width) return;
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    if (!landmarks.length) {
+        ctx.fillStyle='#999'; ctx.font='16px sans-serif'; ctx.textAlign='center';
+        ctx.fillText('No landmarks loaded', canvas.width/2, canvas.height/2);
+        return;
+    }
+    const tf = getTransform();
+    const showNums = document.getElementById('chkNums').checked;
+    const showLines = document.getElementById('chkLines').checked;
+    const showDots = document.getElementById('chkDots').checked;
+    const every5 = document.getElementById('chkEvery5').checked;
+
+    // Outline
+    if (showLines) {
+        for (let i=0;i<landmarks.length-1;i++) {
+            const [x1,y1]=toScreen(landmarks[i][0],landmarks[i][1],tf);
+            const [x2,y2]=toScreen(landmarks[i+1][0],landmarks[i+1][1],tf);
+            const p = getLMPart(i);
+            ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+            ctx.strokeStyle = p ? partColor(p) : '#ddd';
+            ctx.lineWidth = p ? 3 : 1;
+            ctx.stroke();
+        }
+    }
+
+    // Dots
+    const dotR = Math.max(3, Math.min(8, 5*zoom));
+    for (let i=0;i<landmarks.length;i++) {
+        const [sx,sy]=toScreen(landmarks[i][0],landmarks[i][1],tf);
+        const p = getLMPart(i);
+        const col = p ? partColor(p) : '#bdc3c7';
+        if (showDots) {
+            ctx.beginPath();
+            ctx.arc(sx,sy, i===hoveredLM?dotR+3:dotR, 0,Math.PI*2);
+            ctx.fillStyle=col; ctx.fill();
+            if (i===hoveredLM){ctx.strokeStyle='#333';ctx.lineWidth=2;ctx.stroke();}
+        }
+        if (showNums) {
+            const doLabel = every5 ? ((i+1)%5===0||(i+1)===1) : true;
+            if (doLabel) {
+                ctx.fillStyle='#333'; ctx.font=`${Math.max(9,Math.min(12,10*zoom))}px sans-serif`;
+                ctx.textAlign='center'; ctx.fillText(i+1,sx,sy-dotR-3);
+            }
+        }
+    }
+
+    // Lasso path
+    if (mode==='lasso' && lassoPoints.length>1) {
+        ctx.beginPath(); ctx.strokeStyle='rgba(52,152,219,0.6)'; ctx.lineWidth=2; ctx.setLineDash([5,5]);
+        lassoPoints.forEach((p,i)=>i===0?ctx.moveTo(p[0],p[1]):ctx.lineTo(p[0],p[1]));
+        ctx.closePath(); ctx.stroke();
+        ctx.fillStyle='rgba(52,152,219,0.08)'; ctx.fill();
+        ctx.setLineDash([]);
+    }
+}
+
+/* ── Mouse ── */
+canvas.addEventListener('mousemove', e => {
+    const rect=canvas.getBoundingClientRect();
+    const mx=e.clientX-rect.left, my=e.clientY-rect.top;
+    if (isPanning){panX+=mx-lastMouse[0];panY+=my-lastMouse[1];lastMouse=[mx,my];draw();return;}
+    if (mode==='lasso'&&e.buttons===1&&!isPanning){lassoPoints.push([mx,my]);draw();return;}
+    if (!landmarks.length) return;
+    const tf=getTransform();
+    let cl=-1, cd=Infinity;
+    for(let i=0;i<landmarks.length;i++){const[sx,sy]=toScreen(landmarks[i][0],landmarks[i][1],tf);const d=Math.hypot(mx-sx,my-sy);if(d<cd){cd=d;cl=i;}}
+    if(cd<20){hoveredLM=cl;const p=getLMPart(cl)||'unassigned';tooltip.style.display='block';tooltip.style.left=(mx+15)+'px';tooltip.style.top=(my-10)+'px';tooltip.textContent=`LM ${cl+1} — ${p}`;}
+    else{hoveredLM=-1;tooltip.style.display='none';}
+    draw();
+});
+
+canvas.addEventListener('mousedown', e => {
+    if(e.button===1||(e.button===0&&e.altKey)){isPanning=true;const rect=canvas.getBoundingClientRect();lastMouse=[e.clientX-rect.left,e.clientY-rect.top];canvas.style.cursor='grabbing';e.preventDefault();return;}
+    if(mode==='lasso'&&e.button===0){const rect=canvas.getBoundingClientRect();lassoPoints=[[e.clientX-rect.left,e.clientY-rect.top]];return;}
+    if(mode==='click'&&e.button===0&&hoveredLM>=0){pushUndo();toggleLM(hoveredLM);}
+});
+
+canvas.addEventListener('mouseup', e => {
+    if(isPanning){isPanning=false;canvas.style.cursor='default';return;}
+    if(mode==='lasso'&&lassoPoints.length>2){pushUndo();applyLasso();lassoPoints=[];draw();}
+});
+
+canvas.addEventListener('mouseleave', ()=>{tooltip.style.display='none';});
+
+canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f=e.deltaY<0?1.1:0.9;
+    zoom*=f; zoom=Math.max(0.2,Math.min(10,zoom));
+    document.getElementById('zoomLbl').textContent=Math.round(zoom*100)+'%';
+    draw();
+},{passive:false});
+
+/* ── Actions ── */
+function pushUndo(){undoStack.push(JSON.parse(JSON.stringify(boundaries)));if(undoStack.length>50)undoStack.shift();}
+
+function toggleLM(idx) {
+    const curPart = getLMPart(idx);
+    // Remove from any part
+    partNames.forEach(p=>{if(boundaries[p]){const j=boundaries[p].indexOf(idx);if(j>=0)boundaries[p].splice(j,1);}});
+    // Add to active if wasn't already there
+    if(curPart!==activePart){
+        if(!boundaries[activePart])boundaries[activePart]=[];
+        boundaries[activePart].push(idx);
+        boundaries[activePart].sort((a,b)=>a-b);
+    }
+    updatePartBtns(); draw();
+}
+
+function applyRange() {
+    const from=parseInt(document.getElementById('rFrom').value)-1;
+    const to=parseInt(document.getElementById('rTo').value)-1;
+    if(isNaN(from)||isNaN(to)||from<0||to>=landmarks.length)return;
+    pushUndo();
+    const lo=Math.min(from,to), hi=Math.max(from,to);
+    for(let i=lo;i<=hi;i++){
+        partNames.forEach(p=>{if(p!==activePart&&boundaries[p]){const j=boundaries[p].indexOf(i);if(j>=0)boundaries[p].splice(j,1);}});
+        if(!boundaries[activePart])boundaries[activePart]=[];
+        if(!boundaries[activePart].includes(i))boundaries[activePart].push(i);
+    }
+    boundaries[activePart]=[...new Set(boundaries[activePart])].sort((a,b)=>a-b);
+    updatePartBtns(); draw();
+}
+
+function pointInPoly(x,y,poly){
+    let inside=false;
+    for(let i=0,j=poly.length-1;i<poly.length;j=i++){
+        const[xi,yi]=poly[i],[xj,yj]=poly[j];
+        if(((yi>y)!==(yj>y))&&(x<(xj-xi)*(y-yi)/(yj-yi)+xi))inside=!inside;
+    }
+    return inside;
+}
+
+function applyLasso() {
+    const tf=getTransform();
+    if(!boundaries[activePart])boundaries[activePart]=[];
+    for(let i=0;i<landmarks.length;i++){
+        const[sx,sy]=toScreen(landmarks[i][0],landmarks[i][1],tf);
+        if(pointInPoly(sx,sy,lassoPoints)){
+            partNames.forEach(p=>{if(p!==activePart&&boundaries[p]){const j=boundaries[p].indexOf(i);if(j>=0)boundaries[p].splice(j,1);}});
+            if(!boundaries[activePart].includes(i))boundaries[activePart].push(i);
+        }
+    }
+    boundaries[activePart]=[...new Set(boundaries[activePart])].sort((a,b)=>a-b);
+    updatePartBtns(); draw();
+}
+
+function undoAction(){if(!undoStack.length)return;boundaries=undoStack.pop();updatePartBtns();draw();}
+function clearAll(){pushUndo();boundaries={};updatePartBtns();draw();}
+function zoomIn(){zoom*=1.2;zoom=Math.min(10,zoom);document.getElementById('zoomLbl').textContent=Math.round(zoom*100)+'%';draw();}
+function zoomOut(){zoom*=0.8;zoom=Math.max(0.2,zoom);document.getElementById('zoomLbl').textContent=Math.round(zoom*100)+'%';draw();}
+function resetView(){zoom=1;panX=0;panY=0;document.getElementById('zoomLbl').textContent='100%';draw();}
+
+/* ── Keyboard ── */
+document.addEventListener('keydown', e => {
+    if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+    const num=parseInt(e.key);
+    if(num>=1&&num<=partNames.length){activePart=partNames[num-1];updatePartBtns();}
+    if(e.key==='c')setMode('click');
+    if(e.key==='r')setMode('range');
+    if(e.key==='l')setMode('lasso');
+    if(e.key==='z'&&(e.ctrlKey||e.metaKey)){undoAction();e.preventDefault();}
+});
+
+/* ── Server ── */
+function saveDraft(){
+    fetch(`/api/structure/${structureId}/boundaries`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({boundaries:boundaries,confirmed:false})})
+    .then(r=>r.json()).then(()=>alert('Draft saved.'));
+}
+
+function confirmBoundaries(){
+    fetch(`/api/structure/${structureId}/boundaries`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({boundaries:boundaries,confirmed:true})})
+    .then(r=>r.json()).then(()=>location.reload());
+}
+
+function copyFromSimilar(){
+    fetch(`/api/structure/${structureId}/boundaries/copy_similar`,{method:'POST'})
+    .then(r=>r.json()).then(data=>{
+        if(data.error){alert(data.error);return;}
+        pushUndo();
+        boundaries=data.boundaries;
+        updatePartBtns(); draw();
+        alert(`Copied from ${data.source_specimen} (distance: ${data.distance.toFixed(4)})`);
+    });
+}
+
+/* ── Init ── */
+buildPartBtns();
+updateSummary();
+setTimeout(resizeCanvas, 50);
+</script>
+{% endblock %}

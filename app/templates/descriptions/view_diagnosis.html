@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Diagnosis: {{ group.name }}{% endblock %}
+{% block content %}
+<h1>Diagnosis: {{ group.name }} ({{ group.rank }})</h1>
+<p style="color:var(--gray-500); margin-bottom:0.5rem;">
+    {{ (group.included_species or [])|length }} species included
+</p>
+
+<div class="card">
+    <textarea id="diagText" style="min-height:200px; font-family:serif; line-height:1.6;">{{ group.diagnosis_text or 'No diagnosis generated yet.' }}</textarea>
+    <div style="margin-top:0.75rem; display:flex; gap:0.5rem;">
+        <button class="btn btn-primary" onclick="saveDiagnosis()">Save Edits</button>
+        <button class="btn btn-outline" onclick="regenerate()">Regenerate</button>
+        <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}" class="btn btn-outline">Back</a>
+    </div>
+</div>
+
+<div class="card" style="margin-top:1rem;">
+    <h3>Included Species</h3>
+    <ul>
+        {% for sp in (group.included_species or []) %}
+        <li><em>{{ sp }}</em></li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function saveDiagnosis() {
+    const text = document.getElementById('diagText').value;
+    fetch(`/api/project/{{ project.id }}/diagnoses/{{ group.id }}/save`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text: text})
+    }).then(() => alert('Saved.'));
+}
+function regenerate() {
+    fetch(`/api/project/{{ project.id }}/diagnoses/{{ group.id }}/regenerate`, {method: 'POST'})
+        .then(r => r.json()).then(data => {
+            document.getElementById('diagText').value = data.diagnosis;
+        });
+}
+</script>
+{% endblock %}

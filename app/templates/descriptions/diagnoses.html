@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block title %}Diagnoses - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Taxonomic Group Diagnoses</h1>
+<a href="{{ url_for('descriptions.new_group', project_id=project.id) }}" class="btn btn-primary" style="margin-bottom:1rem;">New Group</a>
+
+{% if groups %}
+<div class="card">
+    <table>
+        <thead><tr><th>Name</th><th>Rank</th><th>Species</th><th>Actions</th></tr></thead>
+        <tbody>
+            {% for g in groups %}
+            <tr>
+                <td><strong>{{ g.name }}</strong></td>
+                <td>{{ g.rank or '-' }}</td>
+                <td>{{ (g.included_species or [])|length }}</td>
+                <td>
+                    <a href="{{ url_for('descriptions.view_diagnosis', project_id=project.id, group_id=g.id) }}"
+                       class="btn btn-sm btn-outline">View</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<p style="color:var(--gray-500);">No taxonomic groups defined yet.</p>
+{% endif %}
+{% endblock %}

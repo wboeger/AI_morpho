@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}DNA Sequences - {{ specimen.species_name }}{% endblock %}
+{% block content %}
+<h1>DNA Sequences for <em>{{ specimen.species_name }}</em></h1>
+<div class="card" style="max-width:600px;">
+    <form method="POST">
+        {% for marker in ['ITS', '18S', 'COI', 'other'] %}
+        <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.5rem;">
+            <label style="display:flex; align-items:center; gap:0.3rem; font-weight:normal; width:80px;">
+                <input type="checkbox" name="dna_{{ marker }}"
+                    {% if marker in existing %}checked{% endif %}> {{ marker }}
+            </label>
+            <input type="text" name="accession_{{ marker }}"
+                value="{{ existing[marker].accession if marker in existing else '' }}"
+                placeholder="Accession" style="width:200px;">
+        </div>
+        {% endfor %}
+        <button type="submit" class="btn btn-primary">Save</button>
+        <a href="{{ url_for('project.view_project', project_id=specimen.project_id) }}" class="btn btn-outline">Cancel</a>
+    </form>
+</div>
+{% endblock %}

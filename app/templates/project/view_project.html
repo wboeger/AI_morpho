@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}{{ project.name }} - GyroMorpho{% endblock %}
+{% block content %}
+<h1>{{ project.name }}</h1>
+{% if project.description %}<p style="color:var(--gray-500); margin-bottom:1rem;">{{ project.description }}</p>{% endif %}
+
+<!-- Stats -->
+<div class="stats-row">
+    <div class="stat-card">
+        <div class="value">{{ stats.specimens }}</div>
+        <div class="label">Specimens</div>
+    </div>
+    <div class="stat-card">
+        <div class="value">{{ stats.structures }}</div>
+        <div class="label">Structures</div>
+    </div>
+    <div class="stat-card">
+        <div class="value">{{ stats.landmarks_done }}</div>
+        <div class="label">Landmarks Done</div>
+    </div>
+    <div class="stat-card">
+        <div class="value">{{ stats.boundaries_done }}</div>
+        <div class="label">Boundaries Done</div>
+    </div>
+</div>
+
+<!-- Actions -->
+<div class="filters">
+    <a href="{{ url_for('project.add_specimen', project_id=project.id) }}" class="btn btn-primary">Add Specimen</a>
+    <a href="{{ url_for('project.import_folders', project_id=project.id) }}" class="btn btn-primary">Import from Folders</a>
+    <a href="{{ url_for('project.bulk_import', project_id=project.id) }}" class="btn btn-outline">Bulk Import CSV</a>
+    {% if dna_only %}
+    <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline">Show All</a>
+    {% else %}
+    <a href="{{ url_for('project.view_project', project_id=project.id, dna_only=1) }}" class="btn btn-outline">DNA Only</a>
+    {% endif %}
+    <form method="POST" action="{{ url_for('project.compute_all_characters_route', project_id=project.id) }}" style="display:inline;">
+        <button type="submit" class="btn btn-outline">Compute All Characters</button>
+    </form>
+</div>
+
+<!-- Specimen List -->
+<div class="card">
+    <h3>Specimens ({{ specimens|length }})</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Species</th>
+                <th>Specimen ID</th>
+                <th>Structures</th>
+                <th>DNA</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in specimens %}
+            <tr>
+                <td><em>{{ s.species_name }}</em></td>
+                <td>{{ s.specimen_id_label or '-' }}</td>
+                <td>
+                    {% for st in s.structures %}
+                    <span class="part-chip" style="background:
+                        {% if st.structure_type == 'hook' %}#4a90d9
+                        {% elif st.structure_type == 'anchor' %}#50b383
+                        {% elif st.structure_type == 'superficial_bar' %}#d9844a
+                        {% elif st.structure_type == 'deep_bar' %}#9b59b6
+                        {% else %}#e74c3c{% endif %}">
+                        {{ st.structure_type.replace('_', ' ') }}
+                        {% if st.landmarks_confirmed %}&#10003;{% endif %}
+                    </span>
+                    {% endfor %}
+                    <a href="{{ url_for('project.add_structure', specimen_id=s.id) }}" class="btn btn-sm btn-outline">+</a>
+                </td>
+                <td>
+                    {% for d in s.dna_sequences %}
+                    <span style="font-size:0.75rem;">{{ d.marker }}</span>
+                    {% endfor %}
+                    <a href="{{ url_for('project.edit_dna', specimen_id=s.id) }}" class="btn btn-sm btn-outline">edit</a>
+                </td>
+                <td>
+                    {% for st in s.structures %}
+                    <a href="{{ url_for('landmarks.landmark_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">landmarks</a>
+                    {% if st.landmarks_json %}
+                    <a href="{{ url_for('boundaries.boundary_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">boundaries</a>
+                    {% endif %}
+                    {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Members -->
+<div class="card">
+    <h3>Members</h3>
+    <table>
+        <thead><tr><th>Username</th><th>Role</th></tr></thead>
+        <tbody>
+            {% for m in members %}
+            <tr><td>{{ m.user.username }}</td><td>{{ m.role }}</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <form method="POST" action="{{ url_for('project.add_member', project_id=project.id) }}" style="margin-top:0.5rem; display:flex; gap:0.5rem;">
+        <input type="text" name="username" placeholder="Username" style="width:200px;">
+        <select name="role" style="width:120px;">
+            <option value="annotator">Annotator</option>
+            <option value="reviewer">Reviewer</option>
+            <option value="admin">Admin</option>
+        </select>
+        <button type="submit" class="btn btn-sm btn-primary">Add</button>
+    </form>
+</div>
+{% endblock %}

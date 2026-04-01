@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>Boundaries: <em>{{ specimen.species_name }}</em> ({{ structure.structure_type.replace('_', ' ') }})</h1>
+<div class="card">
+    <p>No boundary assignment needed for this structure type. Characters are coded manually.</p>
+    <a href="{{ url_for('project.view_project', project_id=specimen.project_id) }}" class="btn btn-outline">Back to Project</a>
+</div>
+{% endblock %}

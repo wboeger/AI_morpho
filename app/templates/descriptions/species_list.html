@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Descriptions - {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Species Descriptions</h1>
+<div class="card">
+    <table>
+        <thead><tr><th>Species</th><th>Actions</th></tr></thead>
+        <tbody>
+            {% for s in specimens %}
+            <tr>
+                <td><em>{{ s.species_name }}</em></td>
+                <td>
+                    <a href="{{ url_for('descriptions.view_description', project_id=project.id, specimen_id=s.id) }}"
+                       class="btn btn-sm btn-outline">View Description</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

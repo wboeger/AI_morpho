@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - GyroMorpho{% endblock %}
+{% block back_button %}{% endblock %}
+{% block content %}
+<h1>Projects</h1>
+<a href="{{ url_for('project.new_project') }}" class="btn btn-primary" style="margin-bottom:1rem;">New Project</a>
+
+{% if projects %}
+<div style="display:grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap:1rem;">
+    {% for p in projects %}
+    <div class="card">
+        <h3><a href="{{ url_for('project.view_project', project_id=p.id) }}">{{ p.name }}</a></h3>
+        {% if p.description %}<p style="color:var(--gray-500); font-size:0.9rem;">{{ p.description }}</p>{% endif %}
+        <p style="font-size:0.8rem; color:var(--gray-500); margin-top:0.5rem;">
+            Created {{ p.created_at.strftime('%Y-%m-%d') }}
+        </p>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<p style="color:var(--gray-500);">No projects yet. Create your first project to get started.</p>
+{% endif %}
+{% endblock %}
