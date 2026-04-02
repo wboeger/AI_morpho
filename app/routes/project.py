@@ -891,6 +891,56 @@ def _load_landmarks_csv(csv_path: str) -> list:
     return coords if len(coords) >= 3 else []
 
 
+@project_bp.route('/project/<int:project_id>/macro/<structure_type>')
+@login_required
+def download_macro(project_id, structure_type):
+    """Serve an ImageJ macro pre-configured with project directories."""
+    from flask import send_file, abort
+    project = Project.query.get_or_404(project_id)
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+    macro_map = {
+        'hook': 'macrogyrolandmark_v5.5.ijm',
+        'anchor': 'macrogyrolandmark_v5_anchors.ijm',
+    }
+    if structure_type not in macro_map:
+        abort(404)
+
+    macro_path = os.path.join(base_dir, 'macros', macro_map[structure_type])
+    if not os.path.exists(macro_path):
+        abort(404)
+
+    with open(macro_path, 'r') as f:
+        content = f.read()
+
+    # Build suggested directories using the project's upload folder
+    upload_dir = current_app.config['UPLOAD_FOLDER']
+    img_dir = os.path.join(upload_dir, f'project_{project_id}', structure_type + 's')
+    csv_dir = os.path.join(upload_dir, f'project_{project_id}', 'landmarks', structure_type + 's')
+
+    # Replace default directories in the macro
+    # The macros have two Dialog.addString lines for input and output dirs
+    import re as _re
+    # Replace input directory default
+    content = _re.sub(
+        r'(Dialog\.addString\("Input directory:",\s*\n\s*")([^"]+)(")',
+        lambda m: m.group(1) + img_dir + m.group(3),
+        content
+    )
+    # Replace output directory default
+    content = _re.sub(
+        r'(Dialog\.addString\("Output directory:",\s*\n\s*")([^"]+)(")',
+        lambda m: m.group(1) + csv_dir + m.group(3),
+        content
+    )
+
+    # Serve as downloadable file
+    out = io.BytesIO(content.encode('utf-8'))
+    out.seek(0)
+    filename = f'{project.name.replace(" ", "_")}_{structure_type}_landmark.ijm'
+    return send_file(out, mimetype='text/plain', as_attachment=True, download_name=filename)
+
+
 def _get_project_or_404(project_id):
     project = Project.query.get_or_404(project_id)
     # Check membership

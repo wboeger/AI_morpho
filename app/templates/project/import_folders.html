@@ -1,9 +1,67 @@
 {% extends "base.html" %}
 {% block title %}Import from Folders - {{ project.name }}{% endblock %}
 {% block content %}
-<h1>Import Landmarks from Folders</h1>
+
+<!-- Step 1: ImageJ Macros -->
+<h1>Step 1: Extract Landmarks with ImageJ</h1>
 <p style="color:var(--gray-500); margin-bottom:1rem;">
-    Specify local folders containing CSV landmark files. Each folder is mapped to a structure type.
+    Download an ImageJ macro pre-configured for this project. Open it in
+    <a href="https://imagej.net/ij/" target="_blank">ImageJ/Fiji</a> via
+    <strong>Plugins &rarr; Macros &rarr; Run...</strong>
+    The macro guides you interactively through image enhancement, contour extraction (wand tool),
+    and placement of 3 anatomical landmarks per specimen. It outputs CSV files (100 equidistant
+    pseudolandmarks) that you import in Step 2 below.
+</p>
+
+<div class="card" style="max-width:900px; margin-bottom:1.5rem;">
+    <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:start;">
+        <div style="flex:1; min-width:250px;">
+            <h3 style="margin-top:0;">Marginal Hook Macro</h3>
+            <p style="font-size:0.85rem; color:var(--gray-500); margin-bottom:0.5rem;">
+                Landmarks: <strong>L1</strong> = Point tip, <strong>L2</strong> = Toe tip,
+                <strong>L3</strong> = Junction Point-Shaft (inner face)
+            </p>
+            <a href="{{ url_for('project.download_macro', project_id=project.id, structure_type='hook') }}"
+               class="btn btn-primary" style="font-size:0.85rem;">Download Hook Macro (.ijm)</a>
+        </div>
+        <div style="flex:1; min-width:250px;">
+            <h3 style="margin-top:0;">Anchor Macro</h3>
+            <p style="font-size:0.85rem; color:var(--gray-500); margin-bottom:0.5rem;">
+                Landmarks: <strong>L1</strong> = Point, <strong>L2</strong> = External tip superficial root,
+                <strong>L3</strong> = Distal-most base deep root
+            </p>
+            <a href="{{ url_for('project.download_macro', project_id=project.id, structure_type='anchor') }}"
+               class="btn btn-primary" style="font-size:0.85rem;">Download Anchor Macro (.ijm)</a>
+        </div>
+    </div>
+    <details style="margin-top:1rem;">
+        <summary style="font-size:0.85rem; cursor:pointer; color:var(--gray-500);">Macro workflow details</summary>
+        <div style="font-size:0.8rem; color:var(--gray-500); margin-top:0.5rem; line-height:1.6;">
+            <ol style="margin:0; padding-left:1.2rem;">
+                <li>Session setup: configure input/output directories, enhancement settings, landmark count (100)</li>
+                <li>Image review: accept, reject (with reason), or skip each image</li>
+                <li>Crop &amp; enhance: draw bounding rectangle, optional Gaussian blur + CLAHE + Unsharp Mask, 3&times; upscale</li>
+                <li>Orientation: verify structure points right (optional horizontal flip)</li>
+                <li>B&amp;W conversion: optional threshold-based binary mask for cleaner contour extraction</li>
+                <li>Wand tool: click on outline to extract contour; adjustable tolerance</li>
+                <li>Contour smoothing: 3-point moving average (configurable passes)</li>
+                <li>Landmark placement: click to place L1, L2, L3 sequentially</li>
+                <li>Equidistant resampling: 100 points starting from L1, spaced by arc length</li>
+                <li>Verification &amp; editing: review color-coded overlay, optionally edit individual points</li>
+                <li>Output: CSV files saved (X,Y per row); QC and rejection logs</li>
+            </ol>
+            <p style="margin-top:0.5rem;">Full backward navigation is available at every stage.</p>
+        </div>
+    </details>
+</div>
+
+<hr style="margin:1.5rem 0;">
+
+<!-- Step 2: Import CSVs -->
+<h1>Step 2: Import Landmarks from Folders</h1>
+<p style="color:var(--gray-500); margin-bottom:1rem;">
+    Specify local folders containing CSV landmark files (output from the ImageJ macros above).
+    Each folder is mapped to a structure type.
     Species names are parsed from filenames automatically. You can add as many folders as needed.
 </p>
 
@@ -30,7 +88,7 @@
 
 <hr style="margin:2rem 0;">
 
-<h1>Import Part Boundaries from JSON</h1>
+<h1>Step 3: Import Part Boundaries from JSON</h1>
 <p style="color:var(--gray-500); margin-bottom:1rem;">
     Specify JSON files containing part boundary definitions. Each file maps specimen names to
     anatomical part indices (Point, Shaft, Toe, etc.). Specimens must already exist in the project
@@ -60,7 +118,7 @@
 
 <hr style="margin:2rem 0;">
 
-<h1>Import Images from Folder</h1>
+<h1>Step 4: Import Images from Folder</h1>
 <p style="color:var(--gray-500); margin-bottom:1rem;">
     Specify a folder containing specimen images (PNG, JPG, GIF). Images are matched to existing
     specimens by species name from the filename (e.g., "Gyrodactylus salaris.png").

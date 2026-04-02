@@ -181,12 +181,15 @@ def edit_character(project_id, char_id):
     available_types = sorted({st.structure_type for st in
         Structure.query.join(Specimen).filter(Specimen.project_id == project_id).all()})
 
+    explanation = _build_measurement_explanation(char)
+
     return render_template('characters/edit_character.html',
                            project=project, char=char,
                            operations=GEOMETRIC_OPERATIONS,
                            structure_parts=Config.STRUCTURE_PARTS,
                            entries=entries, parts=parts,
-                           available_types=available_types)
+                           available_types=available_types,
+                           explanation=explanation)
 
 
 @characters_bp.route('/api/project/<int:project_id>/characters/<int:char_id>/toggle', methods=['POST'])
@@ -346,6 +349,112 @@ def _parse_deps_from_form(data):
             })
         i += 1
     return deps
+
+
+def _build_measurement_explanation(char):
+    """Build a human-readable explanation of how this character is measured."""
+    parts = char.parts_involved or []
+    op = char.geometric_operation
+    states = char.states_json or []
+
+    if char.computation_type == 'manual':
+        lines = [
+            'This is a <strong>manual character</strong> — states are assigned by the taxonomist through visual inspection.',
+        ]
+        if states:
+            lines.append('States are defined as:')
+            for s in states:
+                desc = f': {s["description"]}' if s.get('description') else ''
+                lines.append(f'&nbsp;&nbsp;&bull; <strong>{s["code"]}</strong> = {s["name"]}{desc}')
+        return '<br>'.join(lines)
+
+    # Geometric character
+    part_str = ' and '.join(f'<strong>{p}</strong>' for p in parts)
+
+    _OP_EXPLANATIONS = {
+        'ratio_arc_length': (
+            'Computes the <em>ratio of arc lengths</em> between {parts}. '
+            'The arc length of each part is measured along its pseudolandmark coordinates '
+            '(sum of Euclidean distances between consecutive points). The ratio indicates '
+            'relative size — values near 1.0 mean equal length; values &gt;1 mean the first part is longer.'
+        ),
+        'sinuosity': (
+            'Measures the <em>sinuosity</em> of {parts} — the ratio of arc length (path along the curve) '
+            'to chord length (straight-line distance between endpoints). Values near 1.0 indicate a nearly '
+            'straight part; higher values indicate more curvature or waviness.'
+        ),
+        'mean_curvature': (
+            'Computes the <em>mean curvature</em> of {parts}. At each interior landmark point, local curvature '
+            'is estimated from the angle formed by the vectors to its neighbors divided by the arc-length step. '
+            'The mean of absolute curvature values captures overall bending — higher values mean more curved.'
+        ),
+        'max_curvature': (
+            'Computes the <em>maximum curvature</em> of {parts}. Local curvature is estimated at each interior '
+            'point (angle between adjacent vectors / arc-length step). The maximum value captures the sharpest '
+            'bend — useful for detecting abrupt turns or hooks.'
+        ),
+        'junction_angle': (
+            'Measures the <em>junction angle</em> between {parts}. The direction vector at the end of the first '
+            'part and the direction vector at the start of the second part are computed (averaged over 5 points). '
+            'The angle between these two vectors (0°–180°) indicates how sharply the parts meet — '
+            'small angles mean they continue in the same direction; large angles mean an abrupt change.'
+        ),
+        'direction_angle': (
+            'Measures the <em>direction angle</em> between {parts}. The overall direction of each part is '
+            'computed from its endpoint vectors. The angle between them (0°–180°) captures orientation '
+            'differences — 0° means parallel, 90° means perpendicular, 180° means opposite directions.'
+        ),
+        'relative_position': (
+            'Measures the <em>relative vertical position</em> between {parts}. The vertical displacement between '
+            'the tips (first points) of the two parts is normalized by total extent. Positive values mean the '
+            'first part tip is lower; negative means higher.'
+        ),
+        'presence_threshold': (
+            'Measures <em>presence/absence</em> of {parts} by computing the fraction of the total outline '
+            'arc length occupied by this part. If the fraction exceeds the threshold, the part is considered present.'
+        ),
+        'sinuosity_with_direction': (
+            'Measures <em>signed sinuosity</em> of {parts}. Like sinuosity (arc/chord ratio), but also '
+            'determines whether the curve bows outward (positive) or inward (negative) using the cross product '
+            'of the chord with the midpoint displacement.'
+        ),
+        'angle_between_parts': (
+            'Measures the <em>angle at the fork</em> between {parts}. The direction vectors at the start '
+            'of each part are compared. The angle (0°–180°) indicates how widely the parts diverge from '
+            'their common origin.'
+        ),
+    }
+
+    method = _OP_EXPLANATIONS.get(op, 'Custom geometric computation on {parts}.').format(parts=part_str)
+
+    lines = [f'<strong>Measurement method:</strong> {method}']
+
+    # Procrustes note
+    lines.append(
+        '<strong>Alignment:</strong> All specimens are aligned via Generalized Procrustes Analysis (GPA) — '
+        'centered, scaled to unit centroid size, and iteratively rotated — before measurement. '
+        'This removes differences in position, size, and orientation, isolating shape variation.'
+    )
+
+    # State mapping
+    if states:
+        lines.append('<strong>State assignment:</strong> The raw value is mapped to discrete states using thresholds:')
+        for s in states:
+            t_min = s.get('threshold_min')
+            t_max = s.get('threshold_max')
+            if t_min is not None and t_max is not None:
+                rng = f'{t_min} – {t_max}'
+            elif t_min is not None:
+                rng = f'&ge; {t_min}'
+            elif t_max is not None:
+                rng = f'&lt; {t_max}'
+            else:
+                rng = 'no thresholds'
+            desc = f' — {s["description"]}' if s.get('description') else ''
+            lines.append(f'&nbsp;&nbsp;&bull; <strong>{s["code"]}</strong> ({s["name"]}): {rng}{desc}')
+        lines.append('Values between thresholds are assigned with proportional confidence; the best-matching state is chosen.')
+
+    return '<br>'.join(lines)
 
 
 def _log(project_id, action):

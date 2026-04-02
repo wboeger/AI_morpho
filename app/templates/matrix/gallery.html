@@ -26,8 +26,9 @@
     </button>
 
     <span id="legendContainer" style="display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.8rem;">
+        {% set dot_colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'] %}
         {% for p in parts %}
-        <span><span class="part-dot" data-part="{{ loop.index0 }}"></span> {{ p }}</span>
+        <span><span class="part-dot" style="background:{{ dot_colors[loop.index0 % 8] }};"></span> {{ p }}</span>
         {% endfor %}
     </span>
 </div>

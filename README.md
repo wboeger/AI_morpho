@@ -4,10 +4,13 @@ A web-based pipeline for morphometric analysis and automated taxonomic descripti
 
 ## Features
 
+- **ImageJ macros**: Interactive landmarking macros for hooks and anchors — contour extraction via wand tool, 3 anatomical landmarks, equidistant resampling to 100 pseudolandmarks
 - **Landmark management**: Import, visualize, and edit 2D pseudolandmarks for hooks, anchors, bars, and MCO
 - **Boundary assignment**: Define anatomical part boundaries with click, range, or lasso selection
 - **Character computation**: Automatic geometric character states via Procrustes-aligned measurements (ratios, angles, curvatures, sinuosity)
-- **Character matrix**: Interactive matrix with confidence coloring, cell-level override, and gallery views
+- **Character workshop**: Define, edit, reorder, and delete character states; view measurement explanations and specimen reference panels
+- **Character matrix**: Interactive matrix with confidence coloring, cell-level override, and gallery views with shape/image toggle
+- **Gallery**: Sortable specimen gallery with color-coded landmark shapes, structure type switcher, lightbox zoom, and inline state assignment
 - **Species descriptions**: Auto-generated morphological descriptions from character data
 - **Taxonomic diagnoses**: Comparative diagnoses for user-defined taxonomic groups
 - **Export**: Nexus, TNT, CSV, and JSON formats for downstream phylogenetic analysis
@@ -17,6 +20,7 @@ A web-based pipeline for morphometric analysis and automated taxonomic descripti
 
 - Python 3.10 or later
 - pip (Python package manager)
+- [ImageJ or Fiji](https://imagej.net/ij/) (for landmark extraction macros)
 - A modern web browser (Chrome, Firefox, Safari, Edge)
 
 ## Installation
@@ -71,18 +75,47 @@ The server starts at **http://127.0.0.1:5000**. Open this URL in your browser.
 2. Click **Register** and create an account (the first user becomes admin).
 3. Click **New Project**, enter a name and description.
 
-### Step 2: Import landmark data
+The project dashboard shows a **Pipeline** bar at the top with the full workflow: ImageJ Macros → Import Landmarks → Assign Boundaries → Define Characters → Compute & Review Matrix.
 
-Go to your project page and click **Import from Folders**.
+### Step 2: Extract landmarks with ImageJ macros
+
+Go to your project page and click **Import from Folders**. The page is organized into four steps.
+
+**Step 1 — Download macros:**
+
+Two ImageJ macros are included in the `macros/` directory and are also available for download (pre-configured with project directories) from the import page:
+
+- **Hook macro** (`macrogyrolandmark_v5.5.ijm`): Landmarks L1 = Point tip, L2 = Toe tip, L3 = Junction Point-Shaft (inner face)
+- **Anchor macro** (`macrogyrolandmark_v5_anchors.ijm`): Landmarks L1 = Point, L2 = External tip superficial root, L3 = Distal-most base deep root
+
+Open the downloaded `.ijm` file in ImageJ/Fiji via **Plugins → Macros → Run...**
+
+The macro workflow:
+1. **Session setup**: Configure input/output directories, enhancement settings, wand tolerance, landmark count (100)
+2. **Image review**: Accept, reject (with logged reason), or skip each image
+3. **Crop & enhance**: Draw bounding rectangle; optional Gaussian blur, CLAHE contrast, Unsharp Mask; 3× upscale
+4. **Orientation**: Verify structure points right (optional horizontal flip)
+5. **B&W conversion**: Optional threshold-based binary mask for cleaner contour extraction
+6. **Wand tool**: Click on the structure outline to extract the contour; adjustable tolerance
+7. **Contour smoothing**: 3-point moving average (configurable passes)
+8. **Landmark placement**: Click to place L1, L2, L3 sequentially
+9. **Equidistant resampling**: 100 points starting from L1, spaced by arc length
+10. **Verification & editing**: Review color-coded overlay (cyan=L1, yellow=L2, magenta=L3, green=semilandmarks); optionally edit individual points
+11. **Output**: One CSV file per specimen (X,Y columns, 100 rows); plus QC and rejection logs
+
+Full backward navigation is available at every stage.
+
+### Step 3: Import data into GyroMorpho
 
 **Import landmarks (CSV files):**
 
-1. Click **+ Add Folder**.
-2. Enter the full path to a folder containing CSV landmark files (one file per specimen). Each CSV should have X and Y columns with landmark coordinates.
-3. Select the structure type (Marginal Hook, Anchor, etc.).
-4. Click **Scan** to preview which files will be imported and how species names are parsed from filenames.
-5. Add more folders if needed (e.g., one folder for hooks, another for anchors).
-6. Click **Import All**.
+1. In the import page, scroll to **Step 2: Import Landmarks from Folders**.
+2. Click **+ Add Folder**.
+3. Enter the full path to a folder containing CSV landmark files (output from the macros above). Each CSV has X and Y columns with 100 landmark coordinates.
+4. Select the structure type (Marginal Hook, Anchor, etc.).
+5. Click **Scan** to preview which files will be imported and how species names are parsed from filenames.
+6. Add more folders if needed (e.g., one folder for hooks, another for anchors).
+7. Click **Import All**.
 
 Filenames are automatically parsed into species names. Supported formats:
 - `Gyrodactylus_salaris.csv` (underscore-separated)
@@ -91,7 +124,7 @@ Filenames are automatically parsed into species names. Supported formats:
 
 **Import part boundaries (JSON files):**
 
-1. Scroll to **Import Part Boundaries from JSON**.
+1. Scroll to **Step 3: Import Part Boundaries from JSON**.
 2. Click **+ Add JSON File**.
 3. Enter the path to a JSON file containing boundary definitions. The JSON format maps specimen names to part indices:
    ```json
@@ -111,12 +144,12 @@ After boundary import, character states are automatically computed using General
 
 **Import images:**
 
-1. Scroll to **Import Images from Folder**.
+1. Scroll to **Step 4: Import Images from Folder**.
 2. Enter the path to a folder containing specimen images (PNG, JPG, GIF).
 3. Images are matched to specimens by species name from the filename (e.g., `Gyrodactylus salaris.png`).
 4. Click **Scan** to preview matches, then **Import Images**.
 
-### Step 3: Review boundaries
+### Step 4: Review boundaries
 
 On the project page, each specimen's structure has an **Edit Boundaries** link (visible when landmarks exist). The boundary editor provides:
 
@@ -128,7 +161,7 @@ On the project page, each specimen's structure has an **Edit Boundaries** link (
 
 Click **Confirm** to save boundaries and trigger character computation.
 
-### Step 4: Character matrix
+### Step 5: Character matrix
 
 Click **Character Matrix** from the project page to view the matrix:
 
@@ -136,21 +169,30 @@ Click **Character Matrix** from the project page to view the matrix:
 - Cells are color-coded by confidence: green (high), yellow (medium), red (low), gray (not applicable).
 - Click any cell to see details (raw value, confidence, computation type) and override the state if needed.
 - Use the filter buttons (Hook, Anchor, Bar, MCO, All) to show specific structure types.
-- Click a character code in the header to open the **Gallery** view, which shows all specimens sorted by character value with landmark-derived shape outlines colored by anatomical parts.
+- Click a character code in the header to open the **Gallery** view:
+  - Specimens sorted by raw value (geometric) or state (manual).
+  - Landmark-derived shape outlines colored by anatomical parts, with a color legend.
+  - **Structure type switcher**: View other structure images/shapes for context (e.g., see anchors while coding hook characters).
+  - **Shapes/Images toggle**: Switch between landmark outlines and uploaded specimen photographs.
+  - **Lightbox**: Click any thumbnail to zoom in with state assignment buttons.
+  - **Inline state buttons**: Assign states directly from the gallery grid without opening a modal.
 
 **Compute All Characters**: Click this button on the project page to batch-recompute all geometric characters using Generalized Procrustes Analysis. This aligns all specimens of the same structure type before computing measurements.
 
-### Step 5: Character workshop
+### Step 6: Character workshop
 
 Click **Character Workshop** from the project page to manage character definitions:
 
 - View all characters grouped by structure type.
 - Toggle characters active/inactive (inactive characters are excluded from the matrix and exports).
-- Edit thresholds to adjust state boundaries based on your data.
+- **Edit character**: Opens a two-panel view:
+  - **Left**: Edit name, description, parts, geometric operation, formula, states (with drag-and-drop reorder, up/down arrows, and delete buttons), and dependencies.
+  - **Right**: Reference panel showing all specimen thumbnails with state badges, structure type switcher, shapes/images toggle, and click-to-zoom lightbox.
+  - **Measurement explanation**: A collapsible box at the top explains exactly how the system computes the character — which geometric operation is used, what it measures, how Procrustes alignment is applied, and how raw values map to states via thresholds.
 - Create new characters with custom geometric operations or manual coding.
 - View the value distribution for any character to check threshold placement.
 
-### Step 6: Species descriptions
+### Step 7: Species descriptions
 
 Click **Descriptions** from the project page:
 
@@ -158,7 +200,7 @@ Click **Descriptions** from the project page:
 - Descriptions are formatted in standard taxonomic prose.
 - Click **Regenerate** to update a description after changing character values.
 
-### Step 7: Taxonomic diagnoses
+### Step 8: Taxonomic diagnoses
 
 Click **Diagnoses** from the project page:
 
@@ -166,7 +208,7 @@ Click **Diagnoses** from the project page:
 - The system generates comparative diagnoses highlighting distinguishing features among the included species.
 - Edit diagnoses manually if needed.
 
-### Step 8: Export
+### Step 9: Export
 
 Click **Export** from the project page. Available formats:
 
@@ -206,7 +248,10 @@ Characters are computed from the Procrustes-aligned landmarks using these operat
 | `junction_angle` | Angle between direction vectors at part junction | C02: Point-Shaft angle |
 | `direction_angle` | Angle between direction vectors of two parts | C06: Shaft-Base angle |
 | `relative_position` | Normalized vertical displacement between part tips | C04: Point vs Toe level |
+| `max_curvature` | Maximum local curvature along a part | Sharpest bend detection |
 | `presence_threshold` | Part arc length as fraction of total | C10: Heel conspicuousness |
+| `sinuosity_with_direction` | Signed sinuosity (positive = outward bow, negative = inward) | C04: Point direction |
+| `angle_between_parts` | Angle at the fork between two diverging parts | A09: Shaft-root angle |
 
 ### State mapping
 
@@ -231,6 +276,9 @@ AI_morpho/
   run.py                 # Entry point
   config.py              # Configuration (DB path, upload folder, structure parts)
   requirements.txt       # Python dependencies
+  macros/                # ImageJ landmarking macros
+    macrogyrolandmark_v5.5.ijm        # Hook landmarking (interactive)
+    macrogyrolandmark_v5_anchors.ijm  # Anchor landmarking (interactive)
   app/
     __init__.py          # Flask app factory
     models.py            # SQLAlchemy data models
