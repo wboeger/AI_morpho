@@ -95,11 +95,24 @@ def gallery_view(project_id, char_id):
                           Structure.structure_type == char.structure_type)
                   .all())
 
+    # Also collect all other structure types per specimen for the image switcher
+    from config import Config
+    all_structure_types = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+
     for struct in structures:
         specimen = Specimen.query.get(struct.specimen_id)
         val = CharacterValue.query.filter_by(
             structure_id=struct.id, character_id=char.id
         ).first()
+
+        # Gather images/shapes for all structure types of this specimen
+        alt_structures = {}
+        for st in Structure.query.filter_by(specimen_id=specimen.id).all():
+            alt_structures[st.structure_type] = {
+                'image_url': f'/uploads/{st.image_path}' if st.image_path else None,
+                'landmarks': st.landmarks_json,
+                'boundaries': st.boundary_json,
+            }
 
         entries.append({
             'structure': struct,
@@ -108,6 +121,7 @@ def gallery_view(project_id, char_id):
             'image_url': f'/uploads/{struct.image_path}' if struct.image_path else None,
             'landmarks': struct.landmarks_json,
             'boundaries': struct.boundary_json,
+            'alt_structures': alt_structures,
         })
 
     # Sort by raw_value for geometric, by state for manual
@@ -116,12 +130,16 @@ def gallery_view(project_id, char_id):
     else:
         entries.sort(key=lambda e: (e['value'].state if e['value'] and e['value'].state else '?'))
 
-    from config import Config
     parts = Config.STRUCTURE_PARTS.get(char.structure_type, [])
+
+    # Find which structure types actually have data in this project
+    available_types = sorted({st.structure_type for st in
+        Structure.query.join(Specimen).filter(Specimen.project_id == project_id).all()})
 
     return render_template('matrix/gallery.html',
                            project=project, char=char, entries=entries,
-                           parts=parts)
+                           parts=parts, available_types=available_types,
+                           all_parts=Config.STRUCTURE_PARTS)
 
 
 @matrix_bp.route('/project/<int:project_id>/matrix/code/<int:structure_id>')
@@ -222,6 +240,8 @@ def assign_manual_value(project_id):
         val.state = state
         val.confidence = 1.0
         val.auto_assigned = False
+        val.override_by = current_user.id
+        val.override_at = datetime.now(timezone.utc)
         val.reviewer_id = current_user.id
     else:
         val = CharacterValue(
@@ -230,6 +250,8 @@ def assign_manual_value(project_id):
             state=state,
             confidence=1.0,
             auto_assigned=False,
+            override_by=current_user.id,
+            override_at=datetime.now(timezone.utc),
             reviewer_id=current_user.id,
         )
         db.session.add(val)

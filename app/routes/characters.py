@@ -144,10 +144,49 @@ def edit_character(project_id, char_id):
         flash(f'Character {char.code} updated.', 'success')
         return redirect(url_for('characters.workshop', project_id=project_id))
 
+    # Gather specimen structures for the reference panel
+    structures = (Structure.query
+                  .join(Specimen)
+                  .filter(Specimen.project_id == project_id,
+                          Structure.structure_type == char.structure_type)
+                  .all())
+    entries = []
+    for struct in structures:
+        specimen = Specimen.query.get(struct.specimen_id)
+        val = CharacterValue.query.filter_by(
+            structure_id=struct.id, character_id=char.id
+        ).first()
+        # Collect all structure types for this specimen
+        alt = {}
+        for st in Structure.query.filter_by(specimen_id=specimen.id).all():
+            alt[st.structure_type] = {
+                'image_url': f'/uploads/{st.image_path}' if st.image_path else None,
+                'landmarks': st.landmarks_json,
+                'boundaries': st.boundary_json,
+            }
+        entries.append({
+            'structure_id': struct.id,
+            'species': specimen.species_name,
+            'state': val.state if val else '?',
+            'raw_value': val.raw_value if val else None,
+            'alt': alt,
+        })
+    # Sort by raw_value for geometric, state for manual
+    if char.computation_type == 'geometric':
+        entries.sort(key=lambda e: e['raw_value'] if e['raw_value'] is not None else 0)
+    else:
+        entries.sort(key=lambda e: e['state'] or '?')
+
+    parts = Config.STRUCTURE_PARTS.get(char.structure_type, [])
+    available_types = sorted({st.structure_type for st in
+        Structure.query.join(Specimen).filter(Specimen.project_id == project_id).all()})
+
     return render_template('characters/edit_character.html',
                            project=project, char=char,
                            operations=GEOMETRIC_OPERATIONS,
-                           structure_parts=Config.STRUCTURE_PARTS)
+                           structure_parts=Config.STRUCTURE_PARTS,
+                           entries=entries, parts=parts,
+                           available_types=available_types)
 
 
 @characters_bp.route('/api/project/<int:project_id>/characters/<int:char_id>/toggle', methods=['POST'])

@@ -152,6 +152,37 @@ def add_specimen(project_id):
     return render_template('project/add_specimen.html', project=project)
 
 
+@project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/delete', methods=['DELETE'])
+@login_required
+def delete_specimen(project_id, specimen_id):
+    """Delete a specimen and all its structures, character values, and DNA sequences."""
+    project = _get_project_or_404(project_id)
+    specimen = Specimen.query.get_or_404(specimen_id)
+    if specimen.project_id != project_id:
+        return jsonify({'error': 'Specimen does not belong to this project'}), 403
+
+    species_name = specimen.species_name
+    db.session.delete(specimen)
+    _log(project_id, f'Deleted specimen {species_name}')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'species': species_name})
+
+
+@project_bp.route('/api/structure/<int:structure_id>/delete', methods=['DELETE'])
+@login_required
+def delete_structure(structure_id):
+    """Delete a structure and all its character values."""
+    structure = Structure.query.get_or_404(structure_id)
+    specimen = Specimen.query.get_or_404(structure.specimen_id)
+    project = _get_project_or_404(specimen.project_id)
+
+    stype = structure.structure_type
+    db.session.delete(structure)
+    _log(specimen.project_id, f'Deleted {stype} for {specimen.species_name}')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'structure_type': stype})
+
+
 @project_bp.route('/specimen/<int:specimen_id>/structure/new', methods=['GET', 'POST'])
 @login_required
 def add_structure(specimen_id):

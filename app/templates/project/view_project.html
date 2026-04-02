@@ -77,13 +77,15 @@
                     {% endfor %}
                     <a href="{{ url_for('project.edit_dna', specimen_id=s.id) }}" class="btn btn-sm btn-outline">edit</a>
                 </td>
-                <td>
+                <td style="white-space:nowrap;">
                     {% for st in s.structures %}
                     <a href="{{ url_for('landmarks.landmark_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">landmarks</a>
                     {% if st.landmarks_json %}
                     <a href="{{ url_for('boundaries.boundary_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">boundaries</a>
                     {% endif %}
+                    <button class="btn btn-sm btn-danger" onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name }}')" title="Delete structure">&times;</button>
                     {% endfor %}
+                    <button class="btn btn-sm btn-danger" onclick="deleteSpecimen({{ project.id }}, {{ s.id }}, '{{ s.species_name }}')" title="Delete specimen">Delete</button>
                 </td>
             </tr>
             {% endfor %}
@@ -112,4 +114,28 @@
         <button type="submit" class="btn btn-sm btn-primary">Add</button>
     </form>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function deleteSpecimen(projectId, specimenId, speciesName) {
+    if (!confirm(`Delete specimen "${speciesName}" and all its structures, character values, and DNA data? This cannot be undone.`)) return;
+    fetch(`/api/project/${projectId}/specimen/${specimenId}/delete`, {method: 'DELETE'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') location.reload();
+            else alert(data.error || 'Error deleting specimen');
+        });
+}
+
+function deleteStructure(structureId, structureType, speciesName) {
+    if (!confirm(`Delete ${structureType.replace('_',' ')} for "${speciesName}"? All landmarks, boundaries, and character values for this structure will be lost.`)) return;
+    fetch(`/api/structure/${structureId}/delete`, {method: 'DELETE'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') location.reload();
+            else alert(data.error || 'Error deleting structure');
+        });
+}
+</script>
 {% endblock %}

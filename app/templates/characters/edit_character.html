@@ -3,7 +3,11 @@
 {% block content %}
 <h1>Edit Character {{ char.code }}: {{ char.name }}</h1>
 
-<div class="card" style="max-width:800px;">
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; align-items:start;">
+
+<!-- LEFT: Edit form -->
+<div>
+<div class="card">
     <form method="POST">
         <div style="display:grid; grid-template-columns: 1fr 1fr; gap:1rem;">
             <div class="form-group">
@@ -42,18 +46,26 @@
 
         <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
             <legend style="font-weight:600;">States</legend>
+            <div style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; align-items:center; font-size:0.8rem; color:var(--gray-500); margin-bottom:0.3rem;">
+                <span></span><span>Code</span><span>Name</span><span>Description</span><span>Thresholds</span><span></span>
+            </div>
             <div id="statesContainer">
                 {% for s in (char.states_json or []) %}
-                <div style="display:grid; grid-template-columns: 60px 1fr 2fr; gap:0.5rem; margin-bottom:0.5rem;">
-                    <input type="text" name="state_code_{{ loop.index0 }}" value="{{ s.code }}">
-                    <input type="text" name="state_name_{{ loop.index0 }}" value="{{ s.name }}">
-                    <input type="text" name="state_desc_{{ loop.index0 }}" value="{{ s.get('description', '') }}">
-                    <div></div>
+                <div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+                    <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
+                    <input type="text" data-field="code" value="{{ s.code }}">
+                    <input type="text" data-field="name" value="{{ s.name }}">
+                    <input type="text" data-field="desc" value="{{ s.get('description', '') }}">
                     <div style="display:flex; gap:0.3rem;">
-                        <input type="number" name="state_threshold_min_{{ loop.index0 }}"
-                            value="{{ s.threshold_min if s.threshold_min is not none else '' }}" placeholder="Min" step="any" style="width:100px;">
-                        <input type="number" name="state_threshold_max_{{ loop.index0 }}"
-                            value="{{ s.threshold_max if s.threshold_max is not none else '' }}" placeholder="Max" step="any" style="width:100px;">
+                        <input type="number" data-field="threshold_min"
+                            value="{{ s.threshold_min if s.threshold_min is not none else '' }}" placeholder="Min" step="any" style="width:80px;">
+                        <input type="number" data-field="threshold_max"
+                            value="{{ s.threshold_max if s.threshold_max is not none else '' }}" placeholder="Max" step="any" style="width:80px;">
+                    </div>
+                    <div style="display:flex; gap:0.2rem;">
+                        <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,-1)" title="Move up" style="padding:0.1rem 0.3rem;">&uarr;</button>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,1)" title="Move down" style="padding:0.1rem 0.3rem;">&darr;</button>
+                        <button type="button" class="btn btn-sm" onclick="removeState(this)" title="Delete state" style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;">&times;</button>
                     </div>
                 </div>
                 {% endfor %}
@@ -83,7 +95,7 @@
 </div>
 
 {% if char.history_json %}
-<div class="card" style="max-width:800px; margin-top:1rem;">
+<div class="card" style="margin-top:1rem;">
     <h3>History</h3>
     <ul style="font-size:0.85rem;">
         {% for h in char.history_json %}
@@ -92,27 +104,167 @@
     </ul>
 </div>
 {% endif %}
+</div>
+
+<!-- RIGHT: Reference panel with specimens -->
+<div>
+<div class="card" style="position:sticky; top:1rem;">
+    <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem; flex-wrap:wrap;">
+        <h3 style="margin:0;">Specimens ({{ entries|length }})</h3>
+        <select id="refStructSelector" onchange="refreshRefPanel()" style="font-size:0.8rem; padding:0.2rem 0.4rem;">
+            <option value="{{ char.structure_type }}">{{ char.structure_type.replace('_', ' ').title() }}</option>
+            {% for st in available_types %}
+            {% if st != char.structure_type %}
+            <option value="{{ st }}">{{ st.replace('_', ' ').title() }}</option>
+            {% endif %}
+            {% endfor %}
+        </select>
+        <button id="refViewToggle" class="btn btn-sm btn-outline" onclick="toggleRefView()" style="font-size:0.75rem;">Show Images</button>
+    </div>
+    <div id="refLegend" style="margin-bottom:0.5rem; font-size:0.75rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+        {% for p in parts %}
+        <span><span style="display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:2px; vertical-align:middle; background:{{ ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'][loop.index0 % 8] }};"></span>{{ p }}</span>
+        {% endfor %}
+    </div>
+    <div id="refGrid" style="display:grid; grid-template-columns:repeat(3, 1fr); gap:0.5rem; max-height:70vh; overflow-y:auto;">
+        {% for e in entries %}
+        <div class="ref-item" data-idx="{{ loop.index0 }}" style="text-align:center; font-size:0.75rem;">
+            <div class="ref-visual" id="ref_{{ loop.index0 }}" style="cursor:zoom-in;" onclick="openRefLightbox({{ loop.index0 }})"></div>
+            <div style="font-style:italic; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ e.species }}">{{ e.species }}</div>
+            <div>
+                <span class="state-badge" style="font-size:0.7rem; padding:0.1rem 0.4rem; background:
+                    {% if e.state == '-' %}var(--gray-300)
+                    {% elif e.state == '?' %}white; border:1px solid var(--gray-300)
+                    {% else %}var(--primary){% endif %}; color:
+                    {% if e.state == '?' %}var(--gray-700){% else %}white{% endif %};">
+                    {{ e.state }}
+                </span>
+                {% if e.raw_value is not none %}
+                <span style="color:var(--gray-500);">{{ '%.2f'|format(e.raw_value) }}</span>
+                {% endif %}
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+</div>
+
+</div>
+
+<!-- Lightbox -->
+<div class="modal-overlay" id="refLightbox" onclick="if(event.target===this)this.classList.remove('active')">
+    <div class="lightbox-content">
+        <button class="lightbox-close" onclick="document.getElementById('refLightbox').classList.remove('active')">&times;</button>
+        <div id="refLightboxBody"></div>
+        <div id="refLightboxSpecies" style="text-align:center; margin-top:0.5rem; font-style:italic;"></div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 let stateCount = {{ (char.states_json or [])|length }};
 let depCount = {{ (char.dependencies_json or [])|length }};
+const PART_COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
+const ALL_PARTS = {{ structure_parts | tojson }};
+const currentType = '{{ char.structure_type }}';
+let refViewMode = 'shapes';
+
+const refEntries = {{ entries | tojson }};
 
 function addState() {
-    const i = stateCount++;
-    const html = `<div style="display:grid; grid-template-columns: 60px 1fr 2fr; gap:0.5rem; margin-bottom:0.5rem;">
-        <input type="text" name="state_code_${i}" placeholder="Code" value="${i}">
-        <input type="text" name="state_name_${i}" placeholder="Name">
-        <input type="text" name="state_desc_${i}" placeholder="Description">
-        <div></div>
+    const html = `<div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+        <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
+        <input type="text" data-field="code" placeholder="Code">
+        <input type="text" data-field="name" placeholder="Name">
+        <input type="text" data-field="desc" placeholder="Description">
         <div style="display:flex; gap:0.3rem;">
-            <input type="number" name="state_threshold_min_${i}" placeholder="Min" step="any" style="width:100px;">
-            <input type="number" name="state_threshold_max_${i}" placeholder="Max" step="any" style="width:100px;">
+            <input type="number" data-field="threshold_min" placeholder="Min" step="any" style="width:80px;">
+            <input type="number" data-field="threshold_max" placeholder="Max" step="any" style="width:80px;">
+        </div>
+        <div style="display:flex; gap:0.2rem;">
+            <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,-1)" title="Move up" style="padding:0.1rem 0.3rem;">&uarr;</button>
+            <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,1)" title="Move down" style="padding:0.1rem 0.3rem;">&darr;</button>
+            <button type="button" class="btn btn-sm" onclick="removeState(this)" title="Delete state" style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;">&times;</button>
         </div>
     </div>`;
     document.getElementById('statesContainer').insertAdjacentHTML('beforeend', html);
+    initDragDrop();
 }
+
+function removeState(btn) {
+    const row = btn.closest('.state-row');
+    if (confirm('Delete this state?')) row.remove();
+}
+
+function moveState(btn, direction) {
+    const row = btn.closest('.state-row');
+    const container = document.getElementById('statesContainer');
+    if (direction === -1 && row.previousElementSibling) {
+        container.insertBefore(row, row.previousElementSibling);
+    } else if (direction === 1 && row.nextElementSibling) {
+        container.insertBefore(row.nextElementSibling, row);
+    }
+}
+
+/* Renumber state fields before form submit so the backend sees state_code_0, state_code_1, etc. */
+function renumberStates() {
+    const rows = document.querySelectorAll('#statesContainer .state-row');
+    rows.forEach((row, i) => {
+        row.querySelectorAll('input[data-field]').forEach(inp => {
+            const field = inp.dataset.field;
+            inp.name = `state_${field}_${i}`;
+        });
+    });
+}
+
+/* Also renumber deps */
+function renumberDeps() {
+    const rows = document.querySelectorAll('#depsContainer > div');
+    rows.forEach((row, i) => {
+        const inputs = row.querySelectorAll('input');
+        if (inputs[0]) inputs[0].name = `dep_char_${i}`;
+        if (inputs[1]) inputs[1].name = `dep_state_${i}`;
+    });
+}
+
+/* Drag-and-drop reordering */
+let dragSrcRow = null;
+
+function initDragDrop() {
+    document.querySelectorAll('#statesContainer .state-row').forEach(row => {
+        row.setAttribute('draggable', 'true');
+        row.addEventListener('dragstart', e => {
+            dragSrcRow = row;
+            row.style.opacity = '0.4';
+            e.dataTransfer.effectAllowed = 'move';
+        });
+        row.addEventListener('dragend', () => { row.style.opacity = '1'; });
+        row.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+        row.addEventListener('drop', e => {
+            e.preventDefault();
+            if (dragSrcRow && dragSrcRow !== row) {
+                const container = document.getElementById('statesContainer');
+                const rows = [...container.children];
+                const fromIdx = rows.indexOf(dragSrcRow);
+                const toIdx = rows.indexOf(row);
+                if (fromIdx < toIdx) {
+                    container.insertBefore(dragSrcRow, row.nextSibling);
+                } else {
+                    container.insertBefore(dragSrcRow, row);
+                }
+            }
+        });
+    });
+}
+
+// Attach renumbering to form submit
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.querySelector('form');
+    form.addEventListener('submit', () => { renumberStates(); renumberDeps(); });
+    initDragDrop();
+});
+
 function addDep() {
     const i = depCount++;
     const html = `<div style="display:flex; gap:0.5rem; margin-bottom:0.3rem; align-items:center;">
@@ -124,5 +276,135 @@ function addDep() {
     </div>`;
     document.getElementById('depsContainer').insertAdjacentHTML('beforeend', html);
 }
+
+/* ── Reference panel drawing ── */
+
+function drawRefShape(canvasId, landmarks, boundaries, partNames, lineWidth) {
+    const canvas = document.getElementById(canvasId);
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const pad = 8;
+    const lw = lineWidth || 1.5;
+    if (!landmarks || landmarks.length < 3) return;
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    landmarks.forEach(p => {
+        minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
+        minY = Math.min(minY, p[1]); maxY = Math.max(maxY, p[1]);
+    });
+    const rangeX = maxX - minX || 1, rangeY = maxY - minY || 1;
+    const scale = Math.min((W - 2*pad) / rangeX, (H - 2*pad) / rangeY);
+    const offX = (W - rangeX * scale) / 2, offY = (H - rangeY * scale) / 2;
+    function tx(p) { return [offX + (p[0] - minX) * scale, offY + (p[1] - minY) * scale]; }
+
+    const partMap = {};
+    if (boundaries && partNames) {
+        partNames.forEach((name, pi) => {
+            (boundaries[name] || []).forEach(idx => { partMap[idx] = pi; });
+        });
+    }
+    ctx.lineWidth = lw;
+    for (let i = 0; i < landmarks.length; i++) {
+        const j = (i + 1) % landmarks.length;
+        const pi = partMap[i];
+        ctx.strokeStyle = pi !== undefined ? PART_COLORS[pi % PART_COLORS.length] : '#999';
+        const [x1,y1] = tx(landmarks[i]), [x2,y2] = tx(landmarks[j]);
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.stroke();
+    }
+}
+
+function refreshRefPanel() {
+    const selectedType = document.getElementById('refStructSelector').value;
+    const partNames = ALL_PARTS[selectedType] || [];
+
+    // Update legend
+    const legend = document.getElementById('refLegend');
+    legend.innerHTML = partNames.map((p, i) =>
+        `<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:2px;vertical-align:middle;background:${PART_COLORS[i%PART_COLORS.length]};"></span>${p}</span>`
+    ).join(' ');
+
+    refEntries.forEach((entry, idx) => {
+        const container = document.getElementById('ref_' + idx);
+        renderRefVisual(entry, idx, container, selectedType, partNames);
+    });
+}
+
+function renderRefVisual(entry, idx, container, selectedType, partNames) {
+    const altData = entry.alt[selectedType];
+    const fallback = entry.alt[currentType];
+
+    if (refViewMode === 'shapes' && altData && altData.landmarks) {
+        container.innerHTML = `<canvas id="refcanvas_${idx}" width="120" height="90" style="width:100%; background:#f8f8f8; border-radius:3px;"></canvas>`;
+        drawRefShape('refcanvas_' + idx, altData.landmarks, altData.boundaries, partNames);
+    } else if (altData && altData.image_url) {
+        container.innerHTML = `<img src="${altData.image_url}" style="width:100%; border-radius:3px;">`;
+    } else if (fallback && fallback.image_url) {
+        container.innerHTML = `<img src="${fallback.image_url}" style="width:100%; border-radius:3px; opacity:0.6;">`;
+    } else if (refViewMode === 'images' && altData && altData.landmarks) {
+        container.innerHTML = `<canvas id="refcanvas_${idx}" width="120" height="90" style="width:100%; background:#f8f8f8; border-radius:3px;"></canvas>`;
+        drawRefShape('refcanvas_' + idx, altData.landmarks, altData.boundaries, partNames);
+    } else {
+        container.innerHTML = `<div style="height:60px;background:var(--gray-200);border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:0.7rem;color:var(--gray-500);">-</div>`;
+    }
+}
+
+function toggleRefView() {
+    refViewMode = (refViewMode === 'shapes') ? 'images' : 'shapes';
+    document.getElementById('refViewToggle').textContent = (refViewMode === 'shapes') ? 'Show Images' : 'Show Shapes';
+    refreshRefPanel();
+}
+
+function openRefLightbox(idx) {
+    const entry = refEntries[idx];
+    const selectedType = document.getElementById('refStructSelector').value;
+    const partNames = ALL_PARTS[selectedType] || [];
+    const altData = entry.alt[selectedType];
+    const fallback = entry.alt[currentType];
+    const body = document.getElementById('refLightboxBody');
+
+    document.getElementById('refLightboxSpecies').textContent = entry.species;
+
+    if (refViewMode === 'images' && altData && altData.image_url) {
+        body.innerHTML = `<img src="${altData.image_url}" style="max-width:100%;max-height:70vh;border-radius:6px;">`;
+    } else if (refViewMode === 'images' && fallback && fallback.image_url) {
+        body.innerHTML = `<img src="${fallback.image_url}" style="max-width:100%;max-height:70vh;border-radius:6px;">`;
+    } else if (altData && altData.landmarks) {
+        body.innerHTML = `<canvas id="ref_lb_canvas" width="600" height="450" style="width:100%;background:#f8f8f8;border-radius:6px;"></canvas>`;
+        drawRefShape('ref_lb_canvas', altData.landmarks, altData.boundaries, partNames, 3);
+    } else if (altData && altData.image_url) {
+        body.innerHTML = `<img src="${altData.image_url}" style="max-width:100%;max-height:70vh;border-radius:6px;">`;
+    } else if (fallback && fallback.image_url) {
+        body.innerHTML = `<img src="${fallback.image_url}" style="max-width:100%;max-height:70vh;border-radius:6px;">`;
+    } else {
+        body.innerHTML = `<div style="height:200px;display:flex;align-items:center;justify-content:center;color:var(--gray-500);">No image</div>`;
+    }
+    document.getElementById('refLightbox').classList.add('active');
+}
+
+// Initial render
+refreshRefPanel();
+
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+        document.getElementById('refLightbox').classList.remove('active');
+    }
+});
 </script>
+
+<style>
+.lightbox-content {
+    background: white; border-radius: 8px; padding: 1.5rem; max-width: 700px; width: 90%;
+    max-height: 90vh; overflow-y: auto; position: relative;
+}
+.lightbox-close {
+    position: absolute; top: 0.5rem; right: 0.75rem; font-size: 1.5rem; background: none;
+    border: none; cursor: pointer; color: var(--gray-500); line-height: 1;
+}
+.lightbox-close:hover { color: var(--gray-900); }
+.state-row[draggable] { transition: opacity 0.2s; }
+.state-row.drag-over { border-top: 2px solid var(--primary); }
+.state-handle:active { cursor: grabbing; }
+</style>
 {% endblock %}

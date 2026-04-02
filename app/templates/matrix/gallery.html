@@ -9,78 +9,108 @@
     {% endif %}
 </p>
 
-{% if parts %}
-<div style="margin-bottom:1rem; font-size:0.8rem; display:flex; gap:1rem; flex-wrap:wrap;">
-    {% for p in parts %}
-    <span><span class="part-dot" data-part="{{ loop.index0 }}"></span> {{ p }}</span>
-    {% endfor %}
+<!-- Structure type selector -->
+<div style="margin-bottom:1rem; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
+    <label style="font-weight:600; font-size:0.85rem;">Show image:</label>
+    <select id="structureSelector" onchange="switchStructureView()" style="font-size:0.85rem; padding:0.25rem 0.5rem;">
+        <option value="{{ char.structure_type }}" selected>{{ char.structure_type.replace('_', ' ').title() }} (current character)</option>
+        {% for st in available_types %}
+        {% if st != char.structure_type %}
+        <option value="{{ st }}">{{ st.replace('_', ' ').title() }}</option>
+        {% endif %}
+        {% endfor %}
+    </select>
+
+    <button id="viewToggleBtn" class="btn btn-sm btn-outline" onclick="toggleViewMode()" title="Switch between landmark shapes and uploaded images">
+        Show Images
+    </button>
+
+    <span id="legendContainer" style="display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.8rem;">
+        {% for p in parts %}
+        <span><span class="part-dot" data-part="{{ loop.index0 }}"></span> {{ p }}</span>
+        {% endfor %}
+    </span>
 </div>
-{% endif %}
 
 <div class="gallery-grid">
     {% for e in entries %}
-    <div class="gallery-item">
-        {% if e.landmarks %}
-        <canvas id="canvas_{{ loop.index0 }}" width="180" height="140" style="width:100%; background:#f8f8f8; border-radius:4px;"></canvas>
-        {% elif e.image_url %}
-        <img src="{{ e.image_url }}" alt="{{ e.specimen.species_name }}">
-        {% else %}
-        <div style="height:100px; background:var(--gray-200); display:flex; align-items:center; justify-content:center; font-size:0.8rem; color:var(--gray-500);">No data</div>
-        {% endif %}
+    <div class="gallery-item" data-idx="{{ loop.index0 }}" data-structure-id="{{ e.structure.id }}">
+        <div class="visual-container" id="visual_{{ loop.index0 }}" onclick="openLightbox({{ loop.index0 }})" style="cursor:zoom-in;">
+        </div>
         <div class="species">{{ e.specimen.species_name }}</div>
-        {% if e.value %}
+
+        <!-- State badge -->
         <div>
             <span class="state-badge" style="background:
-                {% if e.value.state == '-' %}var(--gray-300)
-                {% elif e.value.state == '?' %}white; border:1px solid var(--gray-300)
+                {% if e.value and e.value.state == '-' %}var(--gray-300)
+                {% elif not e.value or e.value.state == '?' %}white; border:1px solid var(--gray-300)
                 {% else %}var(--primary){% endif %}; color:
-                {% if e.value.state == '?' %}var(--gray-700){% else %}white{% endif %};">
-                {{ e.value.state }}
+                {% if not e.value or e.value.state == '?' %}var(--gray-700){% else %}white{% endif %};">
+                {{ e.value.state if e.value and e.value.state is not none else '?' }}
             </span>
-            {% if e.value.raw_value is not none %}
+            {% if e.value and e.value.raw_value is not none %}
             <span style="font-size:0.75rem; color:var(--gray-500);">{{ '%.3f'|format(e.value.raw_value) }}</span>
             {% endif %}
         </div>
 
-        <!-- Quick assign -->
+        <!-- State buttons — always shown -->
         <div class="state-buttons" style="justify-content:center; margin-top:0.3rem;">
             {% for s in (char.states_json or []) %}
-            <button class="state-btn btn-sm {% if e.value.state == s.code %}active{% endif %}"
+            <button class="state-btn btn-sm {% if e.value and e.value.state == s.code %}active{% endif %}"
                 onclick="assignState({{ e.structure.id }}, {{ char.id }}, '{{ s.code }}', this)"
                 title="{{ s.name }}">{{ s.code }}</button>
             {% endfor %}
         </div>
-        {% endif %}
     </div>
     {% endfor %}
+</div>
+
+<!-- Lightbox modal -->
+<div class="modal-overlay" id="lightboxModal" onclick="closeLightbox(event)">
+    <div class="lightbox-content">
+        <button class="lightbox-close" onclick="document.getElementById('lightboxModal').classList.remove('active')">&times;</button>
+        <div id="lightboxBody"></div>
+        <div id="lightboxSpecies" style="text-align:center; margin-top:0.5rem; font-style:italic;"></div>
+        <div id="lightboxStates" style="text-align:center; margin-top:0.5rem;"></div>
+    </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 const projectId = {{ project.id }};
+const charId = {{ char.id }};
 const PART_COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
-const PART_NAMES = {{ parts | tojson }};
+const ALL_PARTS = {{ all_parts | tojson }};
+const currentType = '{{ char.structure_type }}';
+const charStates = {{ char.states_json | tojson }};
+let viewMode = 'shapes'; // 'shapes' or 'images'
 
-/* Landmark shape data passed from server */
-const shapeData = [
+const entryData = [
 {% for e in entries %}
-{% if e.landmarks %}
-{idx: {{ loop.index0 }}, landmarks: {{ e.landmarks | tojson }}, boundaries: {{ e.boundaries | tojson }}},
-{% endif %}
+{
+    idx: {{ loop.index0 }},
+    structureId: {{ e.structure.id }},
+    species: {{ e.specimen.species_name | tojson }},
+    state: {{ (e.value.state if e.value and e.value.state is not none else '?') | tojson }},
+    alt: {{ e.alt_structures | tojson }}
+},
 {% endfor %}
 ];
 
-function drawShape(canvasId, landmarks, boundaries) {
+let activePartNames = {{ parts | tojson }};
+
+function drawShape(canvasId, landmarks, boundaries, partNames, lineWidth) {
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     const W = canvas.width, H = canvas.height;
-    const pad = 12;
+    ctx.clearRect(0, 0, W, H);
+    const pad = 15;
+    const lw = lineWidth || 2;
 
     if (!landmarks || landmarks.length < 3) return;
 
-    // Compute bounding box
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     landmarks.forEach(p => {
         minX = Math.min(minX, p[0]); maxX = Math.max(maxX, p[0]);
@@ -97,16 +127,14 @@ function drawShape(canvasId, landmarks, boundaries) {
         return [offX + (p[0] - minX) * scale, offY + (p[1] - minY) * scale];
     }
 
-    // Build index-to-part mapping using PART_NAMES order (matches legend)
     const partMap = {};
-    if (boundaries) {
-        PART_NAMES.forEach((name, pi) => {
+    if (boundaries && partNames) {
+        partNames.forEach((name, pi) => {
             (boundaries[name] || []).forEach(idx => { partMap[idx] = pi; });
         });
     }
 
-    // Draw outline segments colored by part
-    ctx.lineWidth = 2;
+    ctx.lineWidth = lw;
     for (let i = 0; i < landmarks.length; i++) {
         const j = (i + 1) % landmarks.length;
         const partIdx = partMap[i];
@@ -119,41 +147,203 @@ function drawShape(canvasId, landmarks, boundaries) {
         ctx.stroke();
     }
 
-    // Draw dots
+    const dotR = lw > 2 ? 3 : 1.5;
     landmarks.forEach((p, i) => {
         const [x, y] = tx(p);
         const partIdx = partMap[i];
         ctx.fillStyle = partIdx !== undefined ? PART_COLORS[partIdx % PART_COLORS.length] : '#999';
         ctx.beginPath();
-        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+        ctx.arc(x, y, dotR, 0, Math.PI * 2);
         ctx.fill();
     });
 }
 
-// Render all shapes
-shapeData.forEach(d => {
-    drawShape('canvas_' + d.idx, d.landmarks, d.boundaries);
-});
+/* ── Toggle shapes / images ── */
+
+function toggleViewMode() {
+    viewMode = (viewMode === 'shapes') ? 'images' : 'shapes';
+    document.getElementById('viewToggleBtn').textContent = (viewMode === 'shapes') ? 'Show Images' : 'Show Shapes';
+    refreshAllVisuals();
+}
+
+function renderVisual(entry, container) {
+    const selectedType = document.getElementById('structureSelector').value;
+    const partNames = ALL_PARTS[selectedType] || [];
+    const altData = entry.alt[selectedType];
+    const fallback = entry.alt[currentType];
+
+    if (viewMode === 'shapes' && altData && altData.landmarks) {
+        container.innerHTML = `<canvas id="canvas_${entry.idx}" width="180" height="140" style="width:100%; background:#f8f8f8; border-radius:4px;"></canvas>`;
+        drawShape('canvas_' + entry.idx, altData.landmarks, altData.boundaries, partNames);
+    } else if (altData && altData.image_url) {
+        container.innerHTML = `<img src="${altData.image_url}" alt="" style="max-width:100%;">`;
+    } else if (fallback && fallback.image_url) {
+        container.innerHTML = `<img src="${fallback.image_url}" alt="" style="max-width:100%; opacity:0.6;" title="Showing ${currentType.replace('_',' ')} image">`;
+    } else if (viewMode === 'images' && altData && altData.landmarks) {
+        // No image but landmarks exist — fall back to shape
+        container.innerHTML = `<canvas id="canvas_${entry.idx}" width="180" height="140" style="width:100%; background:#f8f8f8; border-radius:4px;"></canvas>`;
+        drawShape('canvas_' + entry.idx, altData.landmarks, altData.boundaries, partNames);
+    } else {
+        container.innerHTML = `<div class="no-data-placeholder">No image</div>`;
+    }
+}
+
+function refreshAllVisuals() {
+    entryData.forEach(entry => {
+        const container = document.getElementById('visual_' + entry.idx);
+        renderVisual(entry, container);
+    });
+}
+
+/* ── Lightbox ── */
+let lightboxIdx = null;
+
+function openLightbox(idx) {
+    const entry = entryData[idx];
+    lightboxIdx = idx;
+    const selectedType = document.getElementById('structureSelector').value;
+    const partNames = ALL_PARTS[selectedType] || [];
+    const altData = entry.alt[selectedType];
+    const fallback = entry.alt[currentType];
+
+    const body = document.getElementById('lightboxBody');
+    const species = document.getElementById('lightboxSpecies');
+    const statesDiv = document.getElementById('lightboxStates');
+
+    species.textContent = entry.species;
+
+    // Lightbox always prefers image when in image mode
+    if (viewMode === 'images' && altData && altData.image_url) {
+        body.innerHTML = `<img src="${altData.image_url}" style="max-width:100%; max-height:70vh; border-radius:6px;">`;
+    } else if (viewMode === 'images' && fallback && fallback.image_url) {
+        body.innerHTML = `<img src="${fallback.image_url}" style="max-width:100%; max-height:70vh; border-radius:6px;">`;
+    } else if (altData && altData.landmarks) {
+        body.innerHTML = `<canvas id="lightbox_canvas" width="600" height="450" style="width:100%; background:#f8f8f8; border-radius:6px;"></canvas>`;
+        drawShape('lightbox_canvas', altData.landmarks, altData.boundaries, partNames, 3);
+    } else if (altData && altData.image_url) {
+        body.innerHTML = `<img src="${altData.image_url}" style="max-width:100%; max-height:70vh; border-radius:6px;">`;
+    } else if (fallback && fallback.image_url) {
+        body.innerHTML = `<img src="${fallback.image_url}" style="max-width:100%; max-height:70vh; border-radius:6px;">`;
+    } else {
+        body.innerHTML = `<div class="no-data-placeholder" style="height:200px;">No image available</div>`;
+    }
+
+    // State buttons in lightbox
+    let btnsHtml = '';
+    (charStates || []).forEach(s => {
+        const active = entry.state === s.code ? 'active' : '';
+        btnsHtml += `<button class="state-btn ${active}" onclick="lightboxAssign('${s.code}', this)" title="${s.name}">${s.code}: ${s.name}</button> `;
+    });
+    statesDiv.innerHTML = `<div class="state-buttons" style="justify-content:center; flex-wrap:wrap;">${btnsHtml}</div>`;
+
+    document.getElementById('lightboxModal').classList.add('active');
+}
+
+function closeLightbox(event) {
+    if (event.target === document.getElementById('lightboxModal')) {
+        document.getElementById('lightboxModal').classList.remove('active');
+    }
+}
+
+function lightboxAssign(state, btn) {
+    const entry = entryData[lightboxIdx];
+    fetch(`/api/project/${projectId}/matrix/assign`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({structure_id: entry.structureId, character_id: charId, state: state})
+    }).then(r => r.json()).then(data => {
+        if (data.status !== 'ok') { alert(data.error || 'Error saving'); return; }
+        entry.state = data.state;
+
+        // Update lightbox buttons
+        btn.closest('.state-buttons').querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+
+        // Update gallery card
+        const card = document.querySelector(`.gallery-item[data-idx="${lightboxIdx}"]`);
+        if (card) {
+            const badge = card.querySelector('.state-badge');
+            if (badge) {
+                badge.textContent = data.state;
+                badge.style.background = (data.state === '-') ? 'var(--gray-300)' :
+                    (data.state === '?') ? 'white' : 'var(--primary)';
+                badge.style.color = (data.state === '?') ? 'var(--gray-700)' : 'white';
+                badge.style.border = (data.state === '?') ? '1px solid var(--gray-300)' : 'none';
+            }
+            const cardBtns = card.querySelectorAll('.state-buttons .state-btn');
+            cardBtns.forEach(b => {
+                b.classList.toggle('active', b.textContent.trim() === data.state);
+            });
+        }
+    });
+}
+
+/* ── Structure view switching ── */
+function switchStructureView() {
+    const selectedType = document.getElementById('structureSelector').value;
+    const partNames = ALL_PARTS[selectedType] || [];
+    activePartNames = partNames;
+
+    const legend = document.getElementById('legendContainer');
+    legend.innerHTML = partNames.map((p, i) =>
+        `<span><span class="part-dot" style="background:${PART_COLORS[i % PART_COLORS.length]}"></span> ${p}</span>`
+    ).join('');
+
+    refreshAllVisuals();
+}
+
+// Initial render
+refreshAllVisuals();
 
 function assignState(structureId, characterId, state, btn) {
     fetch(`/api/project/${projectId}/matrix/assign`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({structure_id: structureId, character_id: characterId, state: state})
-    }).then(r => r.json()).then(() => {
+    }).then(r => r.json()).then(data => {
+        if (data.status !== 'ok') { alert(data.error || 'Error saving'); return; }
+        // Update entryData
+        const card = btn.closest('.gallery-item');
+        const idx = parseInt(card.dataset.idx);
+        entryData[idx].state = data.state;
+
         const container = btn.parentElement;
         container.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
+        const badge = card.querySelector('.state-badge');
+        if (badge) {
+            badge.textContent = data.state;
+            badge.style.background = (data.state === '-') ? 'var(--gray-300)' :
+                (data.state === '?') ? 'white' : 'var(--primary)';
+            badge.style.color = (data.state === '?') ? 'var(--gray-700)' : 'white';
+            badge.style.border = (data.state === '?') ? '1px solid var(--gray-300)' : 'none';
+        }
     });
 }
+
+// Keyboard: Escape closes lightbox
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') document.getElementById('lightboxModal').classList.remove('active');
+});
 </script>
 
 <style>
+.no-data-placeholder {
+    height: 100px; background: var(--gray-200); display: flex; align-items: center;
+    justify-content: center; font-size: 0.8rem; color: var(--gray-500); border-radius: 4px;
+}
 .part-dot {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 3px; vertical-align: middle;
 }
-{% for p in parts %}
-.part-dot[data-part="{{ loop.index0 }}"] { background: {{ ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'][loop.index0 % 8] }}; }
-{% endfor %}
+.visual-container:hover { opacity: 0.85; }
+.lightbox-content {
+    background: white; border-radius: 8px; padding: 1.5rem; max-width: 700px; width: 90%;
+    max-height: 90vh; overflow-y: auto; position: relative;
+}
+.lightbox-close {
+    position: absolute; top: 0.5rem; right: 0.75rem; font-size: 1.5rem; background: none;
+    border: none; cursor: pointer; color: var(--gray-500); line-height: 1;
+}
+.lightbox-close:hover { color: var(--gray-900); }
 </style>
 {% endblock %}
