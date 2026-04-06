@@ -21,21 +21,22 @@
 
     <!-- Tree upload -->
     <form id="treeForm" style="margin-left:auto; display:flex; gap:0.3rem; align-items:center;">
-        <input type="file" id="treeFile" accept=".nwk,.newick,.tre,.tree" style="width:200px; font-size:0.8rem;">
+        <input type="file" id="treeFile" accept=".nwk,.newick,.tre,.tree,.nex,.nexus,.txt" style="width:200px; font-size:0.8rem;">
         <button type="button" class="btn btn-sm btn-outline" onclick="uploadTree()">Upload Tree</button>
+        <span id="treeUploadMsg" style="font-size:0.75rem; color:var(--gray-500);"></span>
     </form>
 </div>
 
-<div class="tree-matrix-container">
-    <div class="tree-panel" id="treePanel" style="display:none;">
+<div class="tree-matrix-container" id="treeMatrixContainer">
+    <div class="tree-panel" id="treePanel" style="{% if not has_tree %}display:none;{% endif %}">
         <svg id="treeSvg"></svg>
     </div>
 
-    <div class="matrix-container">
-        <table class="matrix-table">
+    <div class="matrix-container" id="matrixContainer">
+        <table class="matrix-table" id="matrixTable">
             <thead>
                 <tr>
-                    <th style="writing-mode:horizontal-tb; text-align:left;">Species</th>
+                    <th style="writing-mode:horizontal-tb; text-align:left; vertical-align:bottom;">Species</th>
                     {% for c in characters %}
                     <th title="{{ c.name }} ({{ c.structure_type }})">
                         <a href="{{ url_for('matrix.gallery_view', project_id=project.id, char_id=c.id) }}"
@@ -63,8 +64,6 @@
                         title="{{ c.name }}">
                         {{ val.state if val and val.state is not none else '?' }}
                     </td>
-
-
                     {% endfor %}
                 </tr>
                 {% endfor %}
@@ -99,6 +98,9 @@
 <script>
 const projectId = {{ project.id }};
 let currentValueId = null;
+
+// Species names in matrix order (server-side order = tree leaf order when tree present)
+const matrixSpecies = {{ matrix_data | map(attribute='specimen.species_name') | list | tojson }};
 
 function showDetail(valueId) {
     currentValueId = valueId;
@@ -155,81 +157,43 @@ function submitOverride() {
 function uploadTree() {
     const file = document.getElementById('treeFile').files[0];
     if (!file) return;
+    const msg = document.getElementById('treeUploadMsg');
+    msg.textContent = 'Uploading…';
+    msg.style.color = '';
     const formData = new FormData();
     formData.append('tree_file', file);
     fetch(`/project/${projectId}/tree/upload`, {method: 'POST', body: formData})
-        .then(r => r.json()).then(() => loadTree());
+        .then(r => r.json())
+        .then(data => {
+            if (data.has_tree) {
+                msg.textContent = 'Uploaded. Reloading…';
+                location.reload();
+            } else {
+                msg.style.color = 'red';
+                msg.textContent = data.message || 'No tree found in file.';
+            }
+        })
+        .catch(err => { msg.style.color = 'red'; msg.textContent = 'Upload failed: ' + err; });
 }
 
 function loadTree() {
+    console.log('[Tree] loadTree() called');
     fetch(`/api/project/${projectId}/tree`).then(r => r.json()).then(data => {
-        if (!data.newick) return;
+        console.log('[Tree] API response, newick length:', data.newick ? data.newick.length : 0);
+        if (!data.newick) { console.log('[Tree] No newick, stopping'); return; }
         document.getElementById('treePanel').style.display = 'block';
-        // Simple Newick rendering with D3
-        renderNewickTree(data.newick);
-    });
+        requestAnimationFrame(() => requestAnimationFrame(() => renderNewickTree(data.newick)));
+    }).catch(e => console.error('[Tree] fetch error:', e));
 }
 
-function renderNewickTree(newick) {
-    // Basic Newick parser and renderer
-    const svg = d3.select('#treeSvg');
-    svg.selectAll('*').remove();
-    svg.attr('width', 350).attr('height', Math.max(400, {{ matrix_data|length }} * 20));
-
-    // Parse Newick (simplified)
-    const tree = parseNewick(newick);
-    if (!tree) return;
-
-    const leaves = getLeaves(tree);
-    const maxDepth = getMaxDepth(tree);
-    const h = leaves.length * 20;
-    svg.attr('height', h + 40);
-
-    let leafIdx = 0;
-    function layout(node, depth) {
-        if (!node.children || node.children.length === 0) {
-            node.x = depth;
-            node.y = leafIdx++;
-            return;
-        }
-        node.children.forEach(c => layout(c, depth + (c.length || 1)));
-        node.x = depth;
-        node.y = d3.mean(node.children, c => c.y);
-    }
-    layout(tree, 0);
-
-    const xScale = d3.scaleLinear().domain([0, maxDepth]).range([10, 250]);
-    const yScale = d3.scaleLinear().domain([0, leaves.length - 1]).range([20, h + 20]);
-
-    function drawNode(node) {
-        if (node.children) {
-            node.children.forEach(c => {
-                svg.append('line')
-                    .attr('x1', xScale(node.x)).attr('y1', yScale(node.y))
-                    .attr('x2', xScale(node.x)).attr('y2', yScale(c.y))
-                    .attr('stroke', '#666').attr('stroke-width', 1);
-                svg.append('line')
-                    .attr('x1', xScale(node.x)).attr('y1', yScale(c.y))
-                    .attr('x2', xScale(c.x)).attr('y2', yScale(c.y))
-                    .attr('stroke', '#666').attr('stroke-width', 1);
-                drawNode(c);
-            });
-        } else {
-            svg.append('text')
-                .attr('x', xScale(node.x) + 5).attr('y', yScale(node.y) + 4)
-                .text(node.name || '').attr('font-size', '10px').attr('font-style', 'italic');
-        }
-    }
-    drawNode(tree);
-}
-
+// ── Newick parser ──────────────────────────────────────────────────────────
 function parseNewick(s) {
     s = s.trim().replace(/;$/, '');
     let i = 0;
     function parse() {
         const node = {children: []};
         if (s[i] === '(') {
-            i++; // skip (
+            i++;
             node.children.push(parse());
             while (s[i] === ',') { i++; node.children.push(parse()); }
             i++; // skip )
@@ -238,7 +202,7 @@ function parseNewick(s) {
         while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ':' && s[i] !== ';') {
             name += s[i++];
         }
-        node.name = name.trim();
+        node.name = name.trim().replace(/^['"]|['"]$/g, '').replace(/_/g, ' ');
         if (s[i] === ':') {
             i++;
             let len = '';
@@ -251,16 +215,155 @@ function parseNewick(s) {
     }
     try { return parse(); } catch(e) { return null; }
 }
+
 function getLeaves(node) {
     if (!node.children || node.children.length === 0) return [node];
     return node.children.flatMap(getLeaves);
 }
-function getMaxDepth(node, depth = 0) {
-    if (!node.children || node.children.length === 0) return depth + (node.length || 1);
-    return Math.max(...node.children.map(c => getMaxDepth(c, depth + (c.length || 1))));
+
+// Assign x (cumulative depth) to every node, then maxDepth = max leaf.x
+function assignDepths(node, d) {
+    node.x = d || 0;
+    (node.children || []).forEach(c => assignDepths(c, node.x + (c.length || 1)));
 }
 
-// Auto-load tree if exists
+// ── Prune tree to only leaves present in matrixSpecies ────────────────────
+function normName(s) {
+    s = (s || '').trim();
+    // Strip surrounding quotes (Newick quoted labels)
+    s = s.replace(/^['"]|['"]$/g, '');
+    // Skip FigTree annotation artifacts
+    if (s.includes('!') || s.includes('=')) return '\x00';
+    // Handle 'accession|species_name' format — take part after last '|'
+    if (s.includes('|')) s = s.split('|').pop();
+    // Strip leading _R_ (FigTree rotation flag prefix)
+    s = s.replace(/^_R_/i, '');
+    return s.toLowerCase().replace(/_/g, ' ').trim();
+}
+
+// Build a set of normalized species names in the matrix
+const matrixNormSet = new Set(matrixSpecies.map(normName));
+
+function pruneTree(node) {
+    if (!node.children || node.children.length === 0) {
+        // Leaf: keep only if present in matrix
+        return matrixNormSet.has(normName(node.name)) ? node : null;
+    }
+    const kept = node.children.map(pruneTree).filter(c => c !== null);
+    if (kept.length === 0) return null;
+    if (kept.length === 1) {
+        // Collapse single-child internal node — absorb branch length
+        const child = kept[0];
+        child.length = (child.length || 0) + (node.length || 0);
+        return child;
+    }
+    node.children = kept;
+    return node;
+}
+
+// ── Main tree renderer ─────────────────────────────────────────────────────
+function renderNewickTree(newick) {
+    console.log('[Tree] renderNewickTree called, newick length:', newick.length);
+    const rawTree = parseNewick(newick);
+    console.log('[Tree] parseNewick result:', rawTree ? 'ok' : 'NULL');
+    if (!rawTree) return;
+
+    console.log('[Tree] matrixSpecies count:', matrixSpecies.length, 'matrixNormSet size:', matrixNormSet.size);
+    console.log('[Tree] sample matrixNormSet:', [...matrixNormSet].slice(0,3));
+
+    const tree = pruneTree(JSON.parse(JSON.stringify(rawTree)));
+    console.log('[Tree] pruneTree result:', tree ? 'ok' : 'NULL - no matching taxa');
+    if (!tree) return;
+
+    const leaves = getLeaves(tree);
+    console.log('[Tree] leaves after prune:', leaves.length, 'sample:', leaves.slice(0,3).map(l=>l.name));
+    const rows = Array.from(document.querySelectorAll('#matrixTable tbody tr'));
+    console.log('[Tree] matrix rows:', rows.length);
+    if (!rows.length) return;
+
+    const svgEl = document.getElementById('treeSvg');
+    const treePanel = document.getElementById('treePanel');
+    treePanel.style.display = 'block';
+
+    // Measure positions relative to SVG element top
+    const svgRect = svgEl.getBoundingClientRect();
+
+    // Assign x (cumulative branch length) to every node
+    assignDepths(tree, 0);
+    const maxDepth = Math.max(...leaves.map(l => l.x)) || 1;
+
+    // Assign y to each leaf from its corresponding matrix row centre
+    // Server ordered matrix_data by tree leaf order, so leaf names map directly to rows
+    leaves.forEach((leaf, i) => {
+        const normLeaf = normName(leaf.name);
+        const rowIdx = matrixSpecies.findIndex(n => normName(n) === normLeaf);
+        const ri = rowIdx >= 0 ? rowIdx : i;  // fall back to positional index
+        if (ri < rows.length) {
+            const r = rows[ri].getBoundingClientRect();
+            leaf.leafY = (r.top + r.bottom) / 2 - svgRect.top;
+        } else {
+            leaf.leafY = i * 28 + 14;
+        }
+    });
+
+    // Propagate y upward to internal nodes (mean of children)
+    function assignY(node) {
+        if (!node.children || node.children.length === 0) return;
+        node.children.forEach(assignY);
+        node.leafY = node.children.reduce((s, c) => s + c.leafY, 0) / node.children.length;
+    }
+    assignY(tree);
+
+    // SVG sizing
+    const SVG_W = 280;
+    const lastRow = rows[Math.min(leaves.length, rows.length) - 1].getBoundingClientRect();
+    const svgH = Math.max(lastRow.bottom - svgRect.top + 10, 100);
+
+    svgEl.setAttribute('width', SVG_W);
+    svgEl.setAttribute('height', svgH);
+    svgEl.style.display = 'block';
+
+    // x-scale: root at left, tips leave a small gap at right for the leader line
+    const X_TIP = SVG_W - 8;   // where leaf branches end
+    const X_ROOT = 12;
+    const xScale = v => X_ROOT + (v / maxDepth) * (X_TIP - X_ROOT - 20);
+
+    // Clear and draw
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+
+    function line(x1, y1, x2, y2, stroke, sw, dash) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        el.setAttribute('x1', x1.toFixed(1)); el.setAttribute('y1', y1.toFixed(1));
+        el.setAttribute('x2', x2.toFixed(1)); el.setAttribute('y2', y2.toFixed(1));
+        el.setAttribute('stroke', stroke || '#555');
+        el.setAttribute('stroke-width', sw || 1.2);
+        if (dash) el.setAttribute('stroke-dasharray', dash);
+        svgEl.appendChild(el);
+    }
+
+    function drawNode(node) {
+        const nx = xScale(node.x);
+        if (node.children && node.children.length) {
+            const yTop = Math.min(...node.children.map(c => c.leafY));
+            const yBot = Math.max(...node.children.map(c => c.leafY));
+            // Vertical clade bar
+            line(nx, yTop, nx, yBot, '#555', 1.2);
+            node.children.forEach(c => {
+                // Horizontal branch
+                line(nx, c.leafY, xScale(c.x), c.leafY, '#555', 1.2);
+                drawNode(c);
+            });
+        } else {
+            // Leaf: dotted leader line to right edge (visually connects to species name in matrix)
+            line(nx, node.leafY, X_TIP, node.leafY, '#bbb', 0.8, '2,4');
+        }
+    }
+    drawNode(tree);
+}
+
+// Auto-load tree if one exists
+{% if has_tree %}
 loadTree();
+{% endif %}
 </script>
 {% endblock %}

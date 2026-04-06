@@ -249,7 +249,8 @@ def character_distribution(project_id, char_id):
         if parts_coords:
             val = compute_geometric_value(
                 char.geometric_operation, parts_coords,
-                np.array(struct.landmarks_json), char.formula
+                np.array(struct.landmarks_json), char.formula,
+                boundary=struct.boundary_json
             )
             raw_values.append(val)
             labels.append(specimen.species_name)
@@ -394,15 +395,13 @@ def _build_measurement_explanation(char):
             'bend — useful for detecting abrupt turns or hooks.'
         ),
         'junction_angle': (
-            'Measures the <em>junction angle</em> between {parts}. The direction vector at the end of the first '
-            'part and the direction vector at the start of the second part are computed (averaged over 5 points). '
-            'The angle between these two vectors (0°–180°) indicates how sharply the parts meet — '
-            'small angles mean they continue in the same direction; large angles mean an abrupt change.'
+            'Measures the <em>angle at the junction</em> between {parts} — '
+            'the change in direction where one part ends and the next begins, '
+            'using direction vectors averaged over the terminal landmarks of each part.'
         ),
         'direction_angle': (
-            'Measures the <em>direction angle</em> between {parts}. The overall direction of each part is '
-            'computed from its endpoint vectors. The angle between them (0°–180°) captures orientation '
-            'differences — 0° means parallel, 90° means perpendicular, 180° means opposite directions.'
+            'Measures the <em>direction angle</em> between {parts} — '
+            'the angle between the average direction vectors at the ends of the two parts (0°–180°).'
         ),
         'relative_position': (
             'Measures the <em>relative vertical position</em> between {parts}. The vertical displacement between '
@@ -419,13 +418,50 @@ def _build_measurement_explanation(char):
             'of the chord with the midpoint displacement.'
         ),
         'angle_between_parts': (
-            'Measures the <em>angle at the fork</em> between {parts}. The direction vectors at the start '
-            'of each part are compared. The angle (0°–180°) indicates how widely the parts diverge from '
-            'their common origin.'
+            'Measures the <em>angle between {parts}</em> using their direction vectors at the start of each part (0°–180°).'
+        ),
+        'fork_angle': (
+            'Measures the <em>deviation angle</em> between {parts} — how much the two parts depart '
+            'from a straight continuation of each other (0° = perfectly aligned, larger values = wider fork). '
+            'The proximal half of each part\'s central axis is used to fit a midline; '
+            'the midlines are extended to their intersection, and the deviation is measured there.'
         ),
     }
 
-    method = _OP_EXPLANATIONS.get(op, 'Custom geometric computation on {parts}.').format(parts=part_str)
+    # Character-specific overrides (replaces the generic operation description)
+    _CHAR_EXPLANATIONS = {
+        'A02': (
+            'Measures the <em>curvature of the point</em> — how sharply the point departs from the direction '
+            'of the shaft. '
+            '<br><br>'
+            'A best-fit midline is computed for the <strong>middle portion</strong> of the shaft central axis '
+            '(the straight-running mid-section, avoiding the curved ends near the root and point junction) '
+            'and for the proximal half of the point central axis. The two midlines are extended to their intersection '
+            'and the deviation angle is measured there '
+            '(0° = point continues shaft in a straight line; larger values = sharper bend).'
+            '<br><br>'
+            '<img src="/static/diagrams/point_curvature_diagram.svg" alt="Point curvature angle diagram" '
+            'style="max-width:320px; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
+        ),
+        'A09': (
+            'Measures the <em>angle between the Shaft and SuperficialRoot</em> — specifically, how much the '
+            'superficial root departs from a straight continuation of the shaft axis. '
+            '<br><br>'
+            'A best-fit midline is computed for the proximal half of each part\'s central axis. '
+            'The two midlines are extended to their intersection point, and the deviation angle between them '
+            'is measured there (0° = the root continues the shaft in a straight line; '
+            'larger values = the root departs more sharply from the shaft).'
+            '<br><br>'
+            '<img src="/static/diagrams/fork_angle_diagram.svg" alt="Shaft–superficial root deviation angle diagram" '
+            'style="max-width:480px; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
+        ),
+    }
+
+    char_explanation = _CHAR_EXPLANATIONS.get(char.code)
+    if char_explanation:
+        method = char_explanation.format(parts=part_str)
+    else:
+        method = _OP_EXPLANATIONS.get(op, 'Custom geometric computation on {parts}.').format(parts=part_str)
 
     lines = [f'<strong>Measurement method:</strong> {method}']
 

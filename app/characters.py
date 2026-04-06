@@ -3,8 +3,8 @@ import numpy as np
 from app import db
 from app.geometry import (
     arc_length, chord_length, sinuosity, mean_curvature, max_curvature,
-    junction_angle, direction_vector, angle_between_vectors,
-    relative_vertical_position, circularity,
+    junction_angle, fork_angle, direction_vector, angle_between_vectors,
+    relative_vertical_position, circularity, point_curvature_angle,
 )
 
 
@@ -63,6 +63,16 @@ GEOMETRIC_OPERATIONS = {
         'formula_template': 'angle(direction({part_a}), direction({part_b}))',
         'requires_parts': 2,
     },
+    'fork_angle': {
+        'label': 'Angle at fork where two parts diverge',
+        'formula_template': 'fork_angle({part_a}, {part_b})',
+        'requires_parts': 2,
+    },
+    'point_curvature': {
+        'label': 'Point curvature (middle shaft vs point midline)',
+        'formula_template': 'point_curvature_angle(Point, Shaft)',
+        'requires_parts': 2,
+    },
     'custom': {
         'label': 'Custom formula',
         'formula_template': '',
@@ -89,7 +99,8 @@ def extract_part_coords(landmarks: list, boundary: dict, part_name: str) -> np.n
 
 
 def compute_geometric_value(operation: str, parts_coords: dict,
-                            all_landmarks: np.ndarray, formula: str = None) -> float:
+                            all_landmarks: np.ndarray, formula: str = None,
+                            boundary: dict = None) -> float:
     """Compute a raw geometric value given an operation and part coordinates.
 
     Args:
@@ -97,6 +108,7 @@ def compute_geometric_value(operation: str, parts_coords: dict,
         parts_coords: dict mapping part name -> np.ndarray of coords
         all_landmarks: full landmark array
         formula: custom formula string (for 'custom' operation)
+        boundary: dict mapping part name -> list of landmark indices (for fork_angle)
     """
     part_names = list(parts_coords.keys())
 
@@ -114,13 +126,13 @@ def compute_geometric_value(operation: str, parts_coords: dict,
     elif operation == 'max_curvature' and len(part_names) >= 1:
         return max_curvature(parts_coords[part_names[0]])
 
-    elif operation == 'junction_angle' and len(part_names) >= 2:
+    elif operation in ('junction_angle', 'direction_angle') and len(part_names) >= 2:
+        # All angle operations use fork_angle (half-segment midlines) when boundary available
+        if boundary is not None:
+            return 180.0 - fork_angle(all_landmarks, boundary,
+                                      part_names[0], part_names[1])
+        # Fallback for legacy data without boundary
         return junction_angle(parts_coords[part_names[0]], parts_coords[part_names[1]])
-
-    elif operation == 'direction_angle' and len(part_names) >= 2:
-        v1 = direction_vector(parts_coords[part_names[0]], end='end')
-        v2 = direction_vector(parts_coords[part_names[1]], end='start')
-        return angle_between_vectors(v1, v2)
 
     elif operation == 'relative_position' and len(part_names) >= 2:
         return relative_vertical_position(parts_coords[part_names[0]],
@@ -145,9 +157,22 @@ def compute_geometric_value(operation: str, parts_coords: dict,
         return s
 
     elif operation == 'angle_between_parts' and len(part_names) >= 2:
+        # Use fork_angle (half-segment midlines) when boundary available
+        if boundary is not None:
+            return 180.0 - fork_angle(all_landmarks, boundary,
+                                      part_names[0], part_names[1])
+        # Fallback for legacy data without boundary
         v1 = direction_vector(parts_coords[part_names[0]], end='start')
         v2 = direction_vector(parts_coords[part_names[1]], end='start')
         return angle_between_vectors(v1, v2)
+
+    elif operation == 'fork_angle' and len(part_names) >= 2 and boundary is not None:
+        # Deviation from straight continuation: 0° = perfectly aligned, 180° = opposite
+        return 180.0 - fork_angle(all_landmarks, boundary,
+                                  part_names[0], part_names[1])
+
+    elif operation == 'point_curvature' and boundary is not None:
+        return point_curvature_angle(all_landmarks, boundary)
 
     return 0.0
 
@@ -260,7 +285,8 @@ def assign_character(structure, character_def, project_id,
         return {'raw_value': None, 'state': '?', 'confidence': 0.0, 'auto_assigned': False}
 
     raw_value = compute_geometric_value(
-        character_def.geometric_operation, parts_coords, landmarks, character_def.formula
+        character_def.geometric_operation, parts_coords, landmarks,
+        character_def.formula, boundary=boundary
     )
 
     states = character_def.states_json or []
@@ -608,12 +634,12 @@ def _anchor_characters():
             'code': 'A02', 'name': 'Point curvature',
             'structure_type': 'anchor', 'computation_type': 'geometric',
             'parts_involved': ['Point', 'Shaft'],
-            'geometric_operation': 'junction_angle',
-            'formula': 'angle at Shaft to Point junction',
+            'geometric_operation': 'point_curvature',
+            'formula': 'deviation angle between middle shaft midline and point midline at their intersection',
             'states_json': [
-                {'code': '0', 'name': 'evenly curved', 'description': 'Smooth transition', 'threshold_min': 140, 'threshold_max': None},
-                {'code': '1', 'name': 'recurved', 'description': 'Sharp recurve', 'threshold_min': None, 'threshold_max': 80},
-                {'code': '2', 'name': 'approximately 90 degrees', 'description': 'Near right angle', 'threshold_min': 80, 'threshold_max': 140},
+                {'code': '0', 'name': 'evenly curved', 'description': 'Point departs slightly from shaft axis (<60°)', 'threshold_min': None, 'threshold_max': 60},
+                {'code': '2', 'name': 'approximately 90 degrees', 'description': 'Moderate departure from shaft axis (60–120°)', 'threshold_min': 60, 'threshold_max': 120},
+                {'code': '1', 'name': 'recurved', 'description': 'Point recurves sharply back toward shaft (>120°)', 'threshold_min': 120, 'threshold_max': None},
             ],
             'dependencies_json': [],
         },
@@ -696,12 +722,12 @@ def _anchor_characters():
             'code': 'A09', 'name': 'Shaft-superficial root angle',
             'structure_type': 'anchor', 'computation_type': 'geometric',
             'parts_involved': ['Shaft', 'SuperficialRoot'],
-            'geometric_operation': 'junction_angle',
-            'formula': 'junction angle between Shaft and SuperficialRoot',
+            'geometric_operation': 'fork_angle',
+            'formula': 'deviation from straight continuation (0°=aligned, 180°=opposite)',
             'states_json': [
-                {'code': '0', 'name': 'acute', 'description': 'Sharp angle', 'threshold_min': None, 'threshold_max': 70},
-                {'code': '1', 'name': 'right angle', 'description': 'Near 90 degrees', 'threshold_min': 70, 'threshold_max': 120},
-                {'code': '2', 'name': 'obtuse', 'description': 'Wide angle', 'threshold_min': 120, 'threshold_max': None},
+                {'code': '0', 'name': 'nearly aligned', 'description': 'Root nearly continuous with shaft (<25°)', 'threshold_min': None, 'threshold_max': 25},
+                {'code': '1', 'name': 'moderately divergent', 'description': 'Moderate deviation (25-60°)', 'threshold_min': 25, 'threshold_max': 60},
+                {'code': '2', 'name': 'widely divergent', 'description': 'Root departs sharply from shaft (>60°)', 'threshold_min': 60, 'threshold_max': None},
             ],
             'dependencies_json': [],
         },

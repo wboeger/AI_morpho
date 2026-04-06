@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="560" viewBox="0 0 320 560">
+<rect width="100%" height="100%" fill="white"/>
+<style>text{font-family:Arial,sans-serif;} .angle{font-size:13px;font-weight:bold;fill:#6020a0;} .lbl{font-size:11px;font-style:italic;} .desc{font-size:10px;fill:#555;} .leg{font-size:9px;fill:#333;}</style>
+
+<!-- Anchor contour -->
+<path d="M 218.0,191.9 L 214.6,195.1 L 209.7,201.9 L 205.1,208.9 L 200.3,215.9 L 195.3,222.6 L 190.9,229.7 L 186.7,237.0 L 182.4,244.4 L 177.5,251.1 L 172.5,257.6 L 167.7,264.5 L 162.3,270.9 L 155.8,276.0 L 153.8,304.4 L 162.1,302.0 L 169.5,297.9 L 176.7,293.3 L 182.5,287.1 L 187.5,280.3 L 191.5,272.7 L 194.5,264.9 L 197.2,256.8 L 200.0,248.7 L 202.5,240.5 L 205.2,232.3 L 207.6,224.4 L 210.1,216.5 L 213.6,208.6 L 215.9,200.4 L 147.6,274.8 L 142.7,268.2 L 138.8,260.7 L 137.0,252.5 L 135.5,244.1 L 135.8,235.4 L 136.1,226.8 L 137.1,218.6 L 137.9,209.9 L 139.4,201.3 L 140.5,192.9 L 141.3,184.2 L 143.3,175.8 L 145.5,167.5 L 147.6,159.7 L 150.3,151.4 L 153.2,143.2 L 156.6,135.4 L 158.7,126.9 L 109.1,136.1 L 108.5,144.5 L 107.5,153.0 L 106.8,161.9 L 106.0,170.6 L 105.8,179.4 L 104.3,187.9 L 103.6,196.3 L 102.5,204.9 L 102.1,213.4 L 102.0,222.1 L 102.5,230.8 L 103.6,238.7 L 104.6,247.0 L 105.6,255.1 L 107.0,263.6 L 109.7,271.2 L 112.6,279.2 L 116.6,286.5 L 122.6,292.4 L 129.6,297.2 L 136.9,301.5 L 145.1,304.0 L 158.0,118.4 L 159.6,110.2 L 162.4,102.1 L 164.1,93.8 L 164.4,85.1 L 165.8,76.8 L 165.1,68.7 L 163.4,60.4 L 164.2,52.8 L 164.2,43.7 L 161.9,35.4 L 157.5,28.3 L 150.2,25.0 L 142.1,26.1 L 134.4,29.1 L 129.9,36.3 L 128.8,44.9 L 128.7,53.4 L 126.7,61.5 L 124.3,69.4 L 122.3,77.8 L 119.9,85.9 L 116.0,92.0 L 110.7,98.6 L 105.8,105.6 L 102.7,113.6 L 103.9,122.0 L 108.1,128.1 Z" fill="#dde8f4" stroke="#3a6ea8" stroke-width="1.4"/>
+
+<!-- Middle shaft region indicator (orange bracket) -->
+<line x1="132.0" y1="260.9" x2="133.1" y2="176.8" stroke="#cc6600" stroke-width="2.5" stroke-linecap="round"/>
+<line x1="128.0" y1="260.9" x2="136.0" y2="260.9" stroke="#cc6600" stroke-width="1.5"/>
+<line x1="129.1" y1="176.8" x2="137.1" y2="176.8" stroke="#cc6600" stroke-width="1.5"/>
+<text x="142.0" y="221.0" text-anchor="start" font-size="8" fill="#cc6600">middle</text>
+<text x="142.0" y="230.0" text-anchor="start" font-size="8" fill="#cc6600">shaft</text>
+
+<!-- Extended midlines (dashed) continuing below anchor -->
+<!-- Point midline (green dashed) -->
+<line x1="242.1" y1="143.6" x2="93.0" y2="450.0" stroke="#1a6e2a" stroke-width="1.8" stroke-dasharray="7,3"/>
+
+<!-- Middle shaft midline (red dashed, nearly vertical) -->
+<line x1="123.4" y1="133.9" x2="120.5" y2="450.0" stroke="#a03020" stroke-width="1.8" stroke-dasharray="7,3"/>
+
+<!-- Intersection point -->
+<circle cx="119.5" cy="396.0" r="4.0" fill="#6020a0"/>
+
+<!-- Angle arc at intersection (25°, between -v2 dir ~91° and v1 dir ~116°) -->
+<path d="M 119.1,424.0 A 28,28 0 0,1 107.3,421.2" fill="none" stroke="#6020a0" stroke-width="2.2"/>
+<text x="99.0" y="444.0" text-anchor="middle" dominant-baseline="middle" class="angle">25.0°</text>
+
+<!-- Anatomy labels -->
+<text x="175.0" y="258.0" text-anchor="start" font-size="10" fill="#1a5490" font-style="italic">Point</text>
+<text x="82.0" y="219.0" text-anchor="end" font-size="10" fill="#1a5490" font-style="italic">Shaft</text>
+
+<!-- Caption -->
+<text x="160" y="478" text-anchor="middle" class="lbl"><tspan font-style="italic">G. derjavinoides</tspan></text>
+<text x="160" y="492" text-anchor="middle" class="desc">(evenly curved, state 0)</text>
+
+<!-- Legend -->
+<line x1="15" y1="520" x2="37" y2="520" stroke="#1a6e2a" stroke-width="1.5" stroke-dasharray="5,2"/>
+<text x="41" y="524" class="leg">point midline</text>
+<line x1="128" y1="520" x2="150" y2="520" stroke="#a03020" stroke-width="1.5" stroke-dasharray="5,2"/>
+<text x="154" y="524" class="leg">middle shaft midline</text>
+<circle cx="261" cy="520" r="3.5" fill="#6020a0"/>
+<text x="267" y="524" class="leg">deviation angle</text>
+<line x1="15" y1="538" x2="37" y2="538" stroke="#cc6600" stroke-width="2.0"/>
+<text x="41" y="542" class="leg">middle shaft region</text>
+</svg>

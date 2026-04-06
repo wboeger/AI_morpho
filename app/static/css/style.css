@@ -158,15 +158,17 @@ th {
 tr:hover { background: var(--gray-100); }
 
 /* Matrix-specific */
-.matrix-container {
-    overflow: auto;
-    max-height: 70vh;
-}
 .matrix-table th, .matrix-table td {
     text-align: center;
     padding: 0.3rem;
     min-width: 40px;
     font-size: 0.85rem;
+}
+.matrix-table thead th {
+    position: sticky;
+    top: 0;
+    background: white;
+    z-index: 2;
 }
 .matrix-table th {
     writing-mode: vertical-lr;
@@ -399,19 +401,39 @@ tr:hover { background: var(--gray-100); }
     border-radius: 4px;
 }
 
-/* Tree viewer */
+/* Tree viewer — tree and matrix share the same scroll context so leaf
+   y-positions stay aligned with table rows at any scroll position */
 .tree-matrix-container {
     display: flex;
     gap: 0;
-    overflow-x: auto;
+    align-items: flex-start;
+    overflow: auto;       /* single scroll for both tree and matrix */
+    max-height: 80vh;
 }
 .tree-panel {
-    min-width: 300px;
-    max-width: 400px;
-    overflow-y: auto;
+    width: 280px;
+    min-width: 280px;
+    flex-shrink: 0;
+    overflow: visible;
 }
 .tree-panel svg {
-    width: 100%;
+    display: block;
+    overflow: visible;
+}
+/* matrix-container no longer has its own scroll */
+.matrix-container {
+    overflow: visible;
+    max-height: none;
+}
+/* Fixed row height so tree leaf y-positions stay in sync with matrix rows */
+#matrixTable tbody tr {
+    height: 28px;
+}
+#matrixTable tbody td {
+    height: 28px;
+    max-height: 28px;
+    overflow: hidden;
+    white-space: nowrap;
 }
 
 /* Checkbox list */
