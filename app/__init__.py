@@ -38,6 +38,7 @@ def create_app(config_class=None):
     from app.routes.matrix import matrix_bp
     from app.routes.descriptions import descriptions_bp
     from app.routes.export import export_bp
+    from app.routes.phylogeny import phylo_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -47,8 +48,38 @@ def create_app(config_class=None):
     app.register_blueprint(matrix_bp)
     app.register_blueprint(descriptions_bp)
     app.register_blueprint(export_bp)
+    app.register_blueprint(phylo_bp)
 
     with app.app_context():
         db.create_all()
+        _migrate_phylogeny_jobs()
 
     return app
+
+
+def _migrate_phylogeny_jobs():
+    """Add new columns to phylogeny_jobs without dropping existing data."""
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'phylogeny_jobs' not in inspector.get_table_names():
+        return
+    existing = {c['name'] for c in inspector.get_columns('phylogeny_jobs')}
+    new_cols = [
+        ('ncbi_email',           'VARCHAR(200)'),
+        ('target_taxon',         'VARCHAR(200)'),
+        ('gene_query',           'TEXT'),
+        ('min_length',           'INTEGER'),
+        ('outgroup_definitions', 'TEXT'),
+        ('bad_accessions',       'TEXT'),
+        ('n_sequences_raw',      'INTEGER'),
+        ('n_sequences_deduped',  'INTEGER'),
+        ('n_sequences_final',    'INTEGER'),
+        ('raw_fasta_path',       'VARCHAR(500)'),
+        ('aligned_fasta_path',   'VARCHAR(500)'),
+        ('trimmed_fasta_path',   'VARCHAR(500)'),
+    ]
+    with db.engine.connect() as conn:
+        for col, typ in new_cols:
+            if col not in existing:
+                conn.execute(text(f'ALTER TABLE phylogeny_jobs ADD COLUMN {col} {typ}'))
+        conn.commit()

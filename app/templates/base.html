@@ -20,6 +20,7 @@
             <a href="{{ url_for('descriptions.species_descriptions', project_id=project.id) }}">Descriptions</a>
             <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}">Diagnoses</a>
             <a href="{{ url_for('export.export_page', project_id=project.id) }}">Export</a>
+            <a href="{{ url_for('phylogeny.phylogeny_view', project_id=project.id) }}">Phylogeny</a>
             {% endif %}
             <span class="nav-user">{{ current_user.username }}</span>
             <a href="{{ url_for('auth.logout') }}">Logout</a>

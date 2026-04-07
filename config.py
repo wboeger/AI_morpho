@@ -35,3 +35,9 @@ class Config:
         'deep_bar': (60, 120),
         'mco': (80, 150),
     }
+
+    # CIPRES phylogenetic analysis
+    CIPRES_BASE_URL = 'https://cipresrest.sdsc.edu/cipresrest/v1'
+    CIPRES_USER = os.environ.get('CIPRES_USER', 'wboeger')
+    CIPRES_PASSWORD = os.environ.get('CIPRES_PASSWORD', '')
+    CIPRES_APP_KEY = os.environ.get('CIPRES_APP_KEY', '')

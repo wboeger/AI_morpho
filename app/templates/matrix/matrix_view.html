@@ -177,13 +177,11 @@ function uploadTree() {
 }
 
 function loadTree() {
-    console.log('[Tree] loadTree() called');
     fetch(`/api/project/${projectId}/tree`).then(r => r.json()).then(data => {
-        console.log('[Tree] API response, newick length:', data.newick ? data.newick.length : 0);
-        if (!data.newick) { console.log('[Tree] No newick, stopping'); return; }
+        if (!data.newick) return;
         document.getElementById('treePanel').style.display = 'block';
         requestAnimationFrame(() => requestAnimationFrame(() => renderNewickTree(data.newick)));
-    }).catch(e => console.error('[Tree] fetch error:', e));
+    }).catch(e => console.error('Tree fetch error:', e));
 }
 
 // ── Newick parser ──────────────────────────────────────────────────────────
@@ -263,22 +261,14 @@ function pruneTree(node) {
 
 // ── Main tree renderer ─────────────────────────────────────────────────────
 function renderNewickTree(newick) {
-    console.log('[Tree] renderNewickTree called, newick length:', newick.length);
     const rawTree = parseNewick(newick);
-    console.log('[Tree] parseNewick result:', rawTree ? 'ok' : 'NULL');
     if (!rawTree) return;
 
-    console.log('[Tree] matrixSpecies count:', matrixSpecies.length, 'matrixNormSet size:', matrixNormSet.size);
-    console.log('[Tree] sample matrixNormSet:', [...matrixNormSet].slice(0,3));
-
     const tree = pruneTree(JSON.parse(JSON.stringify(rawTree)));
-    console.log('[Tree] pruneTree result:', tree ? 'ok' : 'NULL - no matching taxa');
     if (!tree) return;
 
     const leaves = getLeaves(tree);
-    console.log('[Tree] leaves after prune:', leaves.length, 'sample:', leaves.slice(0,3).map(l=>l.name));
     const rows = Array.from(document.querySelectorAll('#matrixTable tbody tr'));
-    console.log('[Tree] matrix rows:', rows.length);
     if (!rows.length) return;
 
     const svgEl = document.getElementById('treeSvg');

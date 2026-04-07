@@ -1,0 +1,659 @@
+{% extends "base.html" %}
+{% block title %}Phylogenetic Analysis — {{ project.name }}{% endblock %}
+
+{% macro job_actions(job) %}
+    {% if job.status in ('trimmed',) %}
+    <button class="btn btn-sm btn-primary" onclick="submitCipres({{ job.id }})">Submit to CIPRES</button>
+    {% endif %}
+    {% if job.status in ('submitted', 'running', 'fetching', 'aligning', 'trimming', 'created') %}
+    <button class="btn btn-sm btn-outline" onclick="checkStatus({{ job.id }})">Refresh</button>
+    {% endif %}
+    {% if job.status == 'completed' %}
+    <button class="btn btn-sm btn-warning" onclick="downloadAndRoot({{ job.id }})">Download &amp; Root</button>
+    {% endif %}
+    {% if job.status == 'tree_ready' %}
+    <button class="btn btn-sm btn-success" onclick="importTree({{ job.id }})">Import into Project</button>
+    <button class="btn btn-sm btn-outline" onclick="viewTree({{ job.id }})">View Tree</button>
+    {% endif %}
+    <button class="btn btn-sm btn-danger" style="margin-left:0.25rem;" onclick="deleteJob({{ job.id }})">Delete</button>
+{% endmacro %}
+
+{% block content %}
+<h1>Phylogenetic Analysis</h1>
+
+<!-- Mode tabs -->
+<div style="display:flex; gap:0.5rem; margin-bottom:1rem;">
+    <button class="btn btn-primary btn-sm" id="tab-ncbi" onclick="switchTab('ncbi')">NCBI Pipeline</button>
+    <button class="btn btn-outline btn-sm" id="tab-upload" onclick="switchTab('upload')">Upload FASTA</button>
+</div>
+
+<!-- ── NCBI Pipeline Form ─────────────────────────────────────────────────── -->
+<div class="card" id="form-ncbi">
+    <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleForm('ncbi-body','ncbi-icon')">
+        <h3 style="margin:0;">New Analysis — NCBI Retrieval</h3>
+        <span id="ncbi-icon" style="font-size:1.1rem; color:var(--primary);">&#9660;</span>
+    </div>
+    <div id="ncbi-body" style="margin-top:1rem;">
+        <form id="form-ncbi-inner">
+            <input type="hidden" name="mode" value="ncbi">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;">
+
+                <!-- Left -->
+                <div>
+                    <div class="form-group">
+                        <label>Target Taxon <span style="color:var(--danger);">*</span></label>
+                        <input type="text" name="target_taxon" value="{{ defaults.target_taxon }}"
+                               placeholder="e.g. Gyrodactylidae">
+                        <small style="color:var(--gray-500);">Searched as <em>"Taxon"[Organism]</em></small>
+                    </div>
+                    <div class="form-group">
+                        <label>Gene / Marker Query <span style="color:var(--danger);">*</span></label>
+                        <textarea name="gene_query" rows="3">{{ defaults.gene_query }}</textarea>
+                        <small style="color:var(--gray-500);">NCBI search terms combined with AND</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Min Sequence Length (bp)</label>
+                        <input type="number" name="min_length" value="{{ defaults.min_length }}" min="50" max="5000">
+                    </div>
+                    <div class="form-group">
+                        <label>Bad Accessions to Exclude (one per line)</label>
+                        <textarea name="bad_accessions" rows="4" placeholder="EU186159.1&#10;AY490406.1"></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label>NCBI Email <span style="color:var(--danger);">*</span></label>
+                        <input type="email" name="ncbi_email" placeholder="your@email.com">
+                    </div>
+                </div>
+
+                <!-- Right -->
+                <div>
+                    <div class="form-group">
+                        <label>Outgroup Families
+                            <span style="font-weight:normal; color:var(--gray-500); font-size:0.8rem;">
+                                — one per line: Family | mode | n
+                            </span>
+                        </label>
+                        <textarea name="outgroup_defs" rows="5">{% for od in defaults.outgroup_defs %}{{ od.family }} | {{ od.mode }} | {{ od.n }}
+{% endfor %}</textarea>
+                        <small style="color:var(--gray-500);">mode = <em>each_genus</em> (n per genus) or <em>top_species</em> (top n longest)</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Outgroup Genera for Tree Rooting (one per line)</label>
+                        <textarea name="outgroup_genera" rows="6">{{ defaults.outgroup_genera }}</textarea>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Marker</label>
+                            <select name="marker">
+                                <option value="18S">18S rRNA</option>
+                                <option value="ITS">ITS</option>
+                                <option value="COI">COI</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Bootstrap Replicates</label>
+                            <input type="number" name="n_bootstraps" value="1000" min="100" max="5000" step="100">
+                        </div>
+                    </div>
+                    <fieldset style="border:1px solid var(--gray-300); border-radius:4px; padding:0.75rem;">
+                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">CIPRES Credentials</legend>
+                        <div class="form-group" style="margin-bottom:0.4rem;">
+                            <label>Username</label>
+                            <input type="text" name="cipres_user" value="{{ defaults.cipres_user }}">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0.4rem;">
+                            <label>Password</label>
+                            <input type="password" name="cipres_password">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label>Application Key</label>
+                            <input type="text" name="cipres_app_key" value="{{ defaults.cipres_app_key }}">
+                        </div>
+                    </fieldset>
+                </div>
+            </div>
+            <div style="margin-top:1rem; display:flex; align-items:center; gap:1rem;">
+                <button type="button" class="btn btn-primary" onclick="createJob('ncbi')">
+                    Start Pipeline
+                </button>
+                <span id="submit-msg-ncbi" style="font-size:0.9rem; color:var(--gray-500);"></span>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ── Upload FASTA Form ──────────────────────────────────────────────────── -->
+<div class="card" id="form-upload" style="display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleForm('upload-body','upload-icon')">
+        <h3 style="margin:0;">New Analysis — Upload Trimmed FASTA</h3>
+        <span id="upload-icon" style="font-size:1.1rem; color:var(--primary);">&#9660;</span>
+    </div>
+    <div id="upload-body" style="margin-top:1rem;">
+        <form id="form-upload-inner" enctype="multipart/form-data">
+            <input type="hidden" name="mode" value="upload">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem;">
+                <div>
+                    <div class="form-group">
+                        <label>FASTA Alignment File <span style="color:var(--danger);">*</span></label>
+                        <input type="file" name="fasta_file" accept=".fa,.fasta,.txt,.aln" required>
+                        <small style="color:var(--gray-500);">Pre-trimmed, aligned FASTA (same length sequences).</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Accessions to Remove (one per line)</label>
+                        <textarea name="sequences_to_remove" rows="4" placeholder="AY490415.1"></textarea>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Marker</label>
+                            <select name="marker">
+                                <option value="18S">18S rRNA</option>
+                                <option value="ITS">ITS</option>
+                                <option value="COI">COI</option>
+                                <option value="other">Other</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Bootstrap Replicates</label>
+                            <input type="number" name="n_bootstraps" value="1000" min="100" max="5000" step="100">
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label>Outgroup Genera for Tree Rooting (one per line)</label>
+                        <textarea name="outgroup_genera" rows="8">{{ defaults.outgroup_genera }}</textarea>
+                    </div>
+                    <fieldset style="border:1px solid var(--gray-300); border-radius:4px; padding:0.75rem;">
+                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">CIPRES Credentials</legend>
+                        <div class="form-group" style="margin-bottom:0.4rem;">
+                            <label>Username</label>
+                            <input type="text" name="cipres_user" value="{{ defaults.cipres_user }}">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0.4rem;">
+                            <label>Password</label>
+                            <input type="password" name="cipres_password">
+                        </div>
+                        <div class="form-group" style="margin-bottom:0;">
+                            <label>Application Key</label>
+                            <input type="text" name="cipres_app_key" value="{{ defaults.cipres_app_key }}">
+                        </div>
+                    </fieldset>
+                </div>
+            </div>
+            <div style="margin-top:1rem; display:flex; align-items:center; gap:1rem;">
+                <button type="button" class="btn btn-primary" onclick="createJob('upload')">
+                    Upload &amp; Continue
+                </button>
+                <span id="submit-msg-upload" style="font-size:0.9rem; color:var(--gray-500);"></span>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ── Jobs List ──────────────────────────────────────────────────────────── -->
+<div class="card">
+    <h3>Analysis Jobs</h3>
+    {% if jobs %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>Submitted</th>
+                    <th>Target / File</th>
+                    <th>Marker</th>
+                    <th>Seqs</th>
+                    <th>Stage</th>
+                    <th>Message</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for job in jobs %}
+            <tr id="row-{{ job.id }}">
+                <td>{{ job.id }}</td>
+                <td style="white-space:nowrap; font-size:0.8rem;">
+                    {{ job.submitted_at.strftime('%Y-%m-%d %H:%M') if job.submitted_at else '—' }}
+                </td>
+                <td style="font-size:0.8rem; color:var(--gray-700);">
+                    {% if job.target_taxon %}
+                        <em>{{ job.target_taxon }}</em>
+                    {% else %}
+                        {{ job.fasta_filename or '—' }}
+                    {% endif %}
+                </td>
+                <td>{{ job.marker or '—' }}</td>
+                <td id="seqs-{{ job.id }}" style="font-size:0.8rem;">
+                    {% if job.n_sequences_raw %}
+                        {{ job.n_sequences_raw }} → {{ job.n_sequences_deduped }} → {{ job.n_sequences_final or job.n_sequences }}
+                    {% else %}
+                        {{ job.n_sequences or '—' }}
+                    {% endif %}
+                </td>
+                <td>
+                    <span id="badge-{{ job.id }}" class="stage-badge stage-{{ job.status }}">
+                        {{ job.status }}
+                    </span>
+                </td>
+                <td style="font-size:0.75rem; max-width:240px; color:var(--gray-500);"
+                    id="msg-{{ job.id }}">{{ job.status_message or '' }}</td>
+                <td style="white-space:nowrap;">
+                    {{ job_actions(job) }}
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% else %}
+    <p style="color:var(--gray-500); font-style:italic;">No jobs yet. Start a new analysis above.</p>
+    {% endif %}
+</div>
+
+<style>
+.stage-badge {
+    display: inline-block;
+    padding: 0.15rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.stage-created    { background: var(--gray-200); color: var(--gray-700); }
+.stage-fetching   { background: #cce5ff; color: #004085; animation: pulse 1.5s infinite; }
+.stage-fetched    { background: #cce5ff; color: #004085; }
+.stage-aligning   { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
+.stage-aligned    { background: #fff3cd; color: #856404; }
+.stage-trimming   { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
+.stage-trimmed    { background: var(--conf-high); color: #155724; }
+.stage-submitted  { background: #cce5ff; color: #004085; }
+.stage-running    { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
+.stage-completed  { background: var(--conf-high); color: #155724; }
+.stage-tree_ready { background: #e2d9f3; color: #4a235a; }
+.stage-failed     { background: var(--conf-low); color: #721c24; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+</style>
+
+<!-- ── Tree viewer modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="treeModal">
+    <div class="modal" style="max-width:92vw; width:92vw; max-height:90vh; display:flex; flex-direction:column; padding:0;">
+        <div style="padding:0.75rem 1rem; border-bottom:1px solid var(--gray-200); display:flex; align-items:center; gap:1rem; flex-shrink:0;">
+            <h3 style="margin:0; flex:1;" id="treeModalTitle">Phylogenetic Tree</h3>
+            <button class="btn btn-sm btn-success" id="treeModalImport" onclick="importFromModal()">Import into Project</button>
+            <button class="btn btn-sm btn-outline" onclick="closeTreeModal()">Close</button>
+        </div>
+        <div style="overflow:auto; flex:1; padding:0.5rem;">
+            <svg id="treeModalSvg" style="display:block;"></svg>
+        </div>
+        <div style="padding:0.5rem 1rem; border-top:1px solid var(--gray-200); font-size:0.75rem; color:var(--gray-500); flex-shrink:0;" id="treeModalMsg"></div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PROJECT_ID = {{ project.id }};
+
+// Active jobs that need polling
+const activeStages = new Set(['created','fetching','aligning','trimming','submitted','running']);
+let pollTimers = {};
+
+function switchTab(tab) {
+    document.getElementById('form-ncbi').style.display   = (tab === 'ncbi')    ? '' : 'none';
+    document.getElementById('form-upload').style.display = (tab === 'upload')  ? '' : 'none';
+    document.getElementById('tab-ncbi').className   = 'btn btn-sm ' + (tab === 'ncbi'   ? 'btn-primary' : 'btn-outline');
+    document.getElementById('tab-upload').className = 'btn btn-sm ' + (tab === 'upload' ? 'btn-primary' : 'btn-outline');
+}
+
+function toggleForm(bodyId, iconId) {
+    const body = document.getElementById(bodyId);
+    const icon = document.getElementById(iconId);
+    const hidden = body.style.display === 'none';
+    body.style.display = hidden ? '' : 'none';
+    icon.innerHTML = hidden ? '&#9660;' : '&#9658;';
+}
+
+function setMsg(id, msg, color) {
+    const el = document.getElementById(id);
+    if (el) { el.textContent = msg; el.style.color = color || 'var(--gray-500)'; }
+}
+
+async function createJob(mode) {
+    const form = document.getElementById(`form-${mode}-inner`);
+    const fd   = new FormData(form);
+    setMsg(`submit-msg-${mode}`, mode === 'ncbi' ? 'Starting…' : 'Uploading…', 'var(--primary)');
+    try {
+        const resp = await fetch(`/project/${PROJECT_ID}/phylogeny/create`, {method:'POST', body:fd});
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            setMsg(`submit-msg-${mode}`, 'Error: ' + (data.error || resp.statusText), 'var(--danger)');
+            return;
+        }
+        setMsg(`submit-msg-${mode}`, data.message, 'var(--success)');
+        setTimeout(() => location.reload(), 1200);
+    } catch(err) {
+        setMsg(`submit-msg-${mode}`, 'Network error: ' + err.message, 'var(--danger)');
+    }
+}
+
+function updateRow(jobId, data) {
+    const badge = document.getElementById('badge-' + jobId);
+    const msg   = document.getElementById('msg-' + jobId);
+    const seqs  = document.getElementById('seqs-' + jobId);
+    if (badge) {
+        badge.textContent = data.status;
+        badge.className   = 'stage-badge stage-' + data.status;
+    }
+    if (msg) msg.textContent = data.message || '';
+    if (seqs && (data.n_sequences_raw || data.n_sequences)) {
+        if (data.n_sequences_raw) {
+            seqs.textContent = `${data.n_sequences_raw} → ${data.n_sequences_deduped} → ${data.n_sequences_final || data.n_sequences}`;
+        } else {
+            seqs.textContent = data.n_sequences;
+        }
+    }
+    // Update action buttons
+    const actCell = document.querySelector(`#row-${jobId} td:last-child`);
+    if (actCell) actCell.innerHTML = buildActions(jobId, data.status);
+}
+
+function buildActions(jobId, status) {
+    let html = '';
+    if (status === 'trimmed') {
+        html += `<button class="btn btn-sm btn-primary" onclick="submitCipres(${jobId})">Submit to CIPRES</button> `;
+    }
+    if (['created','fetching','aligning','trimming','submitted','running'].includes(status)) {
+        html += `<button class="btn btn-sm btn-outline" onclick="checkStatus(${jobId})">Refresh</button> `;
+    }
+    if (status === 'completed') {
+        html += `<button class="btn btn-sm btn-warning" onclick="downloadAndRoot(${jobId})">Download &amp; Root</button> `;
+    }
+    if (status === 'tree_ready') {
+        html += `<button class="btn btn-sm btn-success" onclick="importTree(${jobId})">Import into Project</button> `;
+        html += `<button class="btn btn-sm btn-outline" onclick="viewTree(${jobId})">View Tree</button> `;
+    }
+    html += `<button class="btn btn-sm btn-danger" style="margin-left:0.25rem;" onclick="deleteJob(${jobId})">Delete</button>`;
+    return html;
+}
+
+async function checkStatus(jobId) {
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/status`);
+        const data = await resp.json();
+        updateRow(jobId, data);
+        // Keep polling if still active
+        if (activeStages.has(data.status)) schedulePoll(jobId);
+        else clearPoll(jobId);
+    } catch(err) {
+        console.error('Status check failed:', err);
+    }
+}
+
+function schedulePoll(jobId) {
+    clearPoll(jobId);
+    pollTimers[jobId] = setTimeout(() => checkStatus(jobId), 6000);
+}
+function clearPoll(jobId) {
+    if (pollTimers[jobId]) { clearTimeout(pollTimers[jobId]); delete pollTimers[jobId]; }
+}
+
+async function submitCipres(jobId) {
+    const badge = document.getElementById('badge-' + jobId);
+    if (badge) { badge.textContent = 'submitting…'; badge.className = 'stage-badge stage-submitted'; }
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/submit_cipres`, {method:'POST'});
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            alert('Error: ' + (data.error || resp.statusText));
+            return;
+        }
+        updateRow(jobId, {status: data.status, message: data.message});
+        schedulePoll(jobId);
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+async function downloadAndRoot(jobId) {
+    updateRow(jobId, {status: 'running', message: 'Downloading results…'});
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/download`, {method:'POST'});
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
+        updateRow(jobId, {status: data.status, message: data.message});
+        // Auto-show tree popup when ready
+        if (data.status === 'tree_ready' && data.newick) {
+            openTreeModal(jobId, data.newick, data.message);
+        }
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+async function importTree(jobId) {
+    if (!confirm('Import this tree into the project? This overwrites any existing tree.')) return;
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/import`, {method:'POST'});
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
+        alert(data.message || 'Tree imported.');
+        location.reload();
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+async function deleteJob(jobId) {
+    if (!confirm('Delete this job record?')) return;
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/delete`, {method:'POST'});
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            const row = document.getElementById('row-' + jobId);
+            if (row) row.remove();
+        }
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+// Auto-poll any job that is in an active stage on page load
+document.addEventListener('DOMContentLoaded', () => {
+    {% for job in jobs %}
+    {% if job.status in ('created', 'fetching', 'aligning', 'trimming', 'submitted', 'running') %}
+    schedulePoll({{ job.id }});
+    {% endif %}
+    {% endfor %}
+});
+
+// ── Tree viewer ───────────────────────────────────────────────────────────���───
+
+let _modalJobId = null;
+
+async function viewTree(jobId) {
+    const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/newick`);
+    const data = await resp.json();
+    if (!data.newick) { alert('No tree stored for this job.'); return; }
+    openTreeModal(jobId, data.newick,
+        `${data.taxon || ''} ${data.marker || ''}`.trim());
+}
+
+function openTreeModal(jobId, newick, subtitle) {
+    _modalJobId = jobId;
+    const title = 'Phylogenetic Tree' + (subtitle ? ' — ' + subtitle : '');
+    document.getElementById('treeModalTitle').textContent = title;
+    document.getElementById('treeModalMsg').textContent   = subtitle || '';
+    document.getElementById('treeModal').classList.add('active');
+    requestAnimationFrame(() => renderPhylogram(newick, document.getElementById('treeModalSvg')));
+}
+
+function closeTreeModal() {
+    document.getElementById('treeModal').classList.remove('active');
+}
+
+async function importFromModal() {
+    if (!_modalJobId) return;
+    await importTree(_modalJobId);
+}
+
+// Close modal on backdrop click
+document.getElementById('treeModal').addEventListener('click', function(e) {
+    if (e.target === this) closeTreeModal();
+});
+
+// ── Newick parser ────────────────────────────────────────────────────��────────
+function parseNewick(s) {
+    s = s.trim().replace(/;$/, '');
+    let i = 0;
+    function parse() {
+        const node = {children: []};
+        if (s[i] === '(') {
+            i++;
+            node.children.push(parse());
+            while (s[i] === ',') { i++; node.children.push(parse()); }
+            i++; // ')'
+        }
+        let name = '';
+        while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ':' && s[i] !== ';')
+            name += s[i++];
+        node.name = name.trim().replace(/^['"]|['"]$/g, '');
+        if (s[i] === ':') {
+            i++;
+            let len = '';
+            while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ';') len += s[i++];
+            node.length = parseFloat(len) || 0;
+        } else {
+            node.length = 0;
+        }
+        return node;
+    }
+    try { return parse(); } catch(e) { return null; }
+}
+
+function getLeaves(node) {
+    if (!node.children || !node.children.length) return [node];
+    return node.children.flatMap(getLeaves);
+}
+
+function assignDepths(node, d) {
+    node.x = d;
+    (node.children || []).forEach(c => assignDepths(c, d + (c.length || 1)));
+}
+
+function formatTipLabel(name) {
+    // 'KX981461.1|Aglaiogyrodactylus_forficulatus' → 'Aglaiogyrodactylus forficulatus'
+    // strip FigTree artifacts
+    if (!name || name.includes('!') || name.includes('=')) return '';
+    if (name.includes('|')) name = name.split('|').pop();
+    name = name.replace(/^_R_/i, '');
+    return name.replace(/_/g, ' ').trim();
+}
+
+// ── Phylogram renderer ────────────────────────────────────────────────────────
+function renderPhylogram(newick, svgEl) {
+    while (svgEl.firstChild) svgEl.removeChild(svgEl.firstChild);
+
+    const tree = parseNewick(newick);
+    if (!tree) {
+        const t = document.createElementNS('http://www.w3.org/2000/svg','text');
+        t.setAttribute('x','10'); t.setAttribute('y','20'); t.setAttribute('fill','red');
+        t.textContent = 'Could not parse Newick string.';
+        svgEl.appendChild(t); return;
+    }
+
+    const leaves = getLeaves(tree);
+    const N = leaves.length;
+
+    const ROW_H    = 18;
+    const PAD_TOP  = 20;
+    const PAD_LEFT = 24;
+    const LABEL_GAP = 8;
+    const MAX_LABEL = 220;   // px reserved for tip labels
+    const SVG_W    = 960;
+    const BRANCH_W = SVG_W - PAD_LEFT - LABEL_GAP - MAX_LABEL - 10;
+    const SVG_H    = N * ROW_H + PAD_TOP * 2;
+
+    svgEl.setAttribute('width',  SVG_W);
+    svgEl.setAttribute('height', SVG_H);
+
+    // Assign leaf Y (evenly spaced)
+    leaves.forEach((leaf, i) => { leaf.leafY = PAD_TOP + i * ROW_H + ROW_H / 2; });
+
+    // Assign X (cumulative branch length from root)
+    assignDepths(tree, 0);
+    const maxDepth = Math.max(...leaves.map(l => l.x)) || 1;
+    const xScale   = v => PAD_LEFT + (v / maxDepth) * BRANCH_W;
+
+    // Propagate Y upward (mean of children)
+    function assignY(node) {
+        if (!node.children || !node.children.length) return;
+        node.children.forEach(assignY);
+        node.leafY = node.children.reduce((s, c) => s + c.leafY, 0) / node.children.length;
+    }
+    assignY(tree);
+
+    // SVG helpers
+    const NS = 'http://www.w3.org/2000/svg';
+    function svgLine(x1, y1, x2, y2, stroke, sw, dash) {
+        const el = document.createElementNS(NS, 'line');
+        el.setAttribute('x1', x1.toFixed(1)); el.setAttribute('y1', y1.toFixed(1));
+        el.setAttribute('x2', x2.toFixed(1)); el.setAttribute('y2', y2.toFixed(1));
+        el.setAttribute('stroke', stroke || '#444');
+        el.setAttribute('stroke-width', sw || 1.2);
+        if (dash) el.setAttribute('stroke-dasharray', dash);
+        svgEl.appendChild(el);
+    }
+    function svgText(x, y, content, opts) {
+        if (!content) return;
+        const el = document.createElementNS(NS, 'text');
+        el.setAttribute('x', x.toFixed(1)); el.setAttribute('y', y.toFixed(1));
+        el.setAttribute('dominant-baseline', 'middle');
+        el.setAttribute('font-size',  (opts && opts.size)  || '11');
+        el.setAttribute('fill',       (opts && opts.fill)  || '#222');
+        if (opts && opts.italic)  el.setAttribute('font-style', 'italic');
+        if (opts && opts.anchor)  el.setAttribute('text-anchor', opts.anchor);
+        el.textContent = content;
+        svgEl.appendChild(el);
+    }
+
+    // Draw nodes recursively
+    function drawNode(node) {
+        const nx = xScale(node.x);
+        if (node.children && node.children.length) {
+            const yTop = Math.min(...node.children.map(c => c.leafY));
+            const yBot = Math.max(...node.children.map(c => c.leafY));
+            // Vertical clade bar
+            svgLine(nx, yTop, nx, yBot);
+            // Bootstrap value (if node.name is a number)
+            const bs = parseFloat(node.name);
+            if (!isNaN(bs) && node.name !== '') {
+                svgText(nx + 2, node.leafY - 6, node.name, {size: '9', fill: '#888'});
+            }
+            node.children.forEach(c => {
+                svgLine(nx, c.leafY, xScale(c.x), c.leafY);
+                drawNode(c);
+            });
+        } else {
+            // Tip: dotted leader to label column
+            const labelX = PAD_LEFT + BRANCH_W + LABEL_GAP;
+            svgLine(nx, node.leafY, labelX - 2, node.leafY, '#ccc', 0.7, '2,3');
+            const label = formatTipLabel(node.name);
+            svgText(labelX, node.leafY, label, {italic: true, size: '11'});
+        }
+    }
+    drawNode(tree);
+
+    // Scale bar (10% of max depth)
+    const scaleLen  = maxDepth * 0.1;
+    const scaleBarW = (scaleLen / maxDepth) * BRANCH_W;
+    const sbY       = SVG_H - 12;
+    svgLine(PAD_LEFT, sbY, PAD_LEFT + scaleBarW, sbY, '#666', 1.5);
+    svgLine(PAD_LEFT, sbY - 4, PAD_LEFT, sbY + 4, '#666', 1.5);
+    svgLine(PAD_LEFT + scaleBarW, sbY - 4, PAD_LEFT + scaleBarW, sbY + 4, '#666', 1.5);
+    svgText(PAD_LEFT + scaleBarW / 2, sbY - 8, scaleLen.toPrecision(2),
+            {size: '9', fill: '#666', anchor: 'middle'});
+}
+</script>
+{% endblock %}

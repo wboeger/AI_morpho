@@ -12,22 +12,26 @@
 <!-- Structure type selector -->
 <div style="margin-bottom:1rem; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
     <label style="font-weight:600; font-size:0.85rem;">Show image:</label>
+    {% set default_type = char.structure_type if char.structure_type in available_types else (available_types[0] if available_types else char.structure_type) %}
     <select id="structureSelector" onchange="switchStructureView()" style="font-size:0.85rem; padding:0.25rem 0.5rem;">
+        {% if char.structure_type in available_types %}
         <option value="{{ char.structure_type }}" selected>{{ char.structure_type.replace('_', ' ').title() }} (current character)</option>
+        {% endif %}
         {% for st in available_types %}
         {% if st != char.structure_type %}
-        <option value="{{ st }}">{{ st.replace('_', ' ').title() }}</option>
+        <option value="{{ st }}" {% if st == default_type and char.structure_type not in available_types %}selected{% endif %}>{{ st.replace('_', ' ').title() }}</option>
         {% endif %}
         {% endfor %}
     </select>
 
     <button id="viewToggleBtn" class="btn btn-sm btn-outline" onclick="toggleViewMode()" title="Switch between landmark shapes and uploaded images">
-        Show Images
+        {% if char.structure_type not in available_types %}Show Shapes{% else %}Show Images{% endif %}
     </button>
 
     <span id="legendContainer" style="display:flex; gap:0.75rem; flex-wrap:wrap; font-size:0.8rem;">
+        {% set legend_parts = parts if parts else (all_parts.get(default_type, []) if all_parts is defined else []) %}
         {% set dot_colors = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'] %}
-        {% for p in parts %}
+        {% for p in legend_parts %}
         <span><span class="part-dot" style="background:{{ dot_colors[loop.index0 % 8] }};"></span> {{ p }}</span>
         {% endfor %}
     </span>
@@ -85,7 +89,7 @@ const PART_COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c'
 const ALL_PARTS = {{ all_parts | tojson }};
 const currentType = '{{ char.structure_type }}';
 const charStates = {{ char.states_json | tojson }};
-let viewMode = 'shapes'; // 'shapes' or 'images'
+let viewMode = {% if char.structure_type not in available_types %}'images'{% else %}'shapes'{% endif %};
 
 const entryData = [
 {% for e in entries %}

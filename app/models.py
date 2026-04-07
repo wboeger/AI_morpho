@@ -177,3 +177,62 @@ class ActivityLog(db.Model):
     timestamp = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     user = db.relationship('User')
+
+
+class PhylogenyJob(db.Model):
+    __tablename__ = 'phylogeny_jobs'
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    submitted_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    submitted_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    completed_at = db.Column(db.DateTime)
+    last_checked = db.Column(db.DateTime)
+
+    # CIPRES credentials stored for polling
+    cipres_user = db.Column(db.String(100))
+    cipres_password_enc = db.Column(db.String(500))
+    cipres_app_key = db.Column(db.String(200))
+
+    # CIPRES job tracking
+    job_url = db.Column(db.String(500))
+    job_handle = db.Column(db.String(200))
+    results_url = db.Column(db.String(500))
+
+    # Core parameters
+    fasta_filename = db.Column(db.String(200))
+    marker = db.Column(db.String(50), default='18S')
+    n_bootstraps = db.Column(db.Integer, default=1000)
+    n_sequences = db.Column(db.Integer)
+    sequences_removed = db.Column(db.JSON, default=list)
+    outgroup_genera = db.Column(db.JSON)  # list of genera for tree rooting
+
+    # Results
+    result_dir = db.Column(db.String(500))
+    tree_newick = db.Column(db.Text)
+
+    # Pipeline status:
+    #   created | fetching | fetched | aligning | aligned | trimming | trimmed
+    #   | submitted | running | completed | tree_ready | failed
+    status = db.Column(db.String(50), default='created')
+    status_message = db.Column(db.Text)
+
+    # --- NCBI retrieval settings ---
+    ncbi_email = db.Column(db.String(200))
+    target_taxon = db.Column(db.String(200))
+    gene_query = db.Column(db.Text)
+    min_length = db.Column(db.Integer, default=400)
+    outgroup_definitions = db.Column(db.JSON)   # [{family, mode, n}, ...]
+    bad_accessions = db.Column(db.JSON, default=list)
+
+    # Sequence counts through pipeline
+    n_sequences_raw = db.Column(db.Integer)
+    n_sequences_deduped = db.Column(db.Integer)
+    n_sequences_final = db.Column(db.Integer)
+
+    # File paths within result_dir
+    raw_fasta_path = db.Column(db.String(500))
+    aligned_fasta_path = db.Column(db.String(500))
+    trimmed_fasta_path = db.Column(db.String(500))
+
+    project = db.relationship('Project', backref='phylogeny_jobs')
+    submitter = db.relationship('User', foreign_keys=[submitted_by])

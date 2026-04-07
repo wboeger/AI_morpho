@@ -712,39 +712,40 @@ def import_images(project_id):
     imported = 0
     skipped = 0
 
-    for fname in os.listdir(folder_path):
-        ext = os.path.splitext(fname)[1].lower()
-        if ext not in IMAGE_EXTS:
-            continue
+    with db.session.no_autoflush:
+        for fname in os.listdir(folder_path):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext not in IMAGE_EXTS:
+                continue
 
-        species_name = os.path.splitext(fname)[0].replace('_', ' ').strip()
+            species_name = os.path.splitext(fname)[0].replace('_', ' ').strip()
 
-        # Find matching specimen
-        specimen = Specimen.query.filter_by(
-            project_id=project_id, species_name=species_name
-        ).first()
-        if not specimen:
-            skipped += 1
-            continue
+            # Find matching specimen
+            specimen = Specimen.query.filter_by(
+                project_id=project_id, species_name=species_name
+            ).first()
+            if not specimen:
+                skipped += 1
+                continue
 
-        # Find or create structure of this type
-        structure = Structure.query.filter_by(
-            specimen_id=specimen.id, structure_type=structure_type
-        ).first()
-        if not structure:
-            structure = Structure(
-                specimen_id=specimen.id,
-                structure_type=structure_type,
-            )
-            db.session.add(structure)
-            db.session.flush()
+            # Find or create structure of this type
+            structure = Structure.query.filter_by(
+                specimen_id=specimen.id, structure_type=structure_type
+            ).first()
+            if not structure:
+                structure = Structure(
+                    specimen_id=specimen.id,
+                    structure_type=structure_type,
+                )
+                db.session.add(structure)
+                db.session.flush()
 
-        # Copy image to uploads
-        dest_name = f'{structure.id}_{secure_filename(fname)}'
-        dest_path = os.path.join(upload_dir, dest_name)
-        shutil.copy2(os.path.join(folder_path, fname), dest_path)
-        structure.image_path = dest_name
-        imported += 1
+            # Copy image to uploads
+            dest_name = f'{structure.id}_{secure_filename(fname)}'
+            dest_path = os.path.join(upload_dir, dest_name)
+            shutil.copy2(os.path.join(folder_path, fname), dest_path)
+            structure.image_path = dest_name
+            imported += 1
 
     db.session.commit()
     _log(project_id, f'Imported {imported} images from {folder_path}')
