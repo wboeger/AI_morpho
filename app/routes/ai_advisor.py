@@ -62,7 +62,15 @@ def _build_project_context(project_id: int) -> dict:
 
 
 def _build_prompt(context: dict) -> str:
-    ctx_json = json.dumps(context, indent=2)
+    # Trim character list if too many to avoid exceeding API request size limits
+    ctx = dict(context)
+    if len(ctx.get('characters', [])) > 30:
+        ctx['characters'] = ctx['characters'][:30]
+        ctx['characters_truncated'] = True
+    ctx_json = json.dumps(ctx, indent=2)
+    # Hard cap at ~60k chars to stay within Gemini's input limit
+    if len(ctx_json) > 60000:
+        ctx_json = ctx_json[:60000] + '\n  ... (truncated)'
     return f"""You are an expert in helminth morphology and geometric morphometrics, specializing in monogenean parasites (Gyrodactylidae and related groups). You are acting as a scientific advisor reviewing a morphometric dataset.
 
 Here is the current state of the project:
@@ -120,55 +128,59 @@ def _call_claude(api_key: str, prompt: str) -> dict:
         max_tokens=4096,
         messages=[{'role': 'user', 'content': prompt}]
     )
-    text = message.content[0].text.strip()
-    # Strip markdown code fences if present
+    return json.loads(_strip_fences(message.content[0].text))
+
+
+def _strip_fences(text: str) -> str:
+    text = text.strip()
     if text.startswith('```'):
-        text = text.split('\n', 1)[1]
+        text = text.split('\n', 1)[1] if '\n' in text else text[3:]
         if text.endswith('```'):
             text = text.rsplit('```', 1)[0]
-    return json.loads(text)
+    return text.strip()
+
+
+def _http_post(url: str, payload: dict, headers: dict) -> dict:
+    import urllib.request
+    import urllib.error
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode('utf-8', errors='replace')
+        raise RuntimeError(f'HTTP {e.code} from API: {body[:400]}') from None
 
 
 def _call_openai(api_key: str, prompt: str) -> dict:
-    import urllib.request
-    payload = json.dumps({
-        'model': 'gpt-4o',
-        'messages': [{'role': 'user', 'content': prompt}],
-        'max_tokens': 4096,
-    }).encode()
-    req = urllib.request.Request(
+    data = _http_post(
         'https://api.openai.com/v1/chat/completions',
-        data=payload,
-        headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        {'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 4096},
+        {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
     )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    text = data['choices'][0]['message']['content'].strip()
-    if text.startswith('```'):
-        text = text.split('\n', 1)[1]
-        if text.endswith('```'):
-            text = text.rsplit('```', 1)[0]
-    return json.loads(text)
+    return json.loads(_strip_fences(data['choices'][0]['message']['content']))
 
 
 def _call_gemini(api_key: str, prompt: str) -> dict:
-    import urllib.request
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={api_key}'
-    payload = json.dumps({
-        'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'maxOutputTokens': 4096},
-    }).encode()
-    req = urllib.request.Request(
-        url, data=payload, headers={'Content-Type': 'application/json'}
-    )
-    with urllib.request.urlopen(req, timeout=120) as resp:
-        data = json.loads(resp.read())
-    text = data['candidates'][0]['content']['parts'][0]['text'].strip()
-    if text.startswith('```'):
-        text = text.split('\n', 1)[1]
-        if text.endswith('```'):
-            text = text.rsplit('```', 1)[0]
-    return json.loads(text)
+    # Try models in order of availability
+    models = ['gemini-2.0-flash-001', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest']
+    last_err = None
+    for model in models:
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}'
+        try:
+            data = _http_post(
+                url,
+                {'contents': [{'parts': [{'text': prompt}]}], 'generationConfig': {'maxOutputTokens': 4096}},
+                {'Content-Type': 'application/json'},
+            )
+            text = data['candidates'][0]['content']['parts'][0]['text']
+            return json.loads(_strip_fences(text))
+        except RuntimeError as e:
+            last_err = e
+            if 'HTTP 404' not in str(e):
+                raise
+    raise last_err
 
 
 @ai_advisor_bp.route('/project/<int:project_id>/ai_advisor')
@@ -190,6 +202,9 @@ def analyze(project_id):
 
     if not api_key:
         return jsonify({'error': 'No API key provided.'}), 400
+
+    if ' ' in api_key or api_key.startswith('Error'):
+        return jsonify({'error': 'The API key field contains invalid text. Please paste your actual API key.'}), 400
 
     session['ai_provider'] = provider
 

@@ -96,6 +96,7 @@ async function runAnalysis() {
 
         if (data.error) {
             document.getElementById('statusMsg').innerHTML = '<span style="color:var(--danger);">Error: ' + escHtml(data.error) + '</span>';
+            document.getElementById('apiKeyInput').value = '';
             return;
         }
 
