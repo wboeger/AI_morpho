@@ -194,6 +194,7 @@ def add_structure(specimen_id):
         if structure_type not in ('hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco'):
             flash('Invalid structure type.', 'error')
         else:
+            # Handle optional image upload
             image_path = None
             if 'image' in request.files:
                 f = request.files['image']
@@ -207,18 +208,42 @@ def add_structure(specimen_id):
                     image_path = os.path.relpath(filepath, current_app.config['UPLOAD_FOLDER'])
 
             from config import Config
+            import numpy as np
+            from app.geometry import resample_equidistant, suggest_landmark_count
+            from app.routes.landmarks import _parse_imagej_csv
+
+            # Handle optional CSV landmark upload
+            landmarks_json = None
             landmark_count = Config.LANDMARK_COUNTS.get(structure_type, 100)
+            if 'csv_file' in request.files:
+                csv_file = request.files['csv_file']
+                if csv_file.filename:
+                    content = csv_file.read().decode('utf-8', errors='replace')
+                    coords = _parse_imagej_csv(content)
+                    if coords:
+                        coords_arr = np.array(coords)
+                        target = Config.LANDMARK_COUNTS.get(structure_type)
+                        if target is None:
+                            target = suggest_landmark_count(
+                                resample_equidistant(coords_arr, 50), structure_type
+                            )
+                        landmarks_json = resample_equidistant(coords_arr, target).tolist()
+                        landmark_count = target
+                    else:
+                        flash('CSV file had no valid coordinates — structure added without landmarks.', 'info')
 
             structure = Structure(
                 specimen_id=specimen_id,
                 structure_type=structure_type,
                 image_path=image_path,
+                landmarks_json=landmarks_json,
                 landmark_count=landmark_count,
             )
             db.session.add(structure)
             _log(specimen.project_id, f'Added {structure_type} for {specimen.species_name}')
             db.session.commit()
-            flash(f'{structure_type.replace("_", " ").title()} added.', 'success')
+            lm_msg = f' with {landmark_count} landmarks' if landmarks_json else ''
+            flash(f'{structure_type.replace("_", " ").title()} added{lm_msg}.', 'success')
             return redirect(url_for('project.view_project', project_id=specimen.project_id))
 
     return render_template('project/add_structure.html', specimen=specimen, project=project)

@@ -70,8 +70,7 @@
             <option value="{{ st }}">{{ st.replace('_',' ').title() }}</option>
             {% endfor %}
         </select>
-        <input type="file" name="zip_file" accept=".zip"
-               style="font-size:0.83rem;" required>
+        <input type="file" name="zip_file" accept=".zip" style="font-size:0.83rem;" required>
         <button type="submit" class="btn btn-outline">Import ZIP</button>
     </form>
 </div>
@@ -106,7 +105,8 @@
                         {% if st.landmarks_confirmed %}&#10003;{% endif %}
                     </span>
                     {% endfor %}
-                    <a href="{{ url_for('project.add_structure', specimen_id=s.id) }}" class="btn btn-sm btn-outline">+</a>
+                    <button class="btn btn-sm btn-outline" title="Add structure"
+                            onclick="openAddStructure({{ s.id }}, '{{ s.species_name|e }}')">+</button>
                 </td>
                 <td>
                     {% for d in s.dna_sequences %}
@@ -120,10 +120,19 @@
                     {% if st.landmarks_json %}
                     <a href="{{ url_for('boundaries.boundary_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">boundaries</a>
                     {% endif %}
-                    <button class="btn btn-sm btn-outline" onclick="openImgUpload({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name }}')" title="{{ 'Replace' if st.image_path else 'Upload' }} image">{% if st.image_path %}img&#10003;{% else %}img{% endif %}</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name }}')" title="Delete structure">&times;</button>
+                    <button class="btn btn-sm btn-outline"
+                            onclick="openCsvUpload({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')"
+                            title="{{ 'Replace' if st.landmarks_json else 'Upload' }} landmarks CSV">
+                        csv{% if st.landmarks_json %}&#10003;{% endif %}
+                    </button>
+                    <button class="btn btn-sm btn-outline"
+                            onclick="openImgUpload({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')"
+                            title="{{ 'Replace' if st.image_path else 'Upload' }} image">
+                        img{% if st.image_path %}&#10003;{% endif %}
+                    </button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')" title="Delete structure">&times;</button>
                     {% endfor %}
-                    <button class="btn btn-sm btn-danger" onclick="deleteSpecimen({{ project.id }}, {{ s.id }}, '{{ s.species_name }}')" title="Delete specimen">Delete</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteSpecimen({{ project.id }}, {{ s.id }}, '{{ s.species_name|e }}')" title="Delete specimen">Delete</button>
                 </td>
             </tr>
             {% endfor %}
@@ -154,14 +163,62 @@
 </div>
 {% endblock %}
 
+<!-- ── Modals (outside block content so they overlay everything) ── -->
+
+<!-- Add structure modal -->
+<div id="addStructureModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:360px; max-width:500px;">
+        <h3 id="addStructureTitle" style="margin:0 0 0.75rem;">Add Structure</h3>
+        <form id="addStructureForm" method="POST" enctype="multipart/form-data">
+            <div class="modal-field">
+                <label>Structure type</label>
+                <select name="structure_type" required style="width:100%;">
+                    {% for st in ['hook','anchor','superficial_bar','deep_bar','mco'] %}
+                    <option value="{{ st }}">{{ st.replace('_',' ').title() }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="modal-field">
+                <label>Landmark CSV <span class="opt">(optional)</span></label>
+                <input type="file" name="csv_file" accept=".csv" style="width:100%;">
+                <p class="hint">ImageJ Results table format (X, Y columns). Landmarks will be resampled automatically.</p>
+            </div>
+            <div class="modal-field">
+                <label>Structure image <span class="opt">(optional)</span></label>
+                <input type="file" name="image" accept="image/*" style="width:100%;">
+            </div>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem;">
+                <button type="button" class="btn btn-outline" onclick="closeModal('addStructureModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Add Structure</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- CSV upload modal -->
+<div id="csvModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:340px; max-width:460px;">
+        <h3 id="csvModalTitle" style="margin:0 0 0.5rem;">Upload Landmark CSV</h3>
+        <p id="csvModalSub" style="font-size:0.83rem; color:var(--gray-500); margin:0 0 0.75rem;"></p>
+        <form id="csvUploadForm" method="POST" enctype="multipart/form-data">
+            <input type="file" name="csv_file" accept=".csv" required style="display:block; width:100%; margin-bottom:0.4rem;">
+            <p class="hint">ImageJ Results table (X, Y columns). Existing landmarks will be replaced.</p>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.75rem;">
+                <button type="button" class="btn btn-outline" onclick="closeModal('csvModal')">Cancel</button>
+                <button type="submit" class="btn btn-primary">Upload</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 <!-- Image upload modal -->
-<div id="imgModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
-    <div style="background:#fff; border-radius:8px; padding:1.5rem; min-width:320px; max-width:420px; box-shadow:0 4px 24px rgba(0,0,0,0.2);">
+<div id="imgModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:320px; max-width:420px;">
         <h3 id="imgModalTitle" style="margin:0 0 0.75rem;">Upload Image</h3>
         <form id="imgUploadForm" method="POST" enctype="multipart/form-data">
-            <input type="file" name="image" accept="image/*" required style="margin-bottom:0.75rem; display:block; width:100%;">
+            <input type="file" name="image" accept="image/*" required style="display:block; width:100%; margin-bottom:0.75rem;">
             <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
-                <button type="button" class="btn btn-outline" onclick="closeImgModal()">Cancel</button>
+                <button type="button" class="btn btn-outline" onclick="closeModal('imgModal')">Cancel</button>
                 <button type="submit" class="btn btn-primary">Upload</button>
             </div>
         </form>
@@ -170,20 +227,41 @@
 
 {% block scripts %}
 <script>
-function openImgUpload(structureId, structureType, speciesName) {
-    document.getElementById('imgModalTitle').textContent =
-        'Upload image — ' + structureType.replace(/_/g, ' ') + ' (' + speciesName + ')';
-    document.getElementById('imgUploadForm').action = '/api/structure/' + structureId + '/upload_image';
-    const modal = document.getElementById('imgModal');
-    modal.style.display = 'flex';
-}
-function closeImgModal() {
-    document.getElementById('imgModal').style.display = 'none';
-}
-document.getElementById('imgModal').addEventListener('click', function(e) {
-    if (e.target === this) closeImgModal();
+// ── Modal helpers ──
+function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+function openModal(id)  { document.getElementById(id).style.display = 'flex'; }
+
+document.querySelectorAll('.gyro-modal').forEach(m => {
+    m.addEventListener('click', e => { if (e.target === m) m.style.display = 'none'; });
 });
 
+// ── Add structure ──
+function openAddStructure(specimenId, speciesName) {
+    document.getElementById('addStructureTitle').textContent = 'Add Structure — ' + speciesName;
+    document.getElementById('addStructureForm').action = '/specimen/' + specimenId + '/structure/new';
+    openModal('addStructureModal');
+}
+
+// ── CSV upload ──
+function openCsvUpload(structureId, structureType, speciesName) {
+    document.getElementById('csvModalTitle').textContent =
+        (document.querySelector(`[data-stid="${structureId}"]`)?.dataset.hasLm === '1' ? 'Replace' : 'Upload') +
+        ' landmarks — ' + structureType.replace(/_/g,' ') + ' (' + speciesName + ')';
+    document.getElementById('csvModalSub').textContent =
+        'Structure ID ' + structureId + ' · ' + structureType.replace(/_/g,' ');
+    document.getElementById('csvUploadForm').action = '/structure/' + structureId + '/landmarks/upload';
+    openModal('csvModal');
+}
+
+// ── Image upload ──
+function openImgUpload(structureId, structureType, speciesName) {
+    document.getElementById('imgModalTitle').textContent =
+        'Upload image — ' + structureType.replace(/_/g,' ') + ' (' + speciesName + ')';
+    document.getElementById('imgUploadForm').action = '/api/structure/' + structureId + '/upload_image';
+    openModal('imgModal');
+}
+
+// ── Delete helpers ──
 function deleteSpecimen(projectId, specimenId, speciesName) {
     if (!confirm(`Delete specimen "${speciesName}" and all its structures, character values, and DNA data? This cannot be undone.`)) return;
     fetch(`/api/project/${projectId}/specimen/${specimenId}/delete`, {method: 'DELETE'})
@@ -210,5 +288,20 @@ function deleteStructure(structureId, structureType, speciesName) {
     color: var(--gray-700); text-decoration: none; white-space: nowrap;
 }
 a.workflow-step:hover { background: var(--primary); color: white; }
+
+/* Shared modal styles */
+.gyro-modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.45);
+    z-index: 1000; align-items: center; justify-content: center;
+}
+.gyro-modal-box {
+    background: #fff; border-radius: 8px; padding: 1.5rem;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.2); width: 90%;
+}
+.modal-field { margin-bottom: 0.75rem; }
+.modal-field label { display: block; font-size: 0.85rem; font-weight: 600; margin-bottom: 0.25rem; }
+.modal-field select, .modal-field input[type=file] { font-size: 0.85rem; }
+.opt { font-weight: 400; color: var(--gray-500); }
+.hint { font-size: 0.78rem; color: var(--gray-500); margin: 0.2rem 0 0; }
 </style>
 {% endblock %}
