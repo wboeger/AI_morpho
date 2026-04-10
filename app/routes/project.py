@@ -500,6 +500,11 @@ def import_folders(project_id):
                 errors.append(f'No CSV files in: {folder_path}')
                 continue
 
+            # In-session cache: (specimen_id, structure_type) -> Structure
+            # Prevents duplicate creation inside no_autoflush where DB queries
+            # can't see unflushed objects added earlier in the same loop.
+            _struct_cache = {}
+
             with db.session.no_autoflush:
                 for csv_path in csv_files:
                     filename = os.path.basename(csv_path)
@@ -545,8 +550,9 @@ def import_folders(project_id):
                             )
                             db.session.add(dna)
 
-                    # Check if this structure type already exists for this specimen
-                    existing_struct = Structure.query.filter_by(
+                    # Check cache first, then DB, to avoid duplicates inside no_autoflush
+                    cache_key = (specimen.id, structure_type)
+                    existing_struct = _struct_cache.get(cache_key) or Structure.query.filter_by(
                         specimen_id=specimen.id, structure_type=structure_type
                     ).first()
 
@@ -555,6 +561,7 @@ def import_folders(project_id):
                         existing_struct.landmarks_json = landmarks
                         existing_struct.landmark_count = len(landmarks)
                         existing_struct.landmarks_confirmed = True
+                        _struct_cache[cache_key] = existing_struct
                     else:
                         structure = Structure(
                             specimen_id=specimen.id,
@@ -564,6 +571,7 @@ def import_folders(project_id):
                             landmarks_confirmed=True,
                         )
                         db.session.add(structure)
+                        _struct_cache[cache_key] = structure
 
                     total_imported += 1
 
