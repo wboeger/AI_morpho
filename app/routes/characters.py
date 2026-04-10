@@ -481,17 +481,17 @@ def _build_measurement_explanation(char):
     # Character-specific overrides (replaces the generic operation description)
     _CHAR_EXPLANATIONS = {
         'A02': (
-            'Measures the <em>curvature of the point</em> — how sharply the point departs from the direction '
-            'of the shaft. '
+            'Measures the <em>curvature of the point</em> — how sharply the point departs from the shaft axis. '
             '<br><br>'
             'A best-fit midline is computed for the <strong>middle portion</strong> of the shaft central axis '
-            '(the straight-running mid-section, avoiding the curved ends near the root and point junction) '
-            'and for the proximal half of the point central axis. The two midlines are extended to their intersection '
-            'and the deviation angle is measured there '
-            '(0° = point continues shaft in a straight line; larger values = sharper bend).'
+            '(skipping the curved ends near the root and point junction) and for the proximal half of the '
+            'point central axis (near the junction). The angle between these two midlines gives the deviation: '
+            '<strong>0°</strong> = point continues the shaft in a straight line; '
+            '<strong>90°</strong> = point is perpendicular to the shaft (classic hook); '
+            '<strong>&gt;90°</strong> = point recurves back past perpendicular.'
             '<br><br>'
             '<img src="/static/diagrams/point_curvature_diagram.svg" alt="Point curvature angle diagram" '
-            'style="max-width:320px; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
+            'style="max-width:600px; width:100%; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
         ),
         'A09': (
             'Measures the <em>angle between the Shaft and SuperficialRoot</em> — specifically, how much the '

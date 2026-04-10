@@ -95,6 +95,7 @@ def create_app(config_class=None):
 
         db.create_all()
         _migrate_phylogeny_jobs()
+        _migrate_a02_states()
 
     # Start hourly backup scheduler (only in the main process, not reloader child)
     import sys
@@ -102,6 +103,47 @@ def create_app(config_class=None):
         start_backup_scheduler()
 
     return app
+
+
+def _migrate_a02_states():
+    """Update A02 states in all existing projects to the corrected definitions.
+
+    Old: 0 (<60°), 2 (60–120°), 1 (>120°) — codes out of order, vague names.
+    New: 0 (<45°), 1 (45–90°), 2 (>90°) — monotonic codes, anatomical names.
+    """
+    import json
+    from sqlalchemy import inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'character_definitions' not in inspector.get_table_names():
+        return
+
+    new_states = [
+        {'code': '0', 'name': 'slightly curved',
+         'description': 'Point departs only slightly from shaft axis; junction nearly straight (<45°)',
+         'threshold_min': None, 'threshold_max': 45},
+        {'code': '1', 'name': 'moderately curved',
+         'description': 'Distinct bend at point–shaft junction; typical hook shape (45°–90°)',
+         'threshold_min': 45, 'threshold_max': 90},
+        {'code': '2', 'name': 'strongly curved',
+         'description': 'Sharp bend, point approaches or recurves past perpendicular (>90°)',
+         'threshold_min': 90, 'threshold_max': None},
+    ]
+    new_formula = ('deviation angle between middle shaft midline and point midline '
+                   '(0°=straight, 90°=right-angle, >90°=recurved)')
+
+    from app.models import CharacterDefinition
+    changed = 0
+    for char in CharacterDefinition.query.filter_by(code='A02').all():
+        old_states = char.states_json or []
+        # Detect old definition by presence of the out-of-order code '2' as middle state
+        codes = [s.get('code') for s in old_states]
+        if codes == ['0', '2', '1'] or 'approximately 90 degrees' in str(old_states):
+            char.states_json = new_states
+            char.formula = new_formula
+            changed += 1
+    if changed:
+        db.session.commit()
+        print(f'[migrate] Updated A02 states in {changed} project(s).')
 
 
 def _migrate_phylogeny_jobs():
