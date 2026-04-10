@@ -182,7 +182,19 @@ def readiness_check(project_id):
     results = []
 
     for sp in specimens:
-        struct_map = {st.structure_type: st for st in sp.structures}
+        # When a specimen has duplicate structure types, pick the most complete one
+        struct_map = {}
+        for st in sp.structures:
+            prev = struct_map.get(st.structure_type)
+            if prev is None:
+                struct_map[st.structure_type] = st
+            else:
+                # Score: boundary_confirmed(4) > boundary_json(3) > landmarks_confirmed(2) > landmarks_json(1)
+                def score(s):
+                    return (bool(s.boundary_confirmed)*4 + bool(s.boundary_json)*3 +
+                            bool(s.landmarks_confirmed)*2 + bool(s.landmarks_json))
+                if score(st) > score(prev):
+                    struct_map[st.structure_type] = st
         blocking = []   # prevents processing
         warnings = []   # present but not confirmed
         for stype in required_types:
