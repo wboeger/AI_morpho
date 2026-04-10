@@ -204,23 +204,41 @@
 
 <!-- Review queue modal -->
 <div id="reviewQueueModal" class="gyro-modal" style="display:none;">
-    <div class="gyro-modal-box" style="min-width:440px; max-width:620px;">
+    <div class="gyro-modal-box" style="min-width:700px; max-width:900px; max-height:90vh; overflow-y:auto;">
         <!-- Progress bar -->
-        <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1rem;">
+        <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.75rem;">
             <div style="flex:1; background:var(--gray-200); border-radius:4px; height:6px;">
                 <div id="queueBar" style="background:var(--primary); height:6px; border-radius:4px; width:0%; transition:width 0.3s;"></div>
             </div>
             <span id="queueCounter" style="font-size:0.82rem; color:var(--gray-500); white-space:nowrap;"></span>
         </div>
 
-        <h3 id="queueSpecies" style="margin:0 0 0.25rem; font-style:italic;"></h3>
-        <p id="queueSubtitle" style="font-size:0.82rem; color:var(--gray-500); margin:0 0 0.75rem;"></p>
+        <div style="display:flex; gap:1rem; align-items:flex-start;">
 
-        <!-- Issue list -->
-        <div id="queueIssues" style="display:flex; flex-direction:column; gap:0.4rem; margin-bottom:1rem;"></div>
+            <!-- Left: canvas viewer -->
+            <div style="flex:1; min-width:0;">
+                <!-- Structure tabs (if multiple structures with issues) -->
+                <div id="queueStructureTabs" style="display:flex; gap:0.3rem; margin-bottom:0.4rem; flex-wrap:wrap;"></div>
+                <!-- Canvas -->
+                <div style="position:relative; background:#f8f9fa; border:1px solid var(--gray-200); border-radius:6px; overflow:hidden; height:360px;">
+                    <canvas id="queueCanvas" style="width:100%; height:100%;"></canvas>
+                    <!-- Part legend -->
+                    <div id="queueLegend" style="position:absolute; bottom:6px; left:6px; display:flex; flex-wrap:wrap; gap:4px;"></div>
+                </div>
+                <!-- Confirmed status -->
+                <div id="queueConfirmedBadges" style="display:flex; gap:0.4rem; margin-top:0.4rem; font-size:0.78rem;"></div>
+            </div>
+
+            <!-- Right: species info + issues -->
+            <div style="width:260px; flex-shrink:0;">
+                <h3 id="queueSpecies" style="margin:0 0 0.2rem; font-style:italic; font-size:1rem;"></h3>
+                <p id="queueSubtitle" style="font-size:0.8rem; color:var(--gray-500); margin:0 0 0.75rem;"></p>
+                <div id="queueIssues" style="display:flex; flex-direction:column; gap:0.4rem;"></div>
+            </div>
+        </div>
 
         <!-- Navigation -->
-        <div style="display:flex; gap:0.5rem; justify-content:space-between; align-items:center; border-top:1px solid var(--gray-200); padding-top:0.75rem;">
+        <div style="display:flex; gap:0.5rem; justify-content:space-between; align-items:center; border-top:1px solid var(--gray-200); padding-top:0.75rem; margin-top:0.75rem;">
             <button class="btn btn-outline" onclick="closeModal('reviewQueueModal')">Close</button>
             <div style="display:flex; gap:0.5rem;">
                 <button class="btn btn-outline" id="queueSkipBtn" onclick="queueNext(true)">Skip</button>
@@ -356,8 +374,17 @@ async function runReadinessCheck() {
 }
 
 // ── Review queue ──
-let _queueItems = [];   // [{species, specimen_id, blocking:[...], warnings:[...]}]
-let _queueIdx = 0;
+let _queueItems = [];
+let _queueIdx   = 0;
+let _activeStructureId = null;
+
+const VIEWER_COLORS = {
+    'Point':'#e74c3c','Shaft':'#3498db','Toe':'#2ecc71','Shelf':'#f39c12',
+    'Base':'#9b59b6','Heel':'#1abc9c','SuperficialRoot':'#e67e22','DeepRoot':'#34495e',
+    'BarProper':'#3498db','Shield':'#2ecc71','ShieldDistalEnd':'#f39c12',
+    'AnterolateralProcesses':'#9b59b6','Bulb':'#e74c3c','PrincipalSpine':'#3498db',
+    'Spinelets':'#2ecc71'
+};
 
 function startReviewQueue() {
     if (!_queueItems.length) return;
@@ -367,88 +394,185 @@ function startReviewQueue() {
     openModal('reviewQueueModal');
 }
 
-function renderQueueItem() {
+async function renderQueueItem() {
     const total = _queueItems.length;
     const item  = _queueItems[_queueIdx];
-    const pct   = Math.round((_queueIdx / total) * 100);
-
-    document.getElementById('queueBar').style.width = pct + '%';
+    document.getElementById('queueBar').style.width = Math.round((_queueIdx / total) * 100) + '%';
     document.getElementById('queueCounter').textContent = `${_queueIdx + 1} / ${total}`;
     document.getElementById('queueSpecies').textContent = item.species;
 
-    const nBlocking = item.blocking.length;
-    const nWarn     = item.warnings.length;
+    const nB = item.blocking.length, nW = item.warnings.length;
     document.getElementById('queueSubtitle').textContent =
-        (nBlocking ? `${nBlocking} blocking` : '') +
-        (nBlocking && nWarn ? ' · ' : '') +
-        (nWarn ? `${nWarn} warning${nWarn > 1 ? 's' : ''}` : '');
+        (nB ? `${nB} blocking` : '') + (nB && nW ? ' · ' : '') + (nW ? `${nW} warning${nW>1?'s':''}` : '');
 
+    // Collect unique structures with issues
     const allIssues = [
-        ...item.blocking.map(i => ({...i, level: 'blocking'})),
-        ...item.warnings.map(i => ({...i, level: 'warning'}))
+        ...item.blocking.map(i => ({...i, level:'blocking'})),
+        ...item.warnings.map(i => ({...i, level:'warning'}))
     ];
+    const structIds = [...new Set(allIssues.filter(i=>i.structure_id).map(i=>i.structure_id))];
 
-    const issueEl = document.getElementById('queueIssues');
-    issueEl.innerHTML = allIssues.map(iss => {
-        const isBlock = iss.level === 'blocking';
-        const bg    = isBlock ? '#fde8e8' : '#fef9e7';
-        const color = isBlock ? '#c0392b' : '#d35400';
-        const bdr   = isBlock ? '#f5b7b1' : '#f8c471';
-        const label = iss.structure.replace(/_/g, ' ') + ' — ' + iss.problem;
-        let actions = '';
-
-        if (iss.problem === 'landmarks not confirmed' && iss.structure_id) {
-            actions = `<button class="btn btn-sm btn-outline" style="margin-left:auto;"
-                onclick="quickConfirm(${iss.structure_id}, ['landmarks'], this)">Confirm Landmarks</button>`;
-        } else if (iss.problem === 'boundaries not confirmed' && iss.structure_id) {
-            actions = `<button class="btn btn-sm btn-outline" style="margin-left:auto;"
-                onclick="quickConfirm(${iss.structure_id}, ['boundaries'], this)">Confirm Boundaries</button>`;
-        } else if (iss.problem === 'no landmarks' && iss.structure_id) {
-            actions = `<a href="/structure/${iss.structure_id}/landmarks" class="btn btn-sm btn-outline" style="margin-left:auto;" target="_blank">Open Landmark Editor</a>`;
-        } else if (iss.problem === 'no boundaries' && iss.structure_id) {
-            actions = `<a href="/structure/${iss.structure_id}/boundaries" class="btn btn-sm btn-outline" style="margin-left:auto;" target="_blank">Open Boundary Editor</a>`;
-        } else if (iss.problem === 'structure missing') {
-            actions = `<button class="btn btn-sm btn-outline" style="margin-left:auto;"
-                onclick="closeModal('reviewQueueModal'); openAddStructure(${item.specimen_id}, '${item.species.replace(/'/g,"\\'")}')">Add Structure</button>`;
-        }
-
-        return `<div style="display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.6rem;
-                     background:${bg}; border:1px solid ${bdr}; border-radius:5px; color:${color}; font-size:0.85rem;">
-                    <span style="flex:1;">${label}</span>${actions}
-                </div>`;
+    // Tabs for structures
+    const tabEl = document.getElementById('queueStructureTabs');
+    tabEl.innerHTML = structIds.map((sid, idx) => {
+        const iss = allIssues.find(i => i.structure_id === sid);
+        const label = iss ? iss.structure.replace(/_/g,' ') : sid;
+        return `<button class="btn btn-sm ${idx===0?'btn-primary':'btn-outline'}"
+                    id="qtab-${sid}" onclick="loadStructureViewer(${sid})">${label}</button>`;
     }).join('');
 
-    // Show/hide Next button
+    // Issues list
+    document.getElementById('queueIssues').innerHTML = allIssues.map(iss => {
+        const isB  = iss.level === 'blocking';
+        const bg   = isB ? '#fde8e8' : '#fef9e7';
+        const col  = isB ? '#c0392b' : '#d35400';
+        const bdr  = isB ? '#f5b7b1' : '#f8c471';
+        const lbl  = iss.structure.replace(/_/g,' ') + ' — ' + iss.problem;
+        let act = '';
+        const sid = iss.structure_id;
+        if (iss.problem === 'landmarks not confirmed' && sid)
+            act = `<button class="btn btn-sm btn-outline" onclick="quickConfirm(${sid},['landmarks'],this)" style="white-space:nowrap;">Confirm LM</button>`;
+        else if (iss.problem === 'boundaries not confirmed' && sid)
+            act = `<button class="btn btn-sm btn-outline" onclick="quickConfirm(${sid},['boundaries'],this)" style="white-space:nowrap;">Confirm BND</button>`;
+        else if (iss.problem === 'no landmarks' && sid)
+            act = `<a href="/structure/${sid}/landmarks" class="btn btn-sm btn-outline" target="_blank">LM Editor</a>`;
+        else if (iss.problem === 'no boundaries' && sid)
+            act = `<a href="/structure/${sid}/boundaries" class="btn btn-sm btn-outline" target="_blank">BND Editor</a>`;
+        else if (iss.problem === 'structure missing')
+            act = `<button class="btn btn-sm btn-outline"
+                onclick="closeModal('reviewQueueModal');openAddStructure(${item.specimen_id},'${item.species.replace(/'/g,"\\'")}')">Add</button>`;
+        return `<div style="display:flex;align-items:center;gap:0.4rem;padding:0.35rem 0.5rem;
+                    background:${bg};border:1px solid ${bdr};border-radius:5px;color:${col};font-size:0.82rem;">
+                <span style="flex:1;">${lbl}</span>${act}</div>`;
+    }).join('');
+
+    // Load first structure's viewer
+    if (structIds.length) {
+        await loadStructureViewer(structIds[0]);
+    } else {
+        clearViewer();
+    }
+
     const isLast = _queueIdx >= total - 1;
     document.getElementById('queueNextBtn').textContent = isLast ? 'Finish' : 'Next →';
     document.getElementById('queueSkipBtn').style.display = isLast ? 'none' : '';
 }
 
+async function loadStructureViewer(structureId) {
+    _activeStructureId = structureId;
+    // Highlight active tab
+    document.querySelectorAll('[id^="qtab-"]').forEach(b => {
+        b.className = b.id === `qtab-${structureId}` ? 'btn btn-sm btn-primary' : 'btn btn-sm btn-outline';
+    });
+
+    const resp = await fetch(`/api/structure/${structureId}/viewer_data`);
+    const d = await resp.json();
+    drawViewer(d);
+
+    // Confirmed badges
+    const badges = document.getElementById('queueConfirmedBadges');
+    const lmBadge  = d.landmarks_confirmed
+        ? `<span style="color:var(--success);">&#10003; Landmarks confirmed</span>`
+        : `<span style="color:#e67e22;">&#9651; Landmarks not confirmed</span>`;
+    const bndBadge = Object.keys(d.boundaries).length
+        ? (d.boundary_confirmed
+            ? `<span style="color:var(--success);">&#10003; Boundaries confirmed</span>`
+            : `<span style="color:#e67e22;">&#9651; Boundaries not confirmed</span>`)
+        : `<span style="color:var(--gray-400);">No boundaries</span>`;
+    badges.innerHTML = lmBadge + ' &nbsp; ' + bndBadge;
+}
+
+function drawViewer(d) {
+    const canvas = document.getElementById('queueCanvas');
+    const wrap   = canvas.parentElement;
+    canvas.width  = wrap.clientWidth  || 500;
+    canvas.height = wrap.clientHeight || 360;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const lm  = d.landmarks;
+    const bnd = d.boundaries;
+
+    if (!lm.length) {
+        ctx.fillStyle = '#999'; ctx.font = '14px sans-serif'; ctx.textAlign = 'center';
+        ctx.fillText('No landmarks', canvas.width/2, canvas.height/2);
+        return;
+    }
+
+    // Compute transform
+    let mnX=Infinity,mxX=-Infinity,mnY=Infinity,mxY=-Infinity;
+    lm.forEach(([x,y])=>{mnX=Math.min(mnX,x);mxX=Math.max(mxX,x);mnY=Math.min(mnY,y);mxY=Math.max(mxY,y);});
+    const pad=30, aw=canvas.width-pad*2, ah=canvas.height-pad*2;
+    const sc=Math.min(aw/(mxX-mnX||1), ah/(mxY-mnY||1));
+    const cx=(mnX+mxX)/2, cy=(mnY+mxY)/2;
+    const ox=canvas.width/2-cx*sc, oy=canvas.height/2-cy*sc;
+    const ts = (x,y) => [x*sc+ox, y*sc+oy];
+
+    // Build index→part map
+    const partOf = {};
+    for (const [p, indices] of Object.entries(bnd)) {
+        (indices||[]).forEach(i => { partOf[i] = p; });
+    }
+
+    // Draw outline segments colored by part
+    for (let i=0; i<lm.length-1; i++) {
+        const [x1,y1]=ts(lm[i][0],lm[i][1]);
+        const [x2,y2]=ts(lm[i+1][0],lm[i+1][1]);
+        const p = partOf[i];
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+        ctx.strokeStyle = p ? (VIEWER_COLORS[p]||'#888') : '#ddd';
+        ctx.lineWidth   = p ? 3 : 1;
+        ctx.stroke();
+    }
+
+    // Draw dots
+    const dotR = 3;
+    for (let i=0; i<lm.length; i++) {
+        const [sx,sy]=ts(lm[i][0],lm[i][1]);
+        const p = partOf[i];
+        ctx.beginPath();
+        ctx.arc(sx,sy,dotR,0,Math.PI*2);
+        ctx.fillStyle = p ? (VIEWER_COLORS[p]||'#888') : '#bdc3c7';
+        ctx.fill();
+    }
+
+    // Legend
+    const usedParts = [...new Set(Object.values(partOf))];
+    document.getElementById('queueLegend').innerHTML = usedParts.map(p =>
+        `<span style="background:${VIEWER_COLORS[p]||'#888'}22;color:${VIEWER_COLORS[p]||'#888'};
+                border:1px solid ${VIEWER_COLORS[p]||'#888'}55;border-radius:3px;
+                padding:1px 6px;font-size:0.73rem;">${p}</span>`
+    ).join('');
+}
+
+function clearViewer() {
+    const canvas = document.getElementById('queueCanvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    document.getElementById('queueLegend').innerHTML = '';
+    document.getElementById('queueConfirmedBadges').innerHTML = '';
+    document.getElementById('queueStructureTabs').innerHTML = '';
+}
+
 async function quickConfirm(structureId, targets, btn) {
-    btn.disabled = true;
-    btn.textContent = 'Confirming…';
+    btn.disabled = true; btn.textContent = '…';
     const resp = await fetch(`/api/structure/${structureId}/quick_confirm`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        method:'POST', headers:{'Content-Type':'application/json'},
         body: JSON.stringify({confirm: targets})
     });
     const data = await resp.json();
     if (data.status === 'ok') {
-        btn.textContent = '✓ Confirmed';
-        btn.style.background = 'var(--success)';
-        btn.style.color = '#fff';
-        btn.style.borderColor = 'var(--success)';
-    } else {
-        btn.textContent = 'Error';
-        btn.disabled = false;
-    }
+        btn.textContent = '✓'; btn.style.background='var(--success)';
+        btn.style.color='#fff'; btn.style.borderColor='var(--success)';
+        // Refresh the viewer badges
+        if (structureId === _activeStructureId) await loadStructureViewer(structureId);
+    } else { btn.textContent='Error'; btn.disabled=false; }
 }
 
 function queueNext(skip) {
-    const total = _queueItems.length;
-    if (_queueIdx >= total - 1) {
+    if (_queueIdx >= _queueItems.length - 1) {
         closeModal('reviewQueueModal');
-        location.reload();   // refresh so the table reflects changes
+        location.reload();
         return;
     }
     _queueIdx++;

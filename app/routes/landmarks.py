@@ -154,6 +154,24 @@ def suggest_count(structure_id):
     return jsonify({'suggested_count': count, 'curvature_variance': cv})
 
 
+@landmarks_bp.route('/api/structure/<int:structure_id>/viewer_data', methods=['GET'])
+@login_required
+def viewer_data(structure_id):
+    """Return landmarks, boundaries, image URL and part list for the mini viewer."""
+    structure = Structure.query.get_or_404(structure_id)
+    parts = Config.STRUCTURE_PARTS.get(structure.structure_type, [])
+    image_url = f'/uploads/{structure.image_path}' if structure.image_path else None
+    return jsonify({
+        'landmarks': structure.landmarks_json or [],
+        'boundaries': structure.boundary_json or {},
+        'landmarks_confirmed': structure.landmarks_confirmed,
+        'boundary_confirmed': structure.boundary_confirmed,
+        'structure_type': structure.structure_type,
+        'parts': parts,
+        'image_url': image_url,
+    })
+
+
 @landmarks_bp.route('/uploads/<path:filename>')
 @login_required
 def serve_upload(filename):
