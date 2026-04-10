@@ -13,6 +13,9 @@ data/uploads/
 # Local results
 results saved by WB/
 
+# Automated backups
+project backup/
+
 # U-Net weights (large binary files)
 unet/weights/*.pth
 unet/weights/*.pt

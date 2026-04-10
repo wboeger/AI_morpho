@@ -1,4 +1,5 @@
 import os
+import threading
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
@@ -6,6 +7,34 @@ from flask_login import LoginManager
 db = SQLAlchemy()
 login_manager = LoginManager()
 login_manager.login_view = 'auth.login'
+
+# ── Hourly backup scheduler ────────────────────────────────────────────────────
+_backup_timer: threading.Timer | None = None
+_BACKUP_INTERVAL_SECONDS = 3600  # 1 hour
+
+
+def _run_backup():
+    """Execute one backup then reschedule."""
+    global _backup_timer
+    try:
+        from scripts.backup import create_backup
+        create_backup(verbose=True)
+    except Exception as exc:
+        print(f'[backup] ERROR during scheduled backup: {exc}')
+    _backup_timer = threading.Timer(_BACKUP_INTERVAL_SECONDS, _run_backup)
+    _backup_timer.daemon = True
+    _backup_timer.start()
+
+
+def start_backup_scheduler():
+    """Start the hourly backup background thread (call once at app startup)."""
+    global _backup_timer
+    if _backup_timer is not None:
+        return  # already running
+    _backup_timer = threading.Timer(_BACKUP_INTERVAL_SECONDS, _run_backup)
+    _backup_timer.daemon = True
+    _backup_timer.start()
+    print(f'[backup] Hourly backup scheduler started (interval: {_BACKUP_INTERVAL_SECONDS}s)')
 
 
 def create_app(config_class=None):
@@ -40,6 +69,7 @@ def create_app(config_class=None):
     from app.routes.export import export_bp
     from app.routes.phylogeny import phylo_bp
     from app.routes.ai_advisor import ai_advisor_bp
+    from app.routes.backup import backup_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -51,6 +81,7 @@ def create_app(config_class=None):
     app.register_blueprint(export_bp)
     app.register_blueprint(phylo_bp)
     app.register_blueprint(ai_advisor_bp)
+    app.register_blueprint(backup_bp)
 
     with app.app_context():
         # Enable SQLite WAL mode and busy timeout to prevent "database is locked" errors
@@ -64,6 +95,11 @@ def create_app(config_class=None):
 
         db.create_all()
         _migrate_phylogeny_jobs()
+
+    # Start hourly backup scheduler (only in the main process, not reloader child)
+    import sys
+    if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        start_backup_scheduler()
 
     return app
 

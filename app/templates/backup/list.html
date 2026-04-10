@@ -1,0 +1,115 @@
+{% extends 'base.html' %}
+{% block title %}Backups — GyroMorpho v2{% endblock %}
+
+{% block content %}
+<div style="max-width:860px; margin:0 auto;">
+  <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1.2rem;">
+    <h2 style="margin:0;">Database Backups</h2>
+    <button class="btn btn-primary" onclick="triggerBackup(this)">Backup Now</button>
+  </div>
+
+  <p style="color:var(--text-muted,#888); font-size:0.9rem; margin-bottom:1.2rem;">
+    Backups are created automatically every hour and stored in
+    <code>project backup/</code> (excluded from git).<br>
+    The most recent <strong>48</strong> backups are retained.
+    Location: <code>{{ backup_dir }}</code>
+  </p>
+
+  <div id="backup-msg" style="display:none; margin-bottom:1rem; padding:0.6rem 1rem; border-radius:6px;"></div>
+
+  {% if backups %}
+  <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+    <thead>
+      <tr style="text-align:left; border-bottom:2px solid var(--border,#ddd);">
+        <th style="padding:0.5rem 0.75rem;">#</th>
+        <th style="padding:0.5rem 0.75rem;">Timestamp</th>
+        <th style="padding:0.5rem 0.75rem; text-align:right;">DB size</th>
+        <th style="padding:0.5rem 0.75rem;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in backups %}
+      <tr style="border-bottom:1px solid var(--border,#eee);">
+        <td style="padding:0.5rem 0.75rem; color:var(--text-muted,#888);">{{ loop.index }}</td>
+        <td style="padding:0.5rem 0.75rem; font-family:monospace;">{{ b.stamp }}</td>
+        <td style="padding:0.5rem 0.75rem; text-align:right;">{{ b.db_kb }} KB</td>
+        <td style="padding:0.5rem 0.75rem; text-align:right;">
+          <button class="btn btn-sm btn-outline"
+                  onclick="restoreBackup('{{ b.stamp }}', this)"
+                  {% if b.stamp.startswith('pre-restore') %}style="opacity:0.55;" title="Safety snapshot — restore with care"{% endif %}>
+            Restore
+          </button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:var(--text-muted,#888);">No backups yet. Click <em>Backup Now</em> to create one.</p>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function showMsg(text, ok) {
+  const el = document.getElementById('backup-msg');
+  el.textContent = text;
+  el.style.display = 'block';
+  el.style.background = ok ? '#d4edda' : '#f8d7da';
+  el.style.color = ok ? '#155724' : '#721c24';
+  el.style.border = `1px solid ${ok ? '#c3e6cb' : '#f5c6cb'}`;
+  setTimeout(() => { el.style.display = 'none'; }, 7000);
+}
+
+function triggerBackup(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Creating…';
+  fetch('/api/backup/create', { method: 'POST' })
+    .then(r => r.json())
+    .then(d => {
+      if (d.status === 'ok') {
+        showMsg('Backup created: ' + d.stamp, true);
+        setTimeout(() => location.reload(), 1200);
+      } else {
+        showMsg('Error: ' + d.message, false);
+      }
+    })
+    .catch(e => showMsg('Network error: ' + e, false))
+    .finally(() => { btn.disabled = false; btn.textContent = 'Backup Now'; });
+}
+
+function restoreBackup(stamp, btn) {
+  if (!confirm(
+    'Restore from backup:\n\n  ' + stamp + '\n\n' +
+    'The current database will be replaced.\n' +
+    'A safety snapshot will be saved first.\n\n' +
+    'Continue?'
+  )) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Restoring…';
+  fetch('/api/backup/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ stamp })
+  })
+    .then(r => r.json())
+    .then(d => {
+      if (d.status === 'ok') {
+        showMsg(d.message, true);
+        setTimeout(() => location.reload(), 2000);
+      } else {
+        showMsg('Error: ' + d.message, false);
+        btn.disabled = false;
+        btn.textContent = 'Restore';
+      }
+    })
+    .catch(e => {
+      showMsg('Network error: ' + e, false);
+      btn.disabled = false;
+      btn.textContent = 'Restore';
+    });
+}
+</script>
+{% endblock %}
