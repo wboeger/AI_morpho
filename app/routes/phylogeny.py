@@ -12,6 +12,7 @@ Full flow:
 import json
 import os
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -90,9 +91,10 @@ def _parse_species_name(description):
     return parts[0]
 
 
-def _process_records(records, bad_accessions=None, min_length=400):
+def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
     """
-    Filter and de-duplicate records, keeping one per species (longest).
+    Filter and de-duplicate records, keeping one per species (longest that is
+    ≤ max_length_factor × mean length of the deduplicated set).
     Rename headers to  accession|Genus_species.
     Returns list of SeqRecord.
     """
@@ -115,18 +117,30 @@ def _process_records(records, bad_accessions=None, min_length=400):
             seen_seq[s] = rec
     records = {r.id: r for r in seen_seq.values()}
 
-    # One per species (longest)
+    # Compute max_length_factor × mean length cutoff
+    if records:
+        lengths = [len(r.seq) for r in records.values()]
+        max_allowed = max_length_factor * (sum(lengths) / len(lengths))
+    else:
+        max_allowed = float('inf')
+
+    # Group all qualifying sequences by species, sorted longest-first
     by_species = {}
     for rec in records.values():
         sp = _parse_species_name(rec.description)
-        if sp not in by_species or len(rec.seq) > len(by_species[sp].seq):
-            by_species[sp] = rec
+        by_species.setdefault(sp, []).append(rec)
+    for sp in by_species:
+        by_species[sp].sort(key=lambda r: len(r.seq), reverse=True)
 
-    # Rename and return
+    # One per species: longest sequence that does not exceed 2× mean length;
+    # if all are too long, skip that species entirely
     result = []
-    for sp, rec in by_species.items():
-        new_id = f"{rec.id}|{sp}"
-        result.append(SeqRecord(rec.seq, id=new_id, name='', description=''))
+    for sp, recs in by_species.items():
+        chosen = next((r for r in recs if len(r.seq) <= max_allowed), None)
+        if chosen is None:
+            continue
+        new_id = f"{chosen.id}|{sp}"
+        result.append(SeqRecord(chosen.seq, id=new_id, name='', description=''))
     return result
 
 
@@ -150,12 +164,13 @@ def _set_status(job, status, message):
 
 def _fetch_step(job):
     """NCBI search → download → filter → outgroups → write raw FASTA."""
-    email = job.ncbi_email or 'user@example.com'
-    taxon = job.target_taxon or 'Gyrodactylidae'
-    gene_q = job.gene_query or DEFAULT_GENE_QUERY_18S
-    min_len = job.min_length or 400
-    bad_acc = job.bad_accessions or []
-    og_defs = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
+    email      = job.ncbi_email or 'user@example.com'
+    taxon      = job.target_taxon or 'Gyrodactylidae'
+    gene_q     = job.gene_query or DEFAULT_GENE_QUERY_18S
+    min_len    = job.min_length or 400
+    max_factor = job.max_length_factor if job.max_length_factor is not None else 2.0
+    bad_acc    = job.bad_accessions or []
+    og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
 
     # 1. Ingroup
     query = f'"{taxon}"[Organism] AND ({gene_q})'
@@ -169,7 +184,7 @@ def _fetch_step(job):
     db.session.commit()
 
     _set_status(job, 'fetching', f'Processing {len(records)} sequences…')
-    ingroup = _process_records(records, bad_acc, min_len)
+    ingroup = _process_records(records, bad_acc, min_len, max_factor)
     job.n_sequences_deduped = len(ingroup)
     ingroup_species = {r.id.split('|')[1] for r in ingroup if '|' in r.id}
     db.session.commit()
@@ -189,7 +204,7 @@ def _fetch_step(job):
         fq = f'"{family}"[Organism] AND ({gene_q})'
         fids, _ = _ncbi_search(fq, email)
         frecs = _ncbi_fetch_batch(fids, email)
-        candidates = _process_records(frecs, bad_acc, min_len)
+        candidates = _process_records(frecs, bad_acc, min_len, max_factor)
 
         # Exclude anything already in ingroup or previously selected outgroups
         candidates = [
@@ -242,7 +257,7 @@ def _fetch_step(job):
     _set_status(job, 'fetched',
                 f'{len(final_unique)} sequences written '
                 f'({len(ingroup)} ingroup + {len(outgroup_records)} outgroup). '
-                f'Starting alignment…')
+                f'Review sequences and click Approve & Align.')
 
 
 def _align_step(job):
@@ -285,16 +300,110 @@ def _trim_step(job):
                 f'Ready to submit to CIPRES.')
 
 
+def _nj_step(job):
+    """Compute a rapid NJ tree from the trimmed alignment. Non-fatal on failure."""
+    _set_status(job, 'nj_running', 'Computing neighbor-joining tree…')
+    try:
+        from Bio import AlignIO, Phylo
+        from Bio.Phylo.TreeConstruction import DistanceCalculator, DistanceTreeConstructor
+        import io as _io
+        alignment = AlignIO.read(job.trimmed_fasta_path, 'fasta')
+        calc      = DistanceCalculator('identity')
+        dm        = calc.get_distance(alignment)
+        nj_tree   = DistanceTreeConstructor().nj(dm)
+        buf       = _io.StringIO()
+        Phylo.write(nj_tree, buf, 'newick')
+        newick = buf.getvalue().strip()
+        nwk_path = os.path.join(job.result_dir, 'nj_tree.nwk')
+        with open(nwk_path, 'w') as f:
+            f.write(newick)
+        job.nj_newick = newick
+        n = len(alignment)
+        _set_status(job, 'nj_ready',
+                    f'NJ tree ready ({n} sequences). '
+                    f'Review tree, replace any problematic sequences, then approve for CIPRES.')
+    except Exception as exc:
+        # NJ failure is non-fatal — fall back to trimmed
+        job.nj_newick = None
+        _set_status(job, 'trimmed',
+                    f'Trimming complete. (NJ failed: {exc}) Ready for CIPRES.')
+
+
 def _pipeline_thread(app, job_id):
-    """Background thread: fetch → align → trim."""
+    """Background thread: fetch only — waits for user approval before aligning."""
     with app.app_context():
         job = db.session.get(PhylogenyJob, job_id)
         if not job:
             return
         try:
             _fetch_step(job)
+            # Stop here; user must review sequences and click Approve & Align
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = str(exc)
+            db.session.commit()
+
+
+def _align_trim_thread(app, job_id):
+    """Background thread: align → trim → NJ (started after user approves fetch)."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
             _align_step(job)
             _trim_step(job)
+            _nj_step(job)
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = str(exc)
+            db.session.commit()
+
+
+def _replace_realign_thread(app, job_id, replacements, removals):
+    """Fetch replacement sequences, rewrite raw FASTA, re-align → trim → NJ."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            from Bio import SeqIO
+            from Bio.SeqRecord import SeqRecord as BR
+
+            _set_status(job, 'aligning', 'Applying sequence changes…')
+            email = job.ncbi_email or 'user@example.com'
+
+            # Read current raw FASTA
+            with open(job.raw_fasta_path) as fh:
+                current = list(SeqIO.parse(fh, 'fasta'))
+
+            # IDs to drop
+            drop_ids = set(removals) | {r['old_id'] for r in replacements}
+            kept = [rec for rec in current if rec.id not in drop_ids]
+
+            # Fetch and insert replacements
+            if replacements:
+                new_accs = [r['new_accession'] for r in replacements]
+                _set_status(job, 'aligning',
+                            f'Fetching {len(new_accs)} replacement sequence(s) from NCBI…')
+                fetched = _ncbi_fetch_batch(new_accs, email)
+                for rep in replacements:
+                    acc     = rep['new_accession']
+                    species = rep.get('species', '')
+                    if acc in fetched:
+                        rec    = fetched[acc]
+                        new_id = f"{rec.id}|{species}" if species else rec.id
+                        kept.append(BR(rec.seq, id=new_id, name='', description=''))
+
+            _write_fasta(kept, job.raw_fasta_path)
+            job.n_sequences_final = len(kept)
+            job.n_sequences       = len(kept)
+            db.session.commit()
+
+            _align_step(job)
+            _trim_step(job)
+            _nj_step(job)
+
         except Exception as exc:
             job.status = 'failed'
             job.status_message = str(exc)
@@ -538,7 +647,8 @@ def create_job(project_id):
         ncbi_email  = request.form.get('ncbi_email', '').strip()
         target_taxon = request.form.get('target_taxon', 'Gyrodactylidae').strip()
         gene_query  = request.form.get('gene_query', DEFAULT_GENE_QUERY_18S).strip()
-        min_length  = max(100, int(request.form.get('min_length', 400) or 400))
+        min_length        = max(100, int(request.form.get('min_length', 400) or 400))
+        max_length_factor = max(1.0, float(request.form.get('max_length_factor', 2.0) or 2.0))
         bad_acc     = [s.strip() for s in request.form.get('bad_accessions', '').splitlines() if s.strip()]
 
         # Parse outgroup definitions: each line "Family | mode | n"
@@ -568,6 +678,7 @@ def create_job(project_id):
             target_taxon=target_taxon,
             gene_query=gene_query,
             min_length=min_length,
+            max_length_factor=max_length_factor,
             bad_accessions=bad_acc,
             outgroup_definitions=og_defs,
             cipres_user=cipres_user,
@@ -629,7 +740,7 @@ def job_status(project_id, job_id):
 def submit_cipres(project_id, job_id):
     job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
 
-    if job.status not in ('trimmed', 'fetched'):
+    if job.status not in ('trimmed', 'fetched', 'nj_ready'):
         return jsonify({'error': f'Job not ready (stage: {job.status})'}), 400
 
     submit_path = job.trimmed_fasta_path or job.raw_fasta_path
@@ -702,11 +813,24 @@ def download_and_root(project_id, job_id):
 def import_tree(project_id, job_id):
     job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
     if not job.tree_newick:
-        return jsonify({'error': 'No tree available. Download results first.'}), 400
+        return jsonify({'error': 'No ML tree available. Download results first.'}), 400
     project = Project.query.get_or_404(project_id)
     project.tree_newick = job.tree_newick
     db.session.commit()
-    return jsonify({'status': 'ok', 'message': 'Tree imported into project.'})
+    return jsonify({'status': 'ok', 'message': 'ML tree imported into project.'})
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/import_nj',
+                methods=['POST'])
+@login_required
+def import_nj_tree(project_id, job_id):
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if not job.nj_newick:
+        return jsonify({'error': 'No NJ tree available for this job.'}), 400
+    project = Project.query.get_or_404(project_id)
+    project.tree_newick = job.nj_newick
+    db.session.commit()
+    return jsonify({'status': 'ok', 'message': 'NJ tree imported into project.'})
 
 
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/newick')
@@ -720,13 +844,245 @@ def get_newick(project_id, job_id):
     })
 
 
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/nj_preview')
+@login_required
+def nj_preview(project_id, job_id):
+    """Return NJ newick + sequence list for the NJ review modal."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if not job.nj_newick:
+        return jsonify({'error': 'NJ tree not available.'}), 404
+    sequences = []
+    if job.trimmed_fasta_path and os.path.exists(job.trimmed_fasta_path):
+        from Bio import SeqIO
+        with open(job.trimmed_fasta_path) as fh:
+            for rec in SeqIO.parse(fh, 'fasta'):
+                sp = rec.id.split('|')[1].replace('_', ' ') if '|' in rec.id else rec.id
+                sequences.append({'id': rec.id, 'species': sp, 'length': len(rec.seq)})
+    return jsonify({
+        'newick':     job.nj_newick,
+        'sequences':  sequences,
+        'n_sequences': len(sequences),
+        'status_message': job.status_message or '',
+    })
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/fetch_alternatives')
+@login_required
+def fetch_alternatives(project_id, job_id):
+    """Fetch alternative NCBI sequences for a given species name."""
+    job     = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    species = request.args.get('species', '').strip()   # e.g. "Gyrodactylus salaris"
+    if not species:
+        return jsonify({'error': 'species parameter required'}), 400
+    email   = job.ncbi_email or 'user@example.com'
+    gene_q  = job.gene_query or DEFAULT_GENE_QUERY_18S
+    min_len = job.min_length or 400
+    query   = f'"{species}"[Organism] AND ({gene_q})'
+    try:
+        ids, count = _ncbi_search(query, email, retmax=50)
+        records    = _ncbi_fetch_batch(ids, email)
+        candidates = sorted(
+            [{'accession': rec.id,
+              'length':    len(rec.seq),
+              'description': rec.description[:120]}
+             for rec in records.values() if len(rec.seq) >= min_len],
+            key=lambda x: x['length'], reverse=True
+        )
+        return jsonify({'species': species, 'candidates': candidates,
+                        'total_found': count})
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/replace_and_realign',
+                methods=['POST'])
+@login_required
+def replace_and_realign(project_id, job_id):
+    """Apply sequence replacements/removals and re-run align → trim → NJ."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if job.status not in ('nj_ready', 'trimmed'):
+        return jsonify({'error': f'Job not in reviewable state (current: {job.status})'}), 400
+    data         = request.get_json() or {}
+    replacements = data.get('replacements', [])   # [{old_id, new_accession, species}, ...]
+    removals     = data.get('removals', [])        # [old_id, ...]
+    if not replacements and not removals:
+        return jsonify({'error': 'No changes specified.'}), 400
+    app = current_app._get_current_object()
+    t = threading.Thread(target=_replace_realign_thread,
+                         args=(app, job_id, replacements, removals), daemon=True)
+    t.start()
+    return jsonify({'status': 'aligning', 'message': 'Applying changes and re-aligning…'})
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/approve_for_cipres',
+                methods=['POST'])
+@login_required
+def approve_for_cipres(project_id, job_id):
+    """Mark NJ-reviewed job as trimmed and ready for CIPRES."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if job.status not in ('nj_ready', 'trimmed'):
+        return jsonify({'error': f'Job not in reviewable state (current: {job.status})'}), 400
+    job.status         = 'trimmed'
+    job.status_message = 'Approved after NJ review. Ready for CIPRES submission.'
+    db.session.commit()
+    return jsonify({'status': 'trimmed', 'message': job.status_message})
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/search_species')
+@login_required
+def search_species(project_id, job_id):
+    """Search NCBI for a species name (any sequence, no gene filter by default)."""
+    job      = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    q        = request.args.get('q', '').strip()
+    gene_filter = request.args.get('gene_filter', '0') == '1'
+    if not q:
+        return jsonify({'error': 'q parameter required'}), 400
+    email   = job.ncbi_email or 'user@example.com'
+    min_len = job.min_length or 400
+    if gene_filter and job.gene_query:
+        query = f'"{q}"[Organism] AND ({job.gene_query})'
+    else:
+        query = f'"{q}"[Organism]'
+    try:
+        ids, count = _ncbi_search(query, email, retmax=50)
+        records    = _ncbi_fetch_batch(ids, email)
+        candidates = sorted(
+            [{'accession': rec.id,
+              'length':    len(rec.seq),
+              'description': rec.description[:150]}
+             for rec in records.values() if len(rec.seq) >= min_len],
+            key=lambda x: x['length'], reverse=True
+        )
+        return jsonify({'candidates': candidates, 'total_found': count, 'query': query})
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/add_sequences',
+                methods=['POST'])
+@login_required
+def add_sequences(project_id, job_id):
+    """Add arbitrary sequences (by accession) to the job's raw FASTA.
+
+    Accepted in states: fetched, nj_ready, trimmed.
+    If nj_ready, automatically re-runs align→trim→NJ after adding.
+    """
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if job.status not in ('fetched', 'nj_ready', 'trimmed'):
+        return jsonify({'error': f'Cannot add sequences in state: {job.status}'}), 400
+    data       = request.get_json() or {}
+    items      = data.get('accessions', [])   # [{accession, species}, ...]
+    if not items:
+        return jsonify({'error': 'No accessions provided'}), 400
+
+    email = job.ncbi_email or 'user@example.com'
+    try:
+        from Bio import SeqIO
+        from Bio.SeqRecord import SeqRecord
+
+        acc_list = [it['accession'] for it in items]
+        fetched  = _ncbi_fetch_batch(acc_list, email)
+
+        current = []
+        if job.raw_fasta_path and os.path.exists(job.raw_fasta_path):
+            with open(job.raw_fasta_path) as fh:
+                current = list(SeqIO.parse(fh, 'fasta'))
+        current_ids = {r.id for r in current}
+
+        added = []
+        for it in items:
+            acc     = it['accession']
+            species = it.get('species', '').strip()
+            if acc not in fetched:
+                continue
+            rec = fetched[acc]
+            if not species:
+                species = _parse_species_name(rec.description)
+            sp_norm = species.replace(' ', '_')
+            new_id  = f"{rec.id}|{sp_norm}"
+            if new_id not in current_ids:
+                current.append(SeqRecord(rec.seq, id=new_id, name='', description=''))
+                current_ids.add(new_id)
+                added.append({'accession': acc, 'species': sp_norm.replace('_', ' '),
+                              'length': len(rec.seq)})
+
+        if not added:
+            return jsonify({'error': 'No new sequences added (may already be present)'}), 400
+
+        _write_fasta(current, job.raw_fasta_path)
+        job.n_sequences_final = len(current)
+        job.n_sequences       = len(current)
+
+        if job.status == 'nj_ready':
+            # Re-run align→trim→NJ automatically
+            app = current_app._get_current_object()
+            t = threading.Thread(target=_align_trim_thread, args=(app, job_id), daemon=True)
+            t.start()
+            db.session.commit()
+            return jsonify({'status': 'aligning',
+                            'message': f'Added {len(added)} sequence(s). Re-aligning…',
+                            'added': added})
+
+        db.session.commit()
+        return jsonify({'status': job.status, 'added': added, 'n_sequences': len(current)})
+
+    except Exception as exc:
+        return jsonify({'error': str(exc)}), 500
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/fetch_preview')
+@login_required
+def fetch_preview(project_id, job_id):
+    """Return the list of sequences in the raw FASTA for user review."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if not job.raw_fasta_path or not os.path.exists(job.raw_fasta_path):
+        return jsonify({'error': 'Raw FASTA not found on disk.'}), 404
+    from Bio import SeqIO
+    sequences = []
+    with open(job.raw_fasta_path) as fh:
+        for rec in SeqIO.parse(fh, 'fasta'):
+            species = rec.id.split('|')[1].replace('_', ' ') if '|' in rec.id else rec.id
+            sequences.append({
+                'id':      rec.id,
+                'species': species,
+                'length':  len(rec.seq),
+            })
+    return jsonify({
+        'sequences':    sequences,
+        'n_raw':        job.n_sequences_raw,
+        'n_deduped':    job.n_sequences_deduped,
+        'n_final':      job.n_sequences_final,
+        'n_sequences':  len(sequences),
+    })
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/approve_and_align',
+                methods=['POST'])
+@login_required
+def approve_and_align(project_id, job_id):
+    """User approved the fetched sequences — start alignment + trimming."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    # Already aligned/trimmed (e.g. server restarted mid-run with old code)
+    if job.status in ('aligned', 'trimmed'):
+        return jsonify({'status': job.status, 'message': job.status_message or 'Already processed.'})
+    if job.status != 'fetched':
+        return jsonify({'error': f'Job is not in fetched state (current: {job.status})'}), 400
+    app = current_app._get_current_object()
+    t = threading.Thread(target=_align_trim_thread, args=(app, job_id), daemon=True)
+    t.start()
+    return jsonify({'status': 'aligning', 'message': 'Alignment started…'})
+
+
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/delete',
                 methods=['POST'])
 @login_required
 def delete_job(project_id, job_id):
     job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    result_dir = job.result_dir
     db.session.delete(job)
     db.session.commit()
+    if result_dir and os.path.isdir(result_dir):
+        shutil.rmtree(result_dir, ignore_errors=True)
     return jsonify({'status': 'ok'})
 
 

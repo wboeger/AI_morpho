@@ -55,6 +55,27 @@
     </form>
 </div>
 
+<!-- ImageJ Batch Import -->
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="margin-bottom:0.5rem;">Import Landmarks from ImageJ Macro</h3>
+    <p style="font-size:0.83rem; color:var(--gray-500); margin-bottom:0.6rem;">
+        Select a ZIP archive of CSV files produced by the Gyro-Landmark macro.
+        Each CSV must be named <code>GenusName_speciesName.csv</code> (matching specimen names in this project).
+    </p>
+    <form method="POST" action="{{ url_for('landmarks.batch_import_landmarks', project_id=project.id) }}"
+          enctype="multipart/form-data"
+          style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+        <select name="structure_type" style="padding:0.3rem 0.5rem; border:1px solid var(--gray-300); border-radius:4px; font-size:0.85rem;">
+            {% for st in ['hook','anchor','superficial_bar','deep_bar','mco'] %}
+            <option value="{{ st }}">{{ st.replace('_',' ').title() }}</option>
+            {% endfor %}
+        </select>
+        <input type="file" name="zip_file" accept=".zip"
+               style="font-size:0.83rem;" required>
+        <button type="submit" class="btn btn-outline">Import ZIP</button>
+    </form>
+</div>
+
 <!-- Specimen List -->
 <div class="card">
     <h3>Specimens ({{ specimens|length }})</h3>
@@ -99,6 +120,7 @@
                     {% if st.landmarks_json %}
                     <a href="{{ url_for('boundaries.boundary_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">boundaries</a>
                     {% endif %}
+                    <button class="btn btn-sm btn-outline" onclick="openImgUpload({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name }}')" title="{{ 'Replace' if st.image_path else 'Upload' }} image">{% if st.image_path %}img&#10003;{% else %}img{% endif %}</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name }}')" title="Delete structure">&times;</button>
                     {% endfor %}
                     <button class="btn btn-sm btn-danger" onclick="deleteSpecimen({{ project.id }}, {{ s.id }}, '{{ s.species_name }}')" title="Delete specimen">Delete</button>
@@ -132,8 +154,36 @@
 </div>
 {% endblock %}
 
+<!-- Image upload modal -->
+<div id="imgModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:8px; padding:1.5rem; min-width:320px; max-width:420px; box-shadow:0 4px 24px rgba(0,0,0,0.2);">
+        <h3 id="imgModalTitle" style="margin:0 0 0.75rem;">Upload Image</h3>
+        <form id="imgUploadForm" method="POST" enctype="multipart/form-data">
+            <input type="file" name="image" accept="image/*" required style="margin-bottom:0.75rem; display:block; width:100%;">
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+                <button type="button" class="btn btn-outline" onclick="closeImgModal()">Cancel</button>
+                <button type="submit" class="btn btn-primary">Upload</button>
+            </div>
+        </form>
+    </div>
+</div>
+
 {% block scripts %}
 <script>
+function openImgUpload(structureId, structureType, speciesName) {
+    document.getElementById('imgModalTitle').textContent =
+        'Upload image — ' + structureType.replace(/_/g, ' ') + ' (' + speciesName + ')';
+    document.getElementById('imgUploadForm').action = '/api/structure/' + structureId + '/upload_image';
+    const modal = document.getElementById('imgModal');
+    modal.style.display = 'flex';
+}
+function closeImgModal() {
+    document.getElementById('imgModal').style.display = 'none';
+}
+document.getElementById('imgModal').addEventListener('click', function(e) {
+    if (e.target === this) closeImgModal();
+});
+
 function deleteSpecimen(projectId, specimenId, speciesName) {
     if (!confirm(`Delete specimen "${speciesName}" and all its structures, character values, and DNA data? This cannot be undone.`)) return;
     fetch(`/api/project/${projectId}/specimen/${specimenId}/delete`, {method: 'DELETE'})

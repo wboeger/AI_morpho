@@ -1,0 +1,327 @@
+{% extends "base.html" %}
+{% block title %}Name Mappings — {{ project.name }}{% endblock %}
+
+{% block content %}
+<div style="display:flex; align-items:center; gap:1rem; margin-bottom:1rem; flex-wrap:wrap;">
+    <h1 style="margin:0;">Name Mappings</h1>
+    <span style="color:var(--gray-500); font-size:0.9rem;">{{ project.name }}</span>
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}" class="btn btn-sm btn-outline" style="margin-left:auto;">
+        &#8592; Back to Matrix
+    </a>
+</div>
+
+<p style="color:var(--gray-600); max-width:700px;">
+    Map tree tip labels to specimen names when automatic matching fails due to spelling differences,
+    abbreviations, or formatting. Aliases are applied before the fuzzy matching rules.
+</p>
+
+{% if not has_tree %}
+<div class="card" style="border-left:4px solid var(--warning);">
+    <p style="margin:0; color:var(--gray-600);">No tree is currently loaded for this project.
+    Import a tree from the <a href="{{ url_for('phylogeny.phylogeny_view', project_id=project.id) }}">Phylogeny</a> page first.</p>
+</div>
+{% endif %}
+
+<!-- ── Mismatch summary ───────────────────────────────────────────────────── -->
+{% if has_tree %}
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:1.25rem; margin-bottom:1.5rem;">
+
+    <!-- Unmatched tree leaves -->
+    <div class="card">
+        <h3 style="margin-top:0;">
+            Unmatched Tree Labels
+            <span style="font-size:0.8rem; font-weight:normal; color:var(--gray-500);">({{ unmatched_leaves|length }})</span>
+        </h3>
+        {% if not unmatched_leaves %}
+        <p style="color:var(--gray-500); font-style:italic; margin:0;">All tree labels match a specimen.</p>
+        {% else %}
+        <p style="font-size:0.83rem; color:var(--gray-600); margin-bottom:0.5rem;">
+            These tree tip labels have no matching specimen.
+            <strong>Link</strong> to an existing specimen, <strong>Add</strong> a new specimen entry (all characters will be <code>?</code>), or <strong>Ignore</strong> to hide from this list.
+        </p>
+        <div style="overflow-y:auto; max-height:300px;">
+            <table style="font-size:0.82rem; width:100%;">
+                <thead>
+                    <tr style="background:var(--gray-100);">
+                        <th style="padding:0.3rem 0.5rem; text-align:left;">Tree label</th>
+                        <th style="padding:0.3rem 0.5rem; text-align:left; font-style:italic;">Will create specimen</th>
+                        <th style="padding:0.3rem 0.5rem;"></th>
+                    </tr>
+                </thead>
+                <tbody id="unmatchedBody">
+                {% for leaf in unmatched_leaves %}
+                <tr style="border-bottom:1px solid var(--gray-200);" id="urow-{{ loop.index0 }}">
+                    <td style="padding:0.25rem 0.5rem; font-family:monospace; font-size:0.78rem; color:var(--gray-700);">{{ leaf }}</td>
+                    <td style="padding:0.25rem 0.5rem; font-style:italic; color:var(--gray-500); font-size:0.8rem;">
+                        {{ leaf | replace('_',' ') | replace('|',' ') | truncate(40, True, '…') }}
+                    </td>
+                    <td style="padding:0.25rem 0.4rem; white-space:nowrap; display:flex; gap:0.25rem;">
+                        <button class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
+                            onclick="startMapping('{{ leaf|replace("'","\\'")|replace('"','&quot;') }}')">
+                            Link &#8594;
+                        </button>
+                        <button class="btn btn-sm btn-primary" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
+                            onclick="addToMatrix({{ loop.index0 }}, '{{ leaf|replace("'","\\'")|replace('"','&quot;') }}')">
+                            + Matrix
+                        </button>
+                        <button class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.35rem; color:var(--gray-500);"
+                            onclick="ignoreLeaf({{ loop.index0 }}, '{{ leaf|replace("'","\\'")|replace('"','&quot;') }}')">
+                            Ignore
+                        </button>
+                    </td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+
+    <!-- Unmatched specimens -->
+    <div class="card">
+        <h3 style="margin-top:0;">
+            Unmatched Specimens
+            <span style="font-size:0.8rem; font-weight:normal; color:var(--gray-500);">({{ unmatched_specimens|length }})</span>
+        </h3>
+        {% if not unmatched_specimens %}
+        <p style="color:var(--gray-500); font-style:italic; margin:0;">All specimens are represented in the tree.</p>
+        {% else %}
+        <p style="font-size:0.83rem; color:var(--gray-600); margin-bottom:0.5rem;">
+            These specimens have no matching tree leaf. They will appear at the bottom of the matrix.
+        </p>
+        <div style="overflow-y:auto; max-height:280px;">
+            <table style="font-size:0.82rem; width:100%;">
+                <thead>
+                    <tr style="background:var(--gray-100);">
+                        <th style="padding:0.3rem 0.5rem; text-align:left; font-style:italic;">Specimen name</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% for sn in unmatched_specimens %}
+                <tr style="border-bottom:1px solid var(--gray-200);">
+                    <td style="padding:0.25rem 0.5rem; font-style:italic;">{{ sn }}</td>
+                </tr>
+                {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endif %}
+
+<!-- ── Create alias ───────────────────────────────────────────────────────── -->
+<div class="card">
+    <h3 style="margin-top:0;">Create / Edit Alias</h3>
+    <div style="display:grid; grid-template-columns:1fr 1fr auto; gap:0.75rem; align-items:end; max-width:700px;">
+        <div class="form-group" style="margin:0;">
+            <label>Tree label <span style="font-weight:normal; color:var(--gray-500); font-size:0.8rem;">(as it appears in the tree, before normalization)</span></label>
+            <input type="text" id="newTreeLabel" placeholder="e.g. KX123456.1|Gyrodactylus_salaris"
+                   oninput="updatePreview()" style="font-family:monospace;">
+            <small id="normPreview" style="color:var(--gray-500); font-size:0.78rem;"></small>
+        </div>
+        <div class="form-group" style="margin:0;">
+            <label>Specimen name <span style="font-weight:normal; color:var(--gray-500); font-size:0.8rem;">(exact match in the database)</span></label>
+            <input list="specimenList" id="newSpecimenName" placeholder="Start typing…" style="font-style:italic;">
+            <datalist id="specimenList">
+                {% for sn in specimen_names %}
+                <option value="{{ sn }}">
+                {% endfor %}
+            </datalist>
+        </div>
+        <div>
+            <button class="btn btn-success" onclick="createAlias()">Save Alias</button>
+        </div>
+    </div>
+    <div id="aliasMsg" style="margin-top:0.5rem; font-size:0.85rem;"></div>
+</div>
+
+<!-- ── Ignored tree labels ────────────────────────────────────────────────── -->
+{% if ignored_aliases %}
+<div class="card">
+    <h3 style="margin-top:0;">
+        Ignored Tree Labels
+        <span style="font-size:0.8rem; font-weight:normal; color:var(--gray-500);">({{ ignored_aliases|length }}) — skipped in matrix ordering</span>
+    </h3>
+    <div style="overflow-x:auto;">
+        <table style="font-size:0.82rem; width:100%;">
+            <thead>
+                <tr style="background:var(--gray-100);">
+                    <th style="padding:0.3rem 0.5rem; text-align:left;">Tree label (normalized)</th>
+                    <th style="padding:0.3rem 0.5rem;"></th>
+                </tr>
+            </thead>
+            <tbody>
+            {% for a in ignored_aliases %}
+            <tr style="border-bottom:1px solid var(--gray-200); color:var(--gray-500);" id="alias-row-{{ a.id }}">
+                <td style="padding:0.25rem 0.5rem; font-family:monospace; font-size:0.78rem;">{{ a.tree_label }}</td>
+                <td style="padding:0.25rem 0.4rem;">
+                    <button class="btn btn-sm btn-outline" style="font-size:0.72rem;"
+                        onclick="deleteAlias({{ a.id }})">Unignore</button>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endif %}
+
+<!-- ── Existing aliases ───────────────────────────────────────────────────── -->
+<div class="card">
+    <h3 style="margin-top:0;">
+        Existing Aliases
+        <span style="font-size:0.8rem; font-weight:normal; color:var(--gray-500);">({{ aliases|length }})</span>
+    </h3>
+    {% if not aliases %}
+    <p style="color:var(--gray-500); font-style:italic; margin:0;">No aliases defined yet.</p>
+    {% else %}
+    <div style="overflow-x:auto;">
+        <table>
+            <thead>
+                <tr>
+                    <th>Tree label (normalized)</th>
+                    <th>&#8594; Specimen name</th>
+                    <th>Created</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody id="aliasTable">
+            {% for a in aliases %}
+            <tr id="alias-row-{{ a.id }}">
+                <td style="font-family:monospace; font-size:0.82rem;">{{ a.tree_label }}</td>
+                <td style="font-style:italic;">{{ a.specimen_name }}</td>
+                <td style="font-size:0.78rem; color:var(--gray-500);">{{ a.created_at.strftime('%Y-%m-%d') if a.created_at else '—' }}</td>
+                <td>
+                    <button class="btn btn-sm btn-danger" onclick="deleteAlias({{ a.id }})">Delete</button>
+                </td>
+            </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PROJECT_ID = {{ project.id }};
+
+function normalizeLabel(raw) {
+    // Mirror Python _normalize_leaf_label
+    let s = raw;
+    if (s.includes('|')) s = s.split('|').pop();
+    s = s.replace(/^_R_/i, '');
+    return s.replace(/_/g, ' ').trim().toLowerCase();
+}
+
+function updatePreview() {
+    const raw  = document.getElementById('newTreeLabel').value;
+    const norm = normalizeLabel(raw);
+    const el   = document.getElementById('normPreview');
+    el.textContent = norm ? 'Normalized: ' + norm : '';
+}
+
+function startMapping(leafLabel) {
+    document.getElementById('newTreeLabel').value = leafLabel;
+    updatePreview();
+    document.getElementById('newSpecimenName').focus();
+    document.getElementById('newTreeLabel').scrollIntoView({behavior:'smooth', block:'center'});
+}
+
+async function createAlias() {
+    const treeLabel    = document.getElementById('newTreeLabel').value.trim();
+    const specimenName = document.getElementById('newSpecimenName').value.trim();
+    const msg          = document.getElementById('aliasMsg');
+    if (!treeLabel || !specimenName) {
+        msg.style.color = 'var(--danger)';
+        msg.textContent = 'Both fields are required.';
+        return;
+    }
+    msg.style.color = 'var(--gray-500)';
+    msg.textContent = 'Saving…';
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/matrix/aliases`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tree_label: treeLabel, specimen_name: specimenName}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            msg.style.color = 'var(--danger)';
+            msg.textContent = 'Error: ' + (data.error || resp.statusText);
+            return;
+        }
+        msg.style.color = 'var(--success)';
+        msg.textContent = 'Saved. Reloading…';
+        setTimeout(() => location.reload(), 800);
+    } catch(err) {
+        msg.style.color = 'var(--danger)';
+        msg.textContent = 'Network error: ' + err.message;
+    }
+}
+
+async function addToMatrix(rowIdx, leafLabel) {
+    const btn = document.querySelector(`#urow-${rowIdx} .btn-primary`);
+    if (btn) { btn.disabled = true; btn.textContent = '…'; }
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/matrix/add_specimen_from_tree`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tree_label: leafLabel}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            alert('Error: ' + (data.error || resp.statusText));
+            if (btn) { btn.disabled = false; btn.textContent = '+ Matrix'; }
+            return;
+        }
+        // Remove row and show brief confirmation
+        const row = document.getElementById(`urow-${rowIdx}`);
+        if (row) {
+            row.style.background = '#d4edda';
+            row.cells[2].innerHTML = `<span style="color:var(--success); font-size:0.78rem;">&#10003; Added as "${data.species_name}"</span>`;
+        }
+    } catch(err) {
+        alert('Network error: ' + err.message);
+        if (btn) { btn.disabled = false; btn.textContent = '+ Matrix'; }
+    }
+}
+
+async function ignoreLeaf(rowIdx, leafLabel) {
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/matrix/ignore_tree_label`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({tree_label: leafLabel}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            alert('Error: ' + (data.error || resp.statusText));
+            return;
+        }
+        const row = document.getElementById(`urow-${rowIdx}`);
+        if (row) row.remove();
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+async function deleteAlias(aliasId) {
+    if (!confirm('Delete this alias?')) return;
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/matrix/aliases/${aliasId}/delete`, {method:'POST'}
+        );
+        const data = await resp.json();
+        if (data.status === 'ok') {
+            const row = document.getElementById('alias-row-' + aliasId);
+            if (row) row.remove();
+        }
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+</script>
+{% endblock %}

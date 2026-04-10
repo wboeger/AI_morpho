@@ -108,7 +108,8 @@ class CharacterDefinition(db.Model):
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     modified_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
                             onupdate=lambda: datetime.now(timezone.utc))
-    history_json = db.Column(db.JSON, default=list)
+    history_json  = db.Column(db.JSON, default=list)
+    display_order = db.Column(db.Integer)   # custom sort position; NULL = fall back to code
 
     creator = db.relationship('User')
     values = db.relationship('CharacterValue', backref='character', cascade='all, delete-orphan')
@@ -134,6 +135,21 @@ class CharacterValue(db.Model):
     reviewer = db.relationship('User', foreign_keys=[reviewer_id])
 
     __table_args__ = (db.UniqueConstraint('structure_id', 'character_id', 'reviewer_id'),)
+
+
+class SpeciesAlias(db.Model):
+    """Maps a normalized tree tip label to an exact specimen species_name."""
+    __tablename__ = 'species_aliases'
+    id           = db.Column(db.Integer, primary_key=True)
+    project_id   = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    tree_label   = db.Column(db.String(300), nullable=False)   # normalized (lowercase, spaces)
+    specimen_name = db.Column(db.String(300), nullable=False)  # exact Specimen.species_name
+    created_by   = db.Column(db.Integer, db.ForeignKey('users.id'))
+    created_at   = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    creator = db.relationship('User')
+    project = db.relationship('Project', backref='species_aliases')
+    __table_args__ = (db.UniqueConstraint('project_id', 'tree_label'),)
 
 
 class TaxonomicGroup(db.Model):
@@ -221,6 +237,8 @@ class PhylogenyJob(db.Model):
     target_taxon = db.Column(db.String(200))
     gene_query = db.Column(db.Text)
     min_length = db.Column(db.Integer, default=400)
+    max_length_factor = db.Column(db.Float, default=2.0)
+    nj_newick = db.Column(db.Text)                       # rapid NJ tree Newick
     outgroup_definitions = db.Column(db.JSON)   # [{family, mode, n}, ...]
     bad_accessions = db.Column(db.JSON, default=list)
 

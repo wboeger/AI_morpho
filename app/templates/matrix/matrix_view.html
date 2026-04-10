@@ -19,11 +19,24 @@
     <a href="{{ url_for('matrix.matrix_view', project_id=project.id, unconfirmed=1, structure_type=structure_filter) }}"
        class="btn btn-sm {% if unconfirmed_only %}btn-warning{% else %}btn-outline{% endif %}">Unconfirmed</a>
 
-    <!-- Tree upload -->
-    <form id="treeForm" style="margin-left:auto; display:flex; gap:0.3rem; align-items:center;">
+    <!-- Tree upload + name mappings -->
+    <form id="treeForm" style="margin-left:auto; display:flex; gap:0.3rem; align-items:center; flex-wrap:wrap;">
         <input type="file" id="treeFile" accept=".nwk,.newick,.tre,.tree,.nex,.nexus,.txt" style="width:200px; font-size:0.8rem;">
         <button type="button" class="btn btn-sm btn-outline" onclick="uploadTree()">Upload Tree</button>
         <span id="treeUploadMsg" style="font-size:0.75rem; color:var(--gray-500);"></span>
+        {% if has_tree %}
+        <select id="outgroupSelect" style="font-size:0.8rem; padding:0.2rem 0.4rem; border:1px solid var(--gray-300); border-radius:4px; max-width:180px;"
+                title="Select outgroup to re-root the tree">
+            <option value="">— Set outgroup —</option>
+            {% for row in matrix_data %}
+            <option value="{{ row.specimen.species_name }}">{{ row.specimen.species_name }}</option>
+            {% endfor %}
+        </select>
+        <button type="button" class="btn btn-sm btn-outline" onclick="setOutgroupFromSelect()" title="Re-root tree at selected outgroup">Root</button>
+        <span id="outgroupMsg" style="font-size:0.75rem; color:var(--gray-500);"></span>
+        {% endif %}
+        <a href="{{ url_for('matrix.aliases_page', project_id=project.id) }}"
+           class="btn btn-sm btn-outline" title="Manage tree–specimen name mappings">Name Mappings</a>
     </form>
 </div>
 
@@ -36,7 +49,11 @@
         <table class="matrix-table" id="matrixTable">
             <thead>
                 <tr>
-                    <th style="writing-mode:horizontal-tb; text-align:left; vertical-align:bottom;">Species</th>
+                    <th style="writing-mode:horizontal-tb; text-align:left; vertical-align:bottom;">
+                        Species
+                        <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.1rem 0.35rem; margin-left:0.4rem; vertical-align:middle;"
+                            onclick="openAddSpecies()" title="Add new species row">+ Add</button>
+                    </th>
                     {% for c in characters %}
                     <th title="{{ c.name }} ({{ c.structure_type }})">
                         <a href="{{ url_for('matrix.gallery_view', project_id=project.id, char_id=c.id) }}"
@@ -47,8 +64,18 @@
             </thead>
             <tbody>
                 {% for row in matrix_data %}
-                <tr>
-                    <td class="species-name">{{ row.specimen.species_name }}</td>
+                <tr id="sp-row-{{ row.specimen.id }}">
+                    <td class="species-name" style="white-space:nowrap;">
+                        <span class="sp-label" id="sp-label-{{ row.specimen.id }}">{{ row.specimen.species_name }}</span>
+                        <span class="sp-actions" style="display:none; margin-left:0.3rem;">
+                            <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
+                                onclick="openEditSpecies('{{ row.specimen.id }}', '{{ row.specimen.species_name | replace("'", "\\'") }}')"
+                                title="Rename">&#9998;</button>
+                            <button class="btn btn-sm btn-danger" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
+                                onclick="deleteSpecies('{{ row.specimen.id }}', '{{ row.specimen.species_name | replace("'", "\\'") }}')"
+                                title="Delete">&#10005;</button>
+                        </span>
+                    </td>
                     {% for c in characters %}
                     {% set val = row.cells[c.code] %}
                     <td class="matrix-cell
@@ -69,6 +96,26 @@
                 {% endfor %}
             </tbody>
         </table>
+    </div>
+</div>
+
+<style>
+#matrixTable tr:hover .sp-actions { display:inline !important; }
+</style>
+
+<!-- Species edit modal -->
+<div class="modal-overlay" id="spModal">
+    <div class="modal" style="max-width:420px;">
+        <h3 id="spModalTitle">Edit Species Name</h3>
+        <div class="form-group">
+            <label id="spModalLabel">New name</label>
+            <input type="text" id="spModalInput" style="font-style:italic;" placeholder="Genus species">
+        </div>
+        <div id="spModalMsg" style="font-size:0.83rem; margin-bottom:0.5rem;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeSpModal()">Cancel</button>
+            <button class="btn btn-primary" id="spModalSave" onclick="saveSpModal()">Save</button>
+        </div>
     </div>
 </div>
 
@@ -176,12 +223,12 @@ function uploadTree() {
         .catch(err => { msg.style.color = 'red'; msg.textContent = 'Upload failed: ' + err; });
 }
 
+const _embeddedNewick = {{ tree_newick | tojson }};
 function loadTree() {
-    fetch(`/api/project/${projectId}/tree`).then(r => r.json()).then(data => {
-        if (!data.newick) return;
-        document.getElementById('treePanel').style.display = 'block';
-        requestAnimationFrame(() => requestAnimationFrame(() => renderNewickTree(data.newick)));
-    }).catch(e => console.error('Tree fetch error:', e));
+    const newick = _embeddedNewick;
+    if (!newick) return;
+    document.getElementById('treePanel').style.display = 'block';
+    requestAnimationFrame(() => requestAnimationFrame(() => renderNewickTree(newick)));
 }
 
 // ── Newick parser ──────────────────────────────────────────────────────────
@@ -219,6 +266,17 @@ function getLeaves(node) {
     return node.children.flatMap(getLeaves);
 }
 
+function countLeaves(node) {
+    if (!node.children || node.children.length === 0) return 1;
+    return node.children.reduce((s, c) => s + countLeaves(c), 0);
+}
+
+function ladderize(node) {
+    if (!node.children || node.children.length === 0) return;
+    node.children.forEach(ladderize);
+    node.children.sort((a, b) => countLeaves(a) - countLeaves(b));
+}
+
 // Assign x (cumulative depth) to every node, then maxDepth = max leaf.x
 function assignDepths(node, d) {
     node.x = d || 0;
@@ -228,13 +286,9 @@ function assignDepths(node, d) {
 // ── Prune tree to only leaves present in matrixSpecies ────────────────────
 function normName(s) {
     s = (s || '').trim();
-    // Strip surrounding quotes (Newick quoted labels)
     s = s.replace(/^['"]|['"]$/g, '');
-    // Skip FigTree annotation artifacts
     if (s.includes('!') || s.includes('=')) return '\x00';
-    // Handle 'accession|species_name' format — take part after last '|'
     if (s.includes('|')) s = s.split('|').pop();
-    // Strip leading _R_ (FigTree rotation flag prefix)
     s = s.replace(/^_R_/i, '');
     return s.toLowerCase().replace(/_/g, ' ').trim();
 }
@@ -242,15 +296,24 @@ function normName(s) {
 // Build a set of normalized species names in the matrix
 const matrixNormSet = new Set(matrixSpecies.map(normName));
 
-function pruneTree(node) {
+// Build a map normName → index in matrixSpecies (for positional fallback)
+const matrixNormIndex = new Map(matrixSpecies.map((n, i) => [normName(n), i]));
+
+// pruneTree: keep only the FIRST leaf per species (deduplicate multiple accessions).
+// _seen is passed through recursion so duplicates in any part of the tree are removed.
+function pruneTree(node, _seen) {
+    if (!_seen) _seen = new Set();
     if (!node.children || node.children.length === 0) {
-        // Leaf: keep only if present in matrix
-        return matrixNormSet.has(normName(node.name)) ? node : null;
+        const norm = normName(node.name);
+        if (matrixNormSet.has(norm) && !_seen.has(norm)) {
+            _seen.add(norm);
+            return node;
+        }
+        return null;
     }
-    const kept = node.children.map(pruneTree).filter(c => c !== null);
+    const kept = node.children.map(c => pruneTree(c, _seen)).filter(c => c !== null);
     if (kept.length === 0) return null;
     if (kept.length === 1) {
-        // Collapse single-child internal node — absorb branch length
         const child = kept[0];
         child.length = (child.length || 0) + (node.length || 0);
         return child;
@@ -264,8 +327,11 @@ function renderNewickTree(newick) {
     const rawTree = parseNewick(newick);
     if (!rawTree) return;
 
+    // Ladderize the FULL tree before pruning so client order matches server order
+    ladderize(rawTree);
     const tree = pruneTree(JSON.parse(JSON.stringify(rawTree)));
     if (!tree) return;
+    // Do NOT re-ladderize after pruning
 
     const leaves = getLeaves(tree);
     const rows = Array.from(document.querySelectorAll('#matrixTable tbody tr'));
@@ -282,18 +348,20 @@ function renderNewickTree(newick) {
     assignDepths(tree, 0);
     const maxDepth = Math.max(...leaves.map(l => l.x)) || 1;
 
-    // Assign y to each leaf from its corresponding matrix row centre
-    // Server ordered matrix_data by tree leaf order, so leaf names map directly to rows
+    // Assign y to each leaf from its corresponding matrix row.
+    // Primary: look up by normalized name. Fallback: positional index i
+    // (valid because deduplication ensures leaves are in the same order as matrixSpecies).
     leaves.forEach((leaf, i) => {
         const normLeaf = normName(leaf.name);
-        const rowIdx = matrixSpecies.findIndex(n => normName(n) === normLeaf);
-        const ri = rowIdx >= 0 ? rowIdx : i;  // fall back to positional index
+        const nameIdx = matrixNormIndex.get(normLeaf);
+        const ri = (nameIdx !== undefined) ? nameIdx : i;
         if (ri < rows.length) {
             const r = rows[ri].getBoundingClientRect();
             leaf.leafY = (r.top + r.bottom) / 2 - svgRect.top;
         } else {
             leaf.leafY = i * 28 + 14;
         }
+        leaf._matrixIdx = ri;  // keep for diagnostics
     });
 
     // Propagate y upward to internal nodes (mean of children)
@@ -344,16 +412,166 @@ function renderNewickTree(newick) {
                 drawNode(c);
             });
         } else {
-            // Leaf: dotted leader line to right edge (visually connects to species name in matrix)
+            // Leaf: dotted leader line to right edge
             line(nx, node.leafY, X_TIP, node.leafY, '#bbb', 0.8, '2,4');
+            // Clickable dot → set as outgroup
+            const normLeaf = normName(node.name);
+            const speciesName = matrixSpecies.find(n => normName(n) === normLeaf);
+            if (speciesName) {
+                const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                dot.setAttribute('cx', nx.toFixed(1));
+                dot.setAttribute('cy', node.leafY.toFixed(1));
+                dot.setAttribute('r', 5);
+                dot.setAttribute('fill', '#3a7bb5');
+                dot.setAttribute('fill-opacity', '0');
+                dot.setAttribute('stroke', 'none');
+                dot.style.cursor = 'pointer';
+                dot.addEventListener('mouseenter', () => dot.setAttribute('fill-opacity', '0.35'));
+                dot.addEventListener('mouseleave', () => dot.setAttribute('fill-opacity', '0'));
+                dot.addEventListener('click', () => confirmOutgroup(speciesName));
+                dot.innerHTML = `<title>Set outgroup: ${speciesName}</title>`;
+                svgEl.appendChild(dot);
+            }
         }
     }
     drawNode(tree);
+}
+
+// ── Outgroup / re-rooting ──────────────────────────────────────────────────
+function confirmOutgroup(speciesName) {
+    const msg = document.getElementById('outgroupMsg');
+    if (!confirm(`Re-root tree with outgroup:\n"${speciesName}"\n\nThis will save the re-rooted tree and reload the page.`)) return;
+    _rerootTree(speciesName);
+}
+
+function setOutgroupFromSelect() {
+    const sel = document.getElementById('outgroupSelect');
+    if (!sel || !sel.value) { alert('Please select an outgroup species first.'); return; }
+    confirmOutgroup(sel.value);
+}
+
+function _rerootTree(speciesName) {
+    const msg = document.getElementById('outgroupMsg');
+    if (msg) { msg.textContent = 'Rerooting…'; msg.style.color = ''; }
+    fetch(`/api/project/${projectId}/tree/reroot`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({outgroup: speciesName})
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.status === 'ok') {
+            location.reload();
+        } else {
+            if (msg) { msg.textContent = 'Error: ' + (data.error || 'unknown'); msg.style.color = 'red'; }
+            else alert('Error: ' + (data.error || 'unknown'));
+        }
+    })
+    .catch(err => {
+        if (msg) { msg.textContent = 'Error: ' + err; msg.style.color = 'red'; }
+    });
 }
 
 // Auto-load tree if one exists
 {% if has_tree %}
 loadTree();
 {% endif %}
+
+// ── Species edit / delete / add ───────────────────────────────────────────────
+
+let _spMode     = null;   // 'edit' | 'add'
+let _spOldName  = null;
+let _spRowId    = null;
+
+function openEditSpecies(specimenId, currentName) {
+    _spMode    = 'edit';
+    _spOldName = currentName;
+    _spRowId   = specimenId;
+    document.getElementById('spModalTitle').textContent  = 'Rename Species';
+    document.getElementById('spModalLabel').textContent  = 'New name';
+    document.getElementById('spModalInput').value        = currentName;
+    document.getElementById('spModalMsg').textContent    = '';
+    document.getElementById('spModal').classList.add('active');
+    document.getElementById('spModalInput').select();
+}
+
+function openAddSpecies() {
+    _spMode    = 'add';
+    _spOldName = null;
+    _spRowId   = null;
+    document.getElementById('spModalTitle').textContent  = 'Add Species';
+    document.getElementById('spModalLabel').textContent  = 'Species name';
+    document.getElementById('spModalInput').value        = '';
+    document.getElementById('spModalMsg').textContent    = '';
+    document.getElementById('spModal').classList.add('active');
+    document.getElementById('spModalInput').focus();
+}
+
+function closeSpModal() {
+    document.getElementById('spModal').classList.remove('active');
+}
+
+async function saveSpModal() {
+    const val = document.getElementById('spModalInput').value.trim();
+    const msg = document.getElementById('spModalMsg');
+    if (!val) { msg.style.color='var(--danger)'; msg.textContent='Name cannot be empty.'; return; }
+    msg.style.color = 'var(--gray-500)'; msg.textContent = 'Saving…';
+    document.getElementById('spModalSave').disabled = true;
+
+    try {
+        let url, body;
+        if (_spMode === 'edit') {
+            url  = `/api/project/${projectId}/matrix/species/rename`;
+            body = {old_name: _spOldName, new_name: val};
+        } else {
+            url  = `/api/project/${projectId}/matrix/species/add`;
+            body = {species_name: val};
+        }
+        const resp = await fetch(url, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            msg.style.color = 'var(--danger)';
+            msg.textContent = data.error || resp.statusText;
+            document.getElementById('spModalSave').disabled = false;
+            return;
+        }
+        closeSpModal();
+        location.reload();
+    } catch(err) {
+        msg.style.color = 'var(--danger)'; msg.textContent = 'Network error: ' + err.message;
+        document.getElementById('spModalSave').disabled = false;
+    }
+}
+
+async function deleteSpecies(specimenId, speciesName) {
+    if (!confirm(`Delete "${speciesName}" and all its data from the matrix?\nThis cannot be undone.`)) return;
+    try {
+        const resp = await fetch(`/api/project/${projectId}/matrix/species/delete`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({species_name: speciesName}),
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
+        // Remove all rows for this species
+        document.querySelectorAll(`#sp-row-${specimenId}`).forEach(r => r.remove());
+        location.reload();
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
+// Enter key submits the modal
+document.getElementById('spModalInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveSpModal();
+    if (e.key === 'Escape') closeSpModal();
+});
+document.getElementById('spModal').addEventListener('click', function(e) {
+    if (e.target === this) closeSpModal();
+});
 </script>
 {% endblock %}

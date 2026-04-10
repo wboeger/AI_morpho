@@ -224,6 +224,31 @@ def add_structure(specimen_id):
     return render_template('project/add_structure.html', specimen=specimen, project=project)
 
 
+@project_bp.route('/api/structure/<int:structure_id>/upload_image', methods=['POST'])
+@login_required
+def upload_structure_image(structure_id):
+    """Upload or replace the image for an existing structure."""
+    structure = Structure.query.get_or_404(structure_id)
+    specimen = Specimen.query.get_or_404(structure.specimen_id)
+
+    if 'image' not in request.files or not request.files['image'].filename:
+        flash('No image selected.', 'error')
+        return redirect(url_for('project.view_project', project_id=specimen.project_id))
+
+    f = request.files['image']
+    filename = secure_filename(f.filename)
+    upload_dir = os.path.join(current_app.config['UPLOAD_FOLDER'],
+                              str(specimen.project_id), 'structures')
+    os.makedirs(upload_dir, exist_ok=True)
+    filepath = os.path.join(upload_dir, filename)
+    f.save(filepath)
+    structure.image_path = os.path.relpath(filepath, current_app.config['UPLOAD_FOLDER'])
+    _log(specimen.project_id, f'Uploaded image for {specimen.species_name} {structure.structure_type}')
+    db.session.commit()
+    flash(f'Image uploaded for {structure.structure_type.replace("_", " ")}.', 'success')
+    return redirect(url_for('project.view_project', project_id=specimen.project_id))
+
+
 @project_bp.route('/project/<int:project_id>/import', methods=['GET', 'POST'])
 @login_required
 def bulk_import(project_id):

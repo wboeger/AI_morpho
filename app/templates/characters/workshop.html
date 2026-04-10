@@ -13,14 +13,44 @@
         {{ st.replace('_', ' ').title() }}
     </a>
     {% endfor %}
+    <a href="{{ url_for('characters.print_characters', project_id=project.id) }}"
+       class="btn btn-outline btn-sm" target="_blank" style="margin-left:auto;">Print Characters</a>
     <a href="{{ url_for('characters.new_character', project_id=project.id) }}"
-       class="btn btn-primary" style="margin-left:auto;">Add New Character</a>
+       class="btn btn-primary">Add New Character</a>
 </div>
 
+<style>
+.char-tbody tr { transition: background 0.1s; }
+.char-tbody tr.drag-over { background: #e8f0fe !important; border-top: 2px solid var(--primary); }
+.char-tbody tr.dragging  { opacity: 0.4; }
+.drag-handle {
+    cursor: grab; color: var(--gray-400); font-size: 1.1rem;
+    padding: 0 0.4rem; user-select: none; line-height: 1;
+}
+.drag-handle:active { cursor: grabbing; }
+#reorderToast {
+    position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999;
+    background: var(--success); color: #fff;
+    padding: 0.45rem 1rem; border-radius: 6px; font-size: 0.85rem;
+    display: none; box-shadow: 0 2px 8px rgba(0,0,0,.2);
+}
+</style>
+
+<div id="reorderToast">Order saved</div>
+
 <div class="card">
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.5rem;">
+        <span style="font-size:0.83rem; color:var(--gray-500);">
+            &#9776; Drag rows to reorder. Order is saved automatically on drop.
+        </span>
+        <button class="btn btn-sm btn-outline" onclick="resetOrder()" title="Restore alphabetical order by code">
+            Reset Order
+        </button>
+    </div>
     <table>
         <thead>
             <tr>
+                <th style="width:1.5rem;"></th>
                 <th>Code</th>
                 <th>Name</th>
                 <th>Structure</th>
@@ -30,9 +60,10 @@
                 <th>Actions</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="charTbody" class="char-tbody">
             {% for c in characters %}
-            <tr>
+            <tr draggable="true" data-id="{{ c.id }}">
+                <td><span class="drag-handle" title="Drag to reorder">&#8942;&#8942;</span></td>
                 <td><strong>{{ c.code }}</strong></td>
                 <td>{{ c.name }}</td>
                 <td>{{ c.structure_type.replace('_', ' ') }}</td>
@@ -95,23 +126,116 @@ function deleteChar(charId, code) {
 }
 
 function showDistribution(charId) {
+    const modal = document.getElementById('distModal');
+    const container = document.getElementById('histogramContainer');
+    const stats = document.getElementById('distStats');
+    container.innerHTML = '<p style="color:var(--gray-500);">Loading…</p>';
+    stats.innerHTML = '';
+    modal.classList.add('active');
+
     fetch(`/api/project/${projectId}/characters/${charId}/distribution`)
-        .then(r => r.json()).then(data => {
-            document.getElementById('distModal').classList.add('active');
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+        .then(data => {
+            document.getElementById('distTitle').textContent = data.char_name || 'Distribution';
             if (data.type === 'geometric') {
+                if (!data.values || data.values.length === 0) {
+                    container.innerHTML = '<p style="color:var(--gray-500);">No measured values found. Confirm landmarks and boundaries first.</p>';
+                    return;
+                }
                 renderHistogram(data);
-                document.getElementById('distStats').innerHTML =
-                    `Min: ${data.stats.min.toFixed(3)} | Max: ${data.stats.max.toFixed(3)} | ` +
-                    `Mean: ${data.stats.mean.toFixed(3)} | Median: ${data.stats.median.toFixed(3)} | ` +
-                    `N: ${data.values.length}`;
+                const s = data.stats;
+                stats.innerHTML =
+                    `N: ${data.values.length} &nbsp;|&nbsp; ` +
+                    `Min: ${s.min.toFixed(4)} &nbsp;|&nbsp; Max: ${s.max.toFixed(4)} &nbsp;|&nbsp; ` +
+                    `Mean: ${s.mean.toFixed(4)} &nbsp;|&nbsp; Median: ${s.median.toFixed(4)}`;
             } else {
-                const container = document.getElementById('histogramContainer');
-                container.innerHTML = '<p>Manual character. State counts:</p><ul>' +
-                    Object.entries(data.state_counts).map(([s, c]) => `<li>State ${s}: ${c}</li>`).join('') +
-                    '</ul>';
-                document.getElementById('distStats').innerHTML = '';
+                const counts = data.state_counts || {};
+                const total = Object.values(counts).reduce((a, b) => a + b, 0);
+                container.innerHTML = '<table style="font-size:0.9rem; border-collapse:collapse;">' +
+                    '<tr><th style="text-align:left;padding:0.2rem 0.6rem;border-bottom:1px solid #ccc;">State</th>' +
+                    '<th style="text-align:right;padding:0.2rem 0.6rem;border-bottom:1px solid #ccc;">Count</th></tr>' +
+                    Object.entries(counts).sort().map(([s, c]) =>
+                        `<tr><td style="padding:0.15rem 0.6rem;">${s}</td><td style="text-align:right;padding:0.15rem 0.6rem;">${c}</td></tr>`
+                    ).join('') +
+                    `<tr><td style="padding:0.2rem 0.6rem;border-top:1px solid #ccc;font-weight:bold;">Total</td>` +
+                    `<td style="text-align:right;padding:0.2rem 0.6rem;border-top:1px solid #ccc;font-weight:bold;">${total}</td></tr>` +
+                    '</table>';
+                stats.innerHTML = '';
             }
+        })
+        .catch(err => {
+            container.innerHTML = `<p style="color:#c0392b;">Error loading distribution: ${err.message}</p>`;
         });
+}
+
+// ── Drag-and-drop reordering ──────────────────────────────────────
+let dragSrc = null;
+
+document.getElementById('charTbody').addEventListener('dragstart', e => {
+    const row = e.target.closest('tr');
+    if (!row) return;
+    dragSrc = row;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+});
+
+document.getElementById('charTbody').addEventListener('dragend', e => {
+    const row = e.target.closest('tr');
+    if (row) row.classList.remove('dragging');
+    document.querySelectorAll('#charTbody tr').forEach(r => r.classList.remove('drag-over'));
+    dragSrc = null;
+});
+
+document.getElementById('charTbody').addEventListener('dragover', e => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const row = e.target.closest('tr');
+    if (!row || row === dragSrc) return;
+    document.querySelectorAll('#charTbody tr').forEach(r => r.classList.remove('drag-over'));
+    row.classList.add('drag-over');
+});
+
+document.getElementById('charTbody').addEventListener('dragleave', e => {
+    const row = e.target.closest('tr');
+    if (row) row.classList.remove('drag-over');
+});
+
+document.getElementById('charTbody').addEventListener('drop', e => {
+    e.preventDefault();
+    const target = e.target.closest('tr');
+    if (!target || target === dragSrc || !dragSrc) return;
+    target.classList.remove('drag-over');
+    const tbody = document.getElementById('charTbody');
+    const rows = [...tbody.querySelectorAll('tr')];
+    const srcIdx = rows.indexOf(dragSrc);
+    const tgtIdx = rows.indexOf(target);
+    if (srcIdx < tgtIdx) {
+        target.after(dragSrc);
+    } else {
+        target.before(dragSrc);
+    }
+    saveOrder();
+});
+
+function saveOrder() {
+    const ids = [...document.querySelectorAll('#charTbody tr')].map(r => parseInt(r.dataset.id));
+    fetch(`/api/project/${projectId}/characters/reorder`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order: ids})
+    }).then(r => r.json()).then(() => {
+        const toast = document.getElementById('reorderToast');
+        toast.style.display = 'block';
+        setTimeout(() => { toast.style.display = 'none'; }, 1800);
+    });
+}
+
+function resetOrder() {
+    fetch(`/api/project/${projectId}/characters/reorder`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({order: [], reset: true})
+    }).then(() => location.reload());
 }
 
 function renderHistogram(data) {

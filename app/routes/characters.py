@@ -25,7 +25,11 @@ def workshop(project_id):
     if structure_filter:
         query = query.filter_by(structure_type=structure_filter)
 
-    characters = query.order_by(CharacterDefinition.code).all()
+    from sqlalchemy import func
+    characters = query.order_by(
+        func.coalesce(CharacterDefinition.display_order, 999999),
+        CharacterDefinition.code
+    ).all()
 
     return render_template('characters/workshop.html',
                            project=project, characters=characters,
@@ -192,6 +196,47 @@ def edit_character(project_id, char_id):
                            explanation=explanation)
 
 
+@characters_bp.route('/project/<int:project_id>/characters/print')
+@login_required
+def print_characters(project_id):
+    project = Project.query.get_or_404(project_id)
+    from sqlalchemy import func
+    characters = CharacterDefinition.query.filter_by(
+        project_id=project_id, active=True
+    ).order_by(
+        func.coalesce(CharacterDefinition.display_order, 999999),
+        CharacterDefinition.code
+    ).all()
+    # Build explanation for each character
+    char_data = []
+    for c in characters:
+        char_data.append({'char': c, 'explanation': _build_measurement_explanation(c)})
+    now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
+    return render_template('characters/print_characters.html',
+                           project=project, char_data=char_data, now=now)
+
+
+@characters_bp.route('/api/project/<int:project_id>/characters/reorder', methods=['POST'])
+@login_required
+def reorder_characters(project_id):
+    """Persist a new display order for a list of character IDs."""
+    Project.query.get_or_404(project_id)
+    data  = request.get_json() or {}
+    order = data.get('order', [])
+    if data.get('reset'):
+        CharacterDefinition.query.filter_by(project_id=project_id).update({'display_order': None})
+        db.session.commit()
+        return jsonify({'status': 'ok', 'reset': True})
+    if not order:
+        return jsonify({'error': 'order list required'}), 400
+    for i, char_id in enumerate(order):
+        char = CharacterDefinition.query.filter_by(id=char_id, project_id=project_id).first()
+        if char:
+            char.display_order = i
+    db.session.commit()
+    return jsonify({'status': 'ok', 'saved': len(order)})
+
+
 @characters_bp.route('/api/project/<int:project_id>/characters/<int:char_id>/toggle', methods=['POST'])
 @login_required
 def toggle_character(project_id, char_id):
@@ -247,22 +292,27 @@ def character_distribution(project_id, char_id):
                 parts_coords[part_name] = coords
 
         if parts_coords:
-            val = compute_geometric_value(
-                char.geometric_operation, parts_coords,
-                np.array(struct.landmarks_json), char.formula,
-                boundary=struct.boundary_json
-            )
-            raw_values.append(val)
-            labels.append(specimen.species_name)
+            try:
+                val = compute_geometric_value(
+                    char.geometric_operation, parts_coords,
+                    np.array(struct.landmarks_json), char.formula,
+                    boundary=struct.boundary_json
+                )
+                if val is not None and not np.isnan(val) and not np.isinf(val):
+                    raw_values.append(float(val))
+                    labels.append(specimen.species_name)
+            except Exception:
+                pass
 
     return jsonify({
         'type': 'geometric',
+        'char_name': char.name,
         'values': raw_values,
         'labels': labels,
         'states': char.states_json or [],
         'stats': {
-            'min': min(raw_values) if raw_values else 0,
-            'max': max(raw_values) if raw_values else 0,
+            'min': float(np.min(raw_values)) if raw_values else 0,
+            'max': float(np.max(raw_values)) if raw_values else 0,
             'mean': float(np.mean(raw_values)) if raw_values else 0,
             'median': float(np.median(raw_values)) if raw_values else 0,
         }

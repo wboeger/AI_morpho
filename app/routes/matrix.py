@@ -5,7 +5,7 @@ from flask_login import login_required, current_user
 from app import db
 from app.models import (
     Project, Specimen, Structure, CharacterDefinition, CharacterValue,
-    CorrectionHistory, ActivityLog
+    CorrectionHistory, ActivityLog, SpeciesAlias
 )
 
 matrix_bp = Blueprint('matrix', __name__)
@@ -20,9 +20,13 @@ def matrix_view(project_id):
     unconfirmed_only = request.args.get('unconfirmed') == '1'
 
     # Get active characters — only for structure types that have data
+    from sqlalchemy import func as sqlfunc
     char_query = CharacterDefinition.query.filter_by(
         project_id=project_id, active=True
-    ).order_by(CharacterDefinition.code)
+    ).order_by(
+        sqlfunc.coalesce(CharacterDefinition.display_order, 999999),
+        CharacterDefinition.code
+    )
     if structure_filter:
         char_query = char_query.filter_by(structure_type=structure_filter)
     characters = char_query.all()
@@ -75,15 +79,29 @@ def matrix_view(project_id):
 
         matrix_data.append(row)
 
-    # If a phylogenetic tree exists, reorder rows to match tree leaf order
-    if project.tree_newick:
-        leaf_order = _parse_leaf_order(project.tree_newick)
+    # Determine which tree to use for row ordering:
+    # 1. Project reference tree (uploaded or imported from NJ)
+    # 2. Latest completed NJ tree from phylogeny jobs
+    ordering_newick = project.tree_newick
+    if not ordering_newick:
+        from app.models import PhylogenyJob
+        latest_nj = (PhylogenyJob.query
+                     .filter_by(project_id=project_id)
+                     .filter(PhylogenyJob.nj_newick.isnot(None))
+                     .order_by(PhylogenyJob.submitted_at.desc())
+                     .first())
+        if latest_nj:
+            ordering_newick = latest_nj.nj_newick
+
+    if ordering_newick:
+        alias_map = _load_alias_map(project_id)
+        leaf_order = _parse_leaf_order(ordering_newick)
         used_ids = set()
         ordered = []
         for leaf in leaf_order:
             for row in matrix_data:
                 sp_id = row['specimen'].id
-                if sp_id not in used_ids and _match_leaf(leaf, row['specimen'].species_name):
+                if sp_id not in used_ids and _match_leaf(leaf, row['specimen'].species_name, alias_map):
                     ordered.append(row)
                     used_ids.add(sp_id)
                     break
@@ -98,7 +116,8 @@ def matrix_view(project_id):
                            matrix_data=matrix_data,
                            structure_filter=structure_filter,
                            dna_only=dna_only, unconfirmed_only=unconfirmed_only,
-                           has_tree=bool(project.tree_newick))
+                           has_tree=bool(ordering_newick),
+                           tree_newick=ordering_newick or '')
 
 
 @matrix_bp.route('/project/<int:project_id>/matrix/gallery/<int:char_id>')
@@ -355,40 +374,82 @@ def cell_detail(project_id):
     })
 
 
-def _parse_leaf_order(newick: str) -> list:
-    """Return tip labels in left-to-right order as they appear in the Newick string."""
+def _build_tree(newick: str) -> dict | None:
+    """Parse Newick into a nested dict {name, length, children}."""
     s = newick.strip().rstrip(';')
-    leaves = []
     idx = [0]
 
     def parse():
-        is_leaf = True
+        node = {'name': '', 'length': 1.0, 'children': []}
         if idx[0] < len(s) and s[idx[0]] == '(':
-            is_leaf = False
             idx[0] += 1
-            parse()
+            node['children'].append(parse())
             while idx[0] < len(s) and s[idx[0]] == ',':
                 idx[0] += 1
-                parse()
+                node['children'].append(parse())
             if idx[0] < len(s) and s[idx[0]] == ')':
                 idx[0] += 1
         name = ''
         while idx[0] < len(s) and s[idx[0]] not in ':,);':
             name += s[idx[0]]
             idx[0] += 1
-        name = name.strip().strip("'\"")
+        node['name'] = name.strip().strip("'\"")
         if idx[0] < len(s) and s[idx[0]] == ':':
             idx[0] += 1
+            length = ''
             while idx[0] < len(s) and s[idx[0]] not in ',);':
+                length += s[idx[0]]
                 idx[0] += 1
-        if is_leaf and name:
-            leaves.append(name)
+            try:
+                node['length'] = float(length)
+            except ValueError:
+                node['length'] = 1.0
+        return node
 
     try:
-        parse()
+        return parse()
     except Exception:
-        pass
-    return leaves
+        return None
+
+
+def _count_leaves(node: dict) -> int:
+    if not node['children']:
+        return 1
+    return sum(_count_leaves(c) for c in node['children'])
+
+
+def _ladderize(node: dict) -> None:
+    """Reorder children so subtrees with fewer leaves come first (top of tree)."""
+    for c in node['children']:
+        _ladderize(c)
+    node['children'].sort(key=_count_leaves)
+
+
+def _get_leaf_names(node: dict) -> list:
+    if not node['children']:
+        return [node['name']] if node['name'] else []
+    return [name for c in node['children'] for name in _get_leaf_names(c)]
+
+
+def _parse_leaf_order(newick: str) -> list:
+    """Return unique tip labels in ladderized order (fewer-leaves children first).
+
+    Multiple accessions of the same species (same normalized label) are deduplicated:
+    only the first occurrence in DFS order is kept, matching the client-side pruneTree
+    behaviour so that matrix row order and tree leaf order agree.
+    """
+    tree = _build_tree(newick)
+    if tree is None:
+        return []
+    _ladderize(tree)
+    seen: set = set()
+    unique: list = []
+    for name in _get_leaf_names(tree):
+        norm = _normalize_leaf_label(name)
+        if norm and norm not in seen:
+            seen.add(norm)
+            unique.append(name)
+    return unique
 
 
 def _normalize_leaf_label(label: str) -> str:
@@ -409,12 +470,27 @@ def _normalize_leaf_label(label: str) -> str:
     return label.replace('_', ' ').strip().lower()
 
 
-def _match_leaf(leaf_label: str, species_name: str) -> bool:
-    """Check if a tree leaf label matches a specimen species name."""
-    # Skip FigTree annotation artifacts (e.g. '!rotate=false]')
+def _load_alias_map(project_id: int) -> dict:
+    """Return {normalized_tree_label: specimen_name} for the project."""
+    return {a.tree_label: a.specimen_name
+            for a in SpeciesAlias.query.filter_by(project_id=project_id).all()}
+
+
+def _match_leaf(leaf_label: str, species_name: str, alias_map: dict = None) -> bool:
+    """Check if a tree leaf label matches a specimen species name.
+
+    Checks explicit aliases first, then falls back to normalized string matching.
+    '_IGNORE_' aliases cause the leaf to match nothing (silently skipped).
+    """
     if '!' in leaf_label or '=' in leaf_label:
         return False
     leaf_norm = _normalize_leaf_label(leaf_label)
+    # Explicit alias takes priority
+    if alias_map and leaf_norm in alias_map:
+        target = alias_map[leaf_norm]
+        if target == '_IGNORE_':
+            return False
+        return target.strip().lower() == species_name.strip().lower()
     sn_norm = species_name.strip().lower()
     if leaf_norm == sn_norm:
         return True
@@ -423,6 +499,18 @@ def _match_leaf(leaf_label: str, species_name: str) -> bool:
     if len(leaf_parts) >= 2 and len(sn_parts) >= 2:
         return leaf_parts[1] == sn_parts[1]
     return False
+
+
+def _humanize_leaf_label(label: str) -> str:
+    """Convert a tree tip label to a properly capitalized species name.
+
+    'KX981461.1|Gyrodactylus_salaris' → 'Gyrodactylus salaris'
+    """
+    norm  = _normalize_leaf_label(label)   # lowercase, spaces
+    parts = norm.split()
+    if len(parts) >= 2:
+        return parts[0].capitalize() + ' ' + ' '.join(parts[1:])
+    return norm.capitalize()
 
 
 def _extract_newick_from_nexus(text: str) -> str:
@@ -553,6 +641,75 @@ def _clean_newick_labels(newick: str, project_id: int) -> str:
     return result
 
 
+@matrix_bp.route('/api/project/<int:project_id>/tree/reroot', methods=['POST'])
+@login_required
+def reroot_tree(project_id):
+    """Re-root the project tree at the given outgroup species."""
+    project = Project.query.get_or_404(project_id)
+    data = request.get_json() or {}
+    outgroup_name = data.get('outgroup', '').strip()
+    if not outgroup_name:
+        return jsonify({'error': 'outgroup required'}), 400
+
+    # Determine which newick to re-root
+    newick = project.tree_newick
+    if not newick:
+        from app.models import PhylogenyJob
+        latest = (PhylogenyJob.query
+                  .filter_by(project_id=project_id)
+                  .filter(PhylogenyJob.nj_newick.isnot(None))
+                  .order_by(PhylogenyJob.submitted_at.desc())
+                  .first())
+        if latest:
+            newick = latest.nj_newick
+    if not newick:
+        return jsonify({'error': 'No tree loaded for this project'}), 400
+
+    alias_map = _load_alias_map(project_id)
+
+    # Find the actual Newick leaf label that matches the requested species name
+    tree_struct = _build_tree(newick)
+    if tree_struct is None:
+        return jsonify({'error': 'Failed to parse tree'}), 500
+
+    all_leaves = _get_leaf_names(tree_struct)
+    outgroup_leaf = next(
+        (lbl for lbl in all_leaves if _match_leaf(lbl, outgroup_name, alias_map)),
+        None
+    )
+    if outgroup_leaf is None:
+        return jsonify({'error': f'"{outgroup_name}" not found in tree leaves'}), 404
+
+    # Re-root using BioPython
+    try:
+        from Bio import Phylo
+        from io import StringIO
+
+        bio_tree = Phylo.read(StringIO(newick), 'newick')
+        # Find matching terminal in BioPython tree
+        outgroup_clade = next(
+            (t for t in bio_tree.get_terminals()
+             if t.name and (t.name == outgroup_leaf or _match_leaf(t.name, outgroup_name, alias_map))),
+            None
+        )
+        if outgroup_clade is None:
+            return jsonify({'error': 'Could not locate outgroup terminal in tree'}), 404
+
+        bio_tree.root_with_outgroup(outgroup_clade)
+
+        buf = StringIO()
+        Phylo.write(bio_tree, buf, 'newick')
+        new_newick = buf.getvalue().strip()
+
+        project.tree_newick = new_newick
+        db.session.commit()
+        return jsonify({'status': 'ok', 'outgroup': outgroup_name})
+
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'error': str(exc)}), 500
+
+
 @matrix_bp.route('/project/<int:project_id>/tree/upload', methods=['POST'])
 @login_required
 def upload_tree(project_id):
@@ -588,3 +745,194 @@ def upload_tree(project_id):
 def get_tree(project_id):
     project = Project.query.get_or_404(project_id)
     return jsonify({'newick': project.tree_newick or ''})
+
+
+# ── Species alias / name-mapping routes ──────────────────────────────────────
+
+@matrix_bp.route('/project/<int:project_id>/matrix/aliases')
+@login_required
+def aliases_page(project_id):
+    project     = Project.query.get_or_404(project_id)
+    all_aliases = SpeciesAlias.query.filter_by(project_id=project_id).order_by(SpeciesAlias.tree_label).all()
+    aliases         = [a for a in all_aliases if a.specimen_name != '_IGNORE_']
+    ignored_aliases = [a for a in all_aliases if a.specimen_name == '_IGNORE_']
+
+    specimens = (db.session.query(Specimen.species_name)
+                 .filter_by(project_id=project_id)
+                 .distinct()
+                 .order_by(Specimen.species_name)
+                 .all())
+    specimen_names = [s.species_name for s in specimens]
+
+    unmatched_leaves    = []
+    unmatched_specimens = []
+    if project.tree_newick:
+        alias_map     = _load_alias_map(project_id)
+        ignored_norms = {a.tree_label for a in ignored_aliases}
+        leaf_order    = _parse_leaf_order(project.tree_newick)
+        sn_set        = set(specimen_names)
+        matched_leaves    = set()
+        matched_specimens = set()
+        for leaf in leaf_order:
+            if '!' in leaf or '=' in leaf:
+                continue
+            for sn in sn_set:
+                if _match_leaf(leaf, sn, alias_map):
+                    matched_leaves.add(leaf)
+                    matched_specimens.add(sn)
+                    break
+        unmatched_leaves = [
+            l for l in leaf_order
+            if l not in matched_leaves
+            and '!' not in l and '=' not in l
+            and _normalize_leaf_label(l) not in ignored_norms
+        ]
+        unmatched_specimens = [sn for sn in specimen_names if sn not in matched_specimens]
+
+    return render_template('matrix/aliases.html',
+                           project=project,
+                           aliases=aliases,
+                           ignored_aliases=ignored_aliases,
+                           specimen_names=specimen_names,
+                           unmatched_leaves=unmatched_leaves,
+                           unmatched_specimens=unmatched_specimens,
+                           has_tree=bool(project.tree_newick))
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/aliases', methods=['POST'])
+@login_required
+def create_alias(project_id):
+    Project.query.get_or_404(project_id)
+    data         = request.get_json() or {}
+    tree_label   = _normalize_leaf_label(data.get('tree_label', '').strip())
+    specimen_name = data.get('specimen_name', '').strip()
+    if not tree_label or not specimen_name:
+        return jsonify({'error': 'tree_label and specimen_name are required'}), 400
+    # Check specimen exists in project
+    exists = Specimen.query.filter_by(project_id=project_id, species_name=specimen_name).first()
+    if not exists:
+        return jsonify({'error': f'No specimen named "{specimen_name}" in this project'}), 400
+    # Upsert
+    alias = SpeciesAlias.query.filter_by(project_id=project_id, tree_label=tree_label).first()
+    if alias:
+        alias.specimen_name = specimen_name
+    else:
+        alias = SpeciesAlias(project_id=project_id, tree_label=tree_label,
+                             specimen_name=specimen_name, created_by=current_user.id)
+        db.session.add(alias)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'id': alias.id,
+                    'tree_label': alias.tree_label,
+                    'specimen_name': alias.specimen_name})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/aliases/<int:alias_id>/delete',
+                 methods=['POST'])
+@login_required
+def delete_alias(project_id, alias_id):
+    alias = SpeciesAlias.query.filter_by(id=alias_id, project_id=project_id).first_or_404()
+    db.session.delete(alias)
+    db.session.commit()
+    return jsonify({'status': 'ok'})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/species/rename', methods=['POST'])
+@login_required
+def rename_species(project_id):
+    """Rename all specimens with old_name to new_name within the project."""
+    Project.query.get_or_404(project_id)
+    data     = request.get_json() or {}
+    old_name = data.get('old_name', '').strip()
+    new_name = data.get('new_name', '').strip()
+    if not old_name or not new_name:
+        return jsonify({'error': 'old_name and new_name required'}), 400
+    if old_name == new_name:
+        return jsonify({'status': 'ok', 'updated': 0})
+    # Check new name isn't already taken by a different species
+    clash = Specimen.query.filter_by(project_id=project_id, species_name=new_name).first()
+    if clash:
+        return jsonify({'error': f'"{new_name}" already exists in this project'}), 409
+    rows = Specimen.query.filter_by(project_id=project_id, species_name=old_name).all()
+    if not rows:
+        return jsonify({'error': f'No specimens named "{old_name}"'}), 404
+    for sp in rows:
+        sp.species_name = new_name
+    db.session.commit()
+    return jsonify({'status': 'ok', 'updated': len(rows), 'new_name': new_name})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/species/delete', methods=['POST'])
+@login_required
+def delete_species(project_id):
+    """Delete all specimens (and their structures/values) with the given species name."""
+    Project.query.get_or_404(project_id)
+    data        = request.get_json() or {}
+    species_name = data.get('species_name', '').strip()
+    if not species_name:
+        return jsonify({'error': 'species_name required'}), 400
+    rows = Specimen.query.filter_by(project_id=project_id, species_name=species_name).all()
+    if not rows:
+        return jsonify({'error': f'No specimens named "{species_name}"'}), 404
+    for sp in rows:
+        db.session.delete(sp)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'deleted': len(rows)})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/species/add', methods=['POST'])
+@login_required
+def add_species(project_id):
+    """Add an empty specimen (no structures) that will appear in the matrix."""
+    Project.query.get_or_404(project_id)
+    data         = request.get_json() or {}
+    species_name = data.get('species_name', '').strip()
+    if not species_name:
+        return jsonify({'error': 'species_name required'}), 400
+    existing = Specimen.query.filter_by(project_id=project_id, species_name=species_name).first()
+    if existing:
+        return jsonify({'error': f'"{species_name}" already exists in this project'}), 409
+    sp = Specimen(project_id=project_id, species_name=species_name, created_by=current_user.id)
+    db.session.add(sp)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'species_name': species_name, 'specimen_id': sp.id})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/ignore_tree_label', methods=['POST'])
+@login_required
+def ignore_tree_label(project_id):
+    """Mark a tree label as ignored — it won't show as unmatched and is skipped in the matrix."""
+    Project.query.get_or_404(project_id)
+    data       = request.get_json() or {}
+    raw_label  = data.get('tree_label', '').strip()
+    if not raw_label:
+        return jsonify({'error': 'tree_label required'}), 400
+    norm = _normalize_leaf_label(raw_label)
+    alias = SpeciesAlias.query.filter_by(project_id=project_id, tree_label=norm).first()
+    if alias:
+        alias.specimen_name = '_IGNORE_'
+    else:
+        alias = SpeciesAlias(project_id=project_id, tree_label=norm,
+                             specimen_name='_IGNORE_', created_by=current_user.id)
+        db.session.add(alias)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'id': alias.id, 'tree_label': norm})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/add_specimen_from_tree', methods=['POST'])
+@login_required
+def add_specimen_from_tree(project_id):
+    """Create a Specimen from a tree tip label so it appears in the matrix."""
+    Project.query.get_or_404(project_id)
+    data       = request.get_json() or {}
+    raw_label  = data.get('tree_label', '').strip()
+    if not raw_label:
+        return jsonify({'error': 'tree_label required'}), 400
+    species_name = _humanize_leaf_label(raw_label)
+    existing = Specimen.query.filter_by(project_id=project_id, species_name=species_name).first()
+    if existing:
+        return jsonify({'error': f'Specimen "{species_name}" already exists in this project'}), 409
+    specimen = Specimen(project_id=project_id, species_name=species_name,
+                        created_by=current_user.id)
+    db.session.add(specimen)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'species_name': species_name, 'specimen_id': specimen.id})

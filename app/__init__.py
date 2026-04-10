@@ -39,6 +39,7 @@ def create_app(config_class=None):
     from app.routes.descriptions import descriptions_bp
     from app.routes.export import export_bp
     from app.routes.phylogeny import phylo_bp
+    from app.routes.ai_advisor import ai_advisor_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -49,8 +50,18 @@ def create_app(config_class=None):
     app.register_blueprint(descriptions_bp)
     app.register_blueprint(export_bp)
     app.register_blueprint(phylo_bp)
+    app.register_blueprint(ai_advisor_bp)
 
     with app.app_context():
+        # Enable SQLite WAL mode and busy timeout to prevent "database is locked" errors
+        from sqlalchemy import event
+        @event.listens_for(db.engine, "connect")
+        def set_sqlite_pragmas(dbapi_connection, connection_record):
+            cursor = dbapi_connection.cursor()
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA busy_timeout=30000")
+            cursor.close()
+
         db.create_all()
         _migrate_phylogeny_jobs()
 
@@ -77,7 +88,16 @@ def _migrate_phylogeny_jobs():
         ('raw_fasta_path',       'VARCHAR(500)'),
         ('aligned_fasta_path',   'VARCHAR(500)'),
         ('trimmed_fasta_path',   'VARCHAR(500)'),
+        ('max_length_factor',    'REAL'),
+        ('nj_newick',            'TEXT'),
     ]
+    # character_definitions migration
+    if 'character_definitions' in inspector.get_table_names():
+        cd_existing = {c['name'] for c in inspector.get_columns('character_definitions')}
+        if 'display_order' not in cd_existing:
+            with db.engine.connect() as conn:
+                conn.execute(text('ALTER TABLE character_definitions ADD COLUMN display_order INTEGER'))
+                conn.commit()
     with db.engine.connect() as conn:
         for col, typ in new_cols:
             if col not in existing:

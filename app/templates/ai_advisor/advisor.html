@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% block title %}AI Advisor – {{ project.name }}{% endblock %}
+{% block content %}
+<h1>AI Morphology Advisor</h1>
+<p style="color:var(--gray-500); margin-bottom:1rem;">
+    Send your project data to an AI model and receive suggestions for new characters, improved state definitions, and general feedback on your morphometric scheme.
+</p>
+
+<!-- Config card -->
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="margin-bottom:0.75rem;">Configuration</h3>
+    <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-end;">
+        <div>
+            <label style="font-size:0.85rem; font-weight:600; display:block; margin-bottom:0.25rem;">AI Provider</label>
+            <select id="providerSelect" style="padding:0.35rem 0.6rem; border:1px solid var(--gray-300); border-radius:4px; font-size:0.9rem;">
+                <option value="claude" {% if saved_provider == 'claude' %}selected{% endif %}>Claude (Anthropic)</option>
+                <option value="openai" {% if saved_provider == 'openai' %}selected{% endif %}>GPT-4o (OpenAI)</option>
+                <option value="gemini" {% if saved_provider == 'gemini' %}selected{% endif %}>Gemini 1.5 Pro (Google)</option>
+            </select>
+        </div>
+        <div style="flex:1; min-width:260px;">
+            <label style="font-size:0.85rem; font-weight:600; display:block; margin-bottom:0.25rem;">API Key <span style="font-weight:400; color:var(--gray-500);">(not stored — session only)</span></label>
+            <input type="password" id="apiKeyInput" placeholder="sk-..." style="width:100%; padding:0.35rem 0.6rem; border:1px solid var(--gray-300); border-radius:4px; font-size:0.9rem;">
+        </div>
+        <div>
+            <button class="btn btn-primary" onclick="runAnalysis()" id="analyzeBtn">Analyze Project</button>
+        </div>
+    </div>
+    <p style="font-size:0.8rem; color:var(--gray-500); margin-top:0.5rem;">
+        Your project data (specimen count, character definitions, value statistics) will be sent to the selected provider. No images are transmitted.
+    </p>
+</div>
+
+<!-- Status -->
+<div id="statusBox" style="display:none; margin-bottom:1rem;" class="card">
+    <div id="statusMsg" style="color:var(--gray-600); font-size:0.9rem;">Analyzing...</div>
+</div>
+
+<!-- Results -->
+<div id="results" style="display:none;">
+
+    <!-- Context summary -->
+    <div id="contextSummary" style="margin-bottom:1rem; padding:0.6rem 1rem; background:var(--gray-100); border-radius:6px; font-size:0.85rem; color:var(--gray-600);"></div>
+
+    <!-- New characters -->
+    <div class="card" style="margin-bottom:1rem;">
+        <h3 style="color:var(--success); margin-bottom:0.75rem;">Suggested New Characters</h3>
+        <div id="newCharsList"><em style="color:var(--gray-500);">None suggested.</em></div>
+    </div>
+
+    <!-- State improvements -->
+    <div class="card" style="margin-bottom:1rem;">
+        <h3 style="color:#e67e22; margin-bottom:0.75rem;">State Improvements</h3>
+        <div id="stateImprovementsList"><em style="color:var(--gray-500);">None suggested.</em></div>
+    </div>
+
+    <!-- Redundant -->
+    <div class="card" style="margin-bottom:1rem;">
+        <h3 style="color:var(--danger); margin-bottom:0.75rem;">Redundant / Problematic Characters</h3>
+        <div id="redundantList"><em style="color:var(--gray-500);">None flagged.</em></div>
+    </div>
+
+    <!-- Observations -->
+    <div class="card" style="margin-bottom:1rem;">
+        <h3 style="margin-bottom:0.75rem;">General Observations</h3>
+        <ul id="observationsList" style="margin:0; padding-left:1.2rem; font-size:0.9rem; color:var(--gray-700);"></ul>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const projectId = {{ project.id }};
+
+async function runAnalysis() {
+    const apiKey = document.getElementById('apiKeyInput').value.trim();
+    const provider = document.getElementById('providerSelect').value;
+    if (!apiKey) { alert('Please enter an API key.'); return; }
+
+    const btn = document.getElementById('analyzeBtn');
+    btn.disabled = true;
+    btn.textContent = 'Analyzing…';
+    document.getElementById('statusBox').style.display = 'block';
+    document.getElementById('statusMsg').textContent = 'Sending project data to ' + provider + '…';
+    document.getElementById('results').style.display = 'none';
+
+    try {
+        const fd = new FormData();
+        fd.append('provider', provider);
+        fd.append('api_key', apiKey);
+
+        const resp = await fetch(`/project/${projectId}/ai_advisor/analyze`, {
+            method: 'POST', body: fd
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            document.getElementById('statusMsg').innerHTML = '<span style="color:var(--danger);">Error: ' + escHtml(data.error) + '</span>';
+            return;
+        }
+
+        document.getElementById('statusBox').style.display = 'none';
+        renderResults(data.result, data.context_summary);
+
+    } catch(e) {
+        document.getElementById('statusMsg').innerHTML = '<span style="color:var(--danger);">Network error: ' + escHtml(e.message) + '</span>';
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Analyze Project';
+    }
+}
+
+function renderResults(r, summary) {
+    // Context summary
+    const stTypes = Object.entries(summary.structure_types).map(([k,v]) => `${k.replace(/_/g,' ')} (${v})`).join(', ');
+    document.getElementById('contextSummary').textContent =
+        `Analyzed: ${summary.n_specimens} specimens · ${summary.n_characters} active characters · Structures: ${stTypes || 'none'}`;
+
+    // New characters
+    const ncEl = document.getElementById('newCharsList');
+    if (r.new_characters && r.new_characters.length) {
+        ncEl.innerHTML = r.new_characters.map((c, i) => `
+            <div style="border:1px solid var(--gray-200); border-radius:6px; padding:0.75rem; margin-bottom:0.75rem;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.5rem; flex-wrap:wrap;">
+                    <div>
+                        <strong>${escHtml(c.name)}</strong>
+                        <span style="font-size:0.8rem; color:var(--gray-500); margin-left:0.4rem;">${escHtml(c.structure_type || '')}</span>
+                        <p style="margin:0.3rem 0 0.4rem; font-size:0.88rem; color:var(--gray-700);">${escHtml(c.description || '')}</p>
+                        ${c.suggested_formula ? `<code style="font-size:0.8rem; color:var(--gray-600);">${escHtml(c.suggested_formula)}</code>` : ''}
+                        ${(c.suggested_states||[]).length ? renderStatesTable(c.suggested_states) : ''}
+                    </div>
+                    <button class="btn btn-sm btn-primary" onclick="acceptCharacter(${i})">Add to Project</button>
+                </div>
+            </div>
+        `).join('');
+    } else {
+        ncEl.innerHTML = '<em style="color:var(--gray-500);">None suggested.</em>';
+    }
+
+    // State improvements
+    const siEl = document.getElementById('stateImprovementsList');
+    if (r.state_improvements && r.state_improvements.length) {
+        siEl.innerHTML = r.state_improvements.map(s => `
+            <div style="border:1px solid var(--gray-200); border-radius:6px; padding:0.75rem; margin-bottom:0.75rem;">
+                <strong>${escHtml(s.character_code)} – ${escHtml(s.character_name)}</strong>
+                <p style="margin:0.3rem 0; font-size:0.88rem; color:var(--gray-700);">${escHtml(s.suggestion || '')}</p>
+                ${(s.proposed_states||[]).length ? renderStatesTable(s.proposed_states) : ''}
+            </div>
+        `).join('');
+    } else {
+        siEl.innerHTML = '<em style="color:var(--gray-500);">None suggested.</em>';
+    }
+
+    // Redundant
+    const redEl = document.getElementById('redundantList');
+    if (r.redundant_characters && r.redundant_characters.length) {
+        redEl.innerHTML = r.redundant_characters.map(c => `
+            <div style="border:1px solid #fde0e0; border-radius:6px; padding:0.6rem 0.75rem; margin-bottom:0.5rem; background:#fff5f5;">
+                <strong>${escHtml(c.character_code)} – ${escHtml(c.character_name)}</strong>
+                <p style="margin:0.25rem 0 0; font-size:0.88rem; color:var(--gray-700);">${escHtml(c.reason || '')}</p>
+            </div>
+        `).join('');
+    } else {
+        redEl.innerHTML = '<em style="color:var(--gray-500);">None flagged.</em>';
+    }
+
+    // Observations
+    const obEl = document.getElementById('observationsList');
+    obEl.innerHTML = (r.observations || []).map(o => `<li style="margin-bottom:0.4rem;">${escHtml(o)}</li>`).join('') || '<li style="color:var(--gray-500);">None.</li>';
+
+    // Store new_characters for accept action
+    window._aiSuggestions = r.new_characters || [];
+    document.getElementById('results').style.display = 'block';
+}
+
+function renderStatesTable(states) {
+    if (!states || !states.length) return '';
+    return `<table style="margin-top:0.4rem; font-size:0.82rem; border-collapse:collapse;">
+        <tr style="color:var(--gray-500);">
+            <th style="padding:0.15rem 0.5rem 0.15rem 0; text-align:left;">Code</th>
+            <th style="padding:0.15rem 0.5rem; text-align:left;">State</th>
+            <th style="padding:0.15rem 0; text-align:left;">Description</th>
+        </tr>
+        ${states.map(s => `<tr>
+            <td style="padding:0.1rem 0.5rem 0.1rem 0;">${escHtml(String(s.code||''))}</td>
+            <td style="padding:0.1rem 0.5rem;">${escHtml(s.name||'')}</td>
+            <td style="padding:0.1rem 0; color:var(--gray-600);">${escHtml(s.description||'')}</td>
+        </tr>`).join('')}
+    </table>`;
+}
+
+async function acceptCharacter(idx) {
+    const c = window._aiSuggestions[idx];
+    if (!c) return;
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = 'Adding…';
+
+    const resp = await fetch(`/api/project/${projectId}/ai_advisor/create_character`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(c)
+    });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+        btn.textContent = 'Added (' + data.code + ')';
+        btn.style.background = 'var(--success)';
+    } else {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+    }
+}
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+{% endblock %}

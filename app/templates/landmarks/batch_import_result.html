@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Batch Import Result – {{ project.name }}{% endblock %}
+{% block content %}
+<h1>Batch Import — {{ structure_type.replace('_',' ').title() }} Landmarks</h1>
+<p style="color:var(--gray-500);">Project: <strong>{{ project.name }}</strong></p>
+
+<div style="display:flex; gap:1rem; margin-bottom:1.5rem; flex-wrap:wrap;">
+    <div class="card" style="flex:1; min-width:160px; text-align:center;">
+        <div style="font-size:2rem; font-weight:700; color:var(--success);">{{ imported|length }}</div>
+        <div style="font-size:0.85rem; color:var(--gray-500);">Imported</div>
+    </div>
+    <div class="card" style="flex:1; min-width:160px; text-align:center;">
+        <div style="font-size:2rem; font-weight:700; color:var(--warning, #e67e22);">{{ skipped|length }}</div>
+        <div style="font-size:0.85rem; color:var(--gray-500);">Skipped</div>
+    </div>
+    <div class="card" style="flex:1; min-width:160px; text-align:center;">
+        <div style="font-size:2rem; font-weight:700; color:var(--danger);">{{ errors|length }}</div>
+        <div style="font-size:0.85rem; color:var(--gray-500);">Errors</div>
+    </div>
+</div>
+
+{% if imported %}
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="color:var(--success); margin-bottom:0.5rem;">Imported ({{ imported|length }})</h3>
+    <ul style="margin:0; padding-left:1.2rem; font-size:0.9rem;">
+        {% for msg in imported %}<li>{{ msg }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if skipped %}
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="color:var(--warning, #e67e22); margin-bottom:0.5rem;">Skipped ({{ skipped|length }})</h3>
+    <p style="font-size:0.82rem; color:var(--gray-500); margin-bottom:0.4rem;">
+        These files could not be matched to a specimen or structure.
+        Check that specimen names in the project match the CSV filename stems.
+    </p>
+    <ul style="margin:0; padding-left:1.2rem; font-size:0.85rem; color:var(--gray-600);">
+        {% for msg in skipped %}<li>{{ msg }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+{% if errors %}
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="color:var(--danger); margin-bottom:0.5rem;">Errors ({{ errors|length }})</h3>
+    <ul style="margin:0; padding-left:1.2rem; font-size:0.85rem; color:var(--gray-600);">
+        {% for msg in errors %}<li>{{ msg }}</li>{% endfor %}
+    </ul>
+</div>
+{% endif %}
+
+<div style="margin-top:1rem;">
+    <a href="{{ url_for('project.view_project', project_id=project.id) }}"
+       class="btn btn-outline">Back to Project</a>
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}"
+       class="btn btn-outline" style="margin-left:0.5rem;">Character Matrix</a>
+</div>
+{% endblock %}

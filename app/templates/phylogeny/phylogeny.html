@@ -2,6 +2,16 @@
 {% block title %}Phylogenetic Analysis — {{ project.name }}{% endblock %}
 
 {% macro job_actions(job) %}
+    {% if job.status == 'fetched' %}
+    <button class="btn btn-sm btn-success" onclick="openFetchPreview({{ job.id }})">Review Sequences</button>
+    {% endif %}
+    {% if job.status == 'nj_ready' %}
+    <button class="btn btn-sm btn-warning" onclick="openNjModal({{ job.id }})">Review NJ Tree</button>
+    <button class="btn btn-sm btn-outline" onclick="importNjTreeById({{ job.id }})">Import NJ &#8594; Matrix</button>
+    {% endif %}
+    {% if job.nj_newick and job.status not in ('nj_ready',) %}
+    <button class="btn btn-sm btn-outline" onclick="importNjTreeById({{ job.id }})">Import NJ &#8594; Matrix</button>
+    {% endif %}
     {% if job.status in ('trimmed',) %}
     <button class="btn btn-sm btn-primary" onclick="submitCipres({{ job.id }})">Submit to CIPRES</button>
     {% endif %}
@@ -51,9 +61,17 @@
                         <textarea name="gene_query" rows="3">{{ defaults.gene_query }}</textarea>
                         <small style="color:var(--gray-500);">NCBI search terms combined with AND</small>
                     </div>
-                    <div class="form-group">
-                        <label>Min Sequence Length (bp)</label>
-                        <input type="number" name="min_length" value="{{ defaults.min_length }}" min="50" max="5000">
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
+                        <div class="form-group">
+                            <label>Min Sequence Length (bp)</label>
+                            <input type="number" name="min_length" value="{{ defaults.min_length }}" min="50" max="5000">
+                        </div>
+                        <div class="form-group">
+                            <label>Max Length (× mean)
+                                <span style="font-weight:normal; color:var(--gray-500); font-size:0.8rem;">— excludes outliers</span>
+                            </label>
+                            <input type="number" name="max_length_factor" value="2.0" min="1" max="10" step="0.1">
+                        </div>
                     </div>
                     <div class="form-group">
                         <label>Bad Accessions to Exclude (one per line)</label>
@@ -268,6 +286,8 @@
 .stage-aligned    { background: #fff3cd; color: #856404; }
 .stage-trimming   { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
 .stage-trimmed    { background: var(--conf-high); color: #155724; }
+.stage-nj_running { background: #e2d9f3; color: #4a235a; animation: pulse 1.5s infinite; }
+.stage-nj_ready   { background: #e2d9f3; color: #4a235a; }
 .stage-submitted  { background: #cce5ff; color: #004085; }
 .stage-running    { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
 .stage-completed  { background: var(--conf-high); color: #155724; }
@@ -275,6 +295,139 @@
 .stage-failed     { background: var(--conf-low); color: #721c24; }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
 </style>
+
+<!-- ── NJ tree review modal ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="njModal">
+    <div class="modal" style="max-width:97vw; width:97vw; max-height:94vh; display:flex; flex-direction:column; padding:0;">
+        <!-- Header -->
+        <div style="padding:0.65rem 1rem; border-bottom:1px solid var(--gray-200); display:flex; align-items:center; gap:0.75rem; flex-shrink:0;">
+            <h3 style="margin:0; flex:1;" id="njModalTitle">Neighbor-Joining Tree Review</h3>
+            <button class="btn btn-sm btn-outline" onclick="closeNjModal()">&#10005;</button>
+        </div>
+        <!-- Body: tree left, table right -->
+        <div style="display:flex; flex:1; min-height:0; overflow:hidden;">
+            <!-- Tree panel -->
+            <div style="flex:0 0 50%; overflow:auto; border-right:1px solid var(--gray-200); padding:0.5rem 0;">
+                <svg id="njModalSvg" style="display:block;"></svg>
+            </div>
+            <!-- Table panel -->
+            <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+                <div style="padding:0.5rem 0.75rem; background:var(--gray-100); border-bottom:1px solid var(--gray-200); font-size:0.82rem; flex-shrink:0;" id="njSeqSummary"></div>
+                <div style="overflow:auto; flex:1; padding:0.25rem;">
+                    <table style="width:100%; font-size:0.8rem; border-collapse:collapse;">
+                        <thead>
+                            <tr style="position:sticky; top:0; background:#fff; z-index:1;">
+                                <th style="padding:0.3rem 0.4rem; border-bottom:2px solid var(--gray-300); text-align:center; width:2rem;" title="Mark for removal">&#10005;</th>
+                                <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); text-align:left;">Species</th>
+                                <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); text-align:left;">Accession</th>
+                                <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); text-align:right;">bp</th>
+                                <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300);"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="njSeqBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        <!-- Footer -->
+        <div style="padding:0.65rem 1rem; border-top:1px solid var(--gray-200); display:flex; align-items:center; gap:0.75rem; flex-shrink:0; flex-wrap:wrap;">
+            <button class="btn btn-warning" id="njApplyBtn" onclick="applyNjChanges()" disabled>Apply Changes &amp; Re-run NJ</button>
+            <button class="btn btn-success" onclick="approveForCipres()">Approve &#8594; CIPRES</button>
+            <button class="btn btn-outline" onclick="openAddSpeciesModal()">+ Add Species</button>
+            <button class="btn btn-outline" onclick="importNjTree()">Import NJ Tree into Matrix</button>
+            <button class="btn btn-outline" onclick="closeNjModal()">Cancel</button>
+            <span id="njModalMsg" style="font-size:0.83rem; color:var(--gray-500); margin-left:0.25rem;"></span>
+        </div>
+    </div>
+</div>
+
+<!-- ── Add Species modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="addSpeciesModal">
+    <div class="modal" style="max-width:68vw; width:68vw; max-height:88vh; display:flex; flex-direction:column; padding:0;">
+        <div style="padding:0.65rem 1rem; border-bottom:1px solid var(--gray-200); display:flex; align-items:center; gap:0.75rem; flex-shrink:0;">
+            <h3 style="margin:0; flex:1;">Add Species to Analysis</h3>
+            <button class="btn btn-sm btn-outline" onclick="closeAddSpeciesModal()">&#10005;</button>
+        </div>
+        <!-- Search bar -->
+        <div style="padding:0.65rem 1rem; background:var(--gray-100); border-bottom:1px solid var(--gray-200); flex-shrink:0;">
+            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+                <input type="text" id="asSearchInput" placeholder="Species name or accession…"
+                    style="flex:1; min-width:200px;"
+                    onkeydown="if(event.key==='Enter') searchForSpecies()">
+                <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.83rem; white-space:nowrap;">
+                    <input type="checkbox" id="asGeneFilter"> Apply gene filter
+                </label>
+                <button class="btn btn-primary btn-sm" onclick="searchForSpecies()" id="asSearchBtn">Search NCBI</button>
+                <span id="asSearchMsg" style="font-size:0.82rem; color:var(--gray-500);"></span>
+            </div>
+            <div style="font-size:0.75rem; color:var(--gray-400); margin-top:0.25rem;" id="asQueryDisplay"></div>
+        </div>
+        <!-- Results + queue -->
+        <div style="display:flex; flex:1; min-height:0; overflow:hidden;">
+            <!-- NCBI results -->
+            <div style="flex:1; overflow:auto; border-right:1px solid var(--gray-200); padding:0.25rem;">
+                <table style="width:100%; font-size:0.8rem; border-collapse:collapse;" id="asResultsTable">
+                    <thead>
+                        <tr style="position:sticky;top:0;background:#fff;z-index:1;">
+                            <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); text-align:left;">Accession</th>
+                            <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); text-align:right;">bp</th>
+                            <th style="padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); text-align:left; max-width:300px;">Description</th>
+                            <th style="padding:0.3rem 0.4rem; border-bottom:2px solid var(--gray-300);"></th>
+                        </tr>
+                    </thead>
+                    <tbody id="asResultsBody">
+                        <tr><td colspan="4" style="padding:1rem; color:var(--gray-400); text-align:center;">Search for a species above.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+            <!-- Queue -->
+            <div style="flex:0 0 240px; overflow:auto; padding:0.5rem 0.75rem;">
+                <div style="font-weight:600; font-size:0.83rem; margin-bottom:0.4rem; color:var(--gray-700);">
+                    Queued to add <span id="asQueueCount" style="font-weight:normal; color:var(--gray-400);">(0)</span>
+                </div>
+                <div id="asQueueList" style="font-size:0.78rem;"></div>
+            </div>
+        </div>
+        <!-- Footer -->
+        <div style="padding:0.65rem 1rem; border-top:1px solid var(--gray-200); display:flex; gap:0.75rem; align-items:center; flex-shrink:0;">
+            <button class="btn btn-success" id="asAddBtn" onclick="commitAddSequences()" disabled>
+                Add to Analysis
+            </button>
+            <button class="btn btn-outline" onclick="closeAddSpeciesModal()">Cancel</button>
+            <span id="asAddMsg" style="font-size:0.83rem; color:var(--gray-500); margin-left:0.25rem;"></span>
+        </div>
+    </div>
+</div>
+
+<!-- ── Fetch preview / approval modal ────────────────────────────────────── -->
+<div class="modal-overlay" id="fetchModal">
+    <div class="modal" style="max-width:72vw; width:72vw; max-height:88vh; display:flex; flex-direction:column; padding:0;">
+        <div style="padding:0.75rem 1rem; border-bottom:1px solid var(--gray-200); display:flex; align-items:center; gap:1rem; flex-shrink:0;">
+            <h3 style="margin:0; flex:1;">Review Fetched Sequences</h3>
+            <button class="btn btn-sm btn-outline" onclick="closeFetchModal()">&#10005;</button>
+        </div>
+        <div style="padding:0.75rem 1rem; background:var(--gray-100); border-bottom:1px solid var(--gray-200); flex-shrink:0;" id="fetchModalSummary"></div>
+        <div style="overflow:auto; flex:1; padding:0.75rem 1rem;">
+            <table id="fetchModalTable" style="font-size:0.82rem; width:100%;">
+                <thead>
+                    <tr>
+                        <th style="text-align:left; padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300);">#</th>
+                        <th style="text-align:left; padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300);">Accession | ID</th>
+                        <th style="text-align:left; padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300); font-style:italic;">Species</th>
+                        <th style="text-align:right; padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300);">Length (bp)</th>
+                    </tr>
+                </thead>
+                <tbody id="fetchModalBody"></tbody>
+            </table>
+        </div>
+        <div style="padding:0.75rem 1rem; border-top:1px solid var(--gray-200); display:flex; gap:0.75rem; align-items:center; flex-shrink:0;">
+            <button class="btn btn-success" id="fetchApproveBtn" onclick="approveAndAlign()">Approve &amp; Align</button>
+            <button class="btn btn-outline" onclick="openAddSpeciesModal()">+ Add Species</button>
+            <button class="btn btn-outline" onclick="closeFetchModal()">Cancel</button>
+            <span id="fetchModalMsg" style="font-size:0.85rem; color:var(--gray-500); margin-left:0.5rem;"></span>
+        </div>
+    </div>
+</div>
 
 <!-- ── Tree viewer modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="treeModal">
@@ -297,8 +450,9 @@
 const PROJECT_ID = {{ project.id }};
 
 // Active jobs that need polling
-const activeStages = new Set(['created','fetching','aligning','trimming','submitted','running']);
+const activeStages = new Set(['created','fetching','aligning','trimming','submitted','running','nj_running']);
 let pollTimers = {};
+let _fetchPreviewJobId = null;
 
 function switchTab(tab) {
     document.getElementById('form-ncbi').style.display   = (tab === 'ncbi')    ? '' : 'none';
@@ -361,6 +515,13 @@ function updateRow(jobId, data) {
 
 function buildActions(jobId, status) {
     let html = '';
+    if (status === 'fetched') {
+        html += `<button class="btn btn-sm btn-success" onclick="openFetchPreview(${jobId})">Review Sequences</button> `;
+    }
+    if (status === 'nj_ready') {
+        html += `<button class="btn btn-sm btn-warning" onclick="openNjModal(${jobId})">Review NJ Tree</button> `;
+        html += `<button class="btn btn-sm btn-outline" onclick="importNjTreeById(${jobId})">Import NJ &#8594; Matrix</button> `;
+    }
     if (status === 'trimmed') {
         html += `<button class="btn btn-sm btn-primary" onclick="submitCipres(${jobId})">Submit to CIPRES</button> `;
     }
@@ -382,10 +543,16 @@ async function checkStatus(jobId) {
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/status`);
         const data = await resp.json();
+        const prevStatus = document.getElementById('badge-' + jobId)?.textContent?.trim();
         updateRow(jobId, data);
-        // Keep polling if still active
-        if (activeStages.has(data.status)) schedulePoll(jobId);
-        else clearPoll(jobId);
+        if (activeStages.has(data.status)) {
+            schedulePoll(jobId);
+        } else {
+            clearPoll(jobId);
+            // Auto-open modals on stage transitions
+            if (data.status === 'fetched' && prevStatus !== 'fetched') openFetchPreview(jobId);
+            if (data.status === 'nj_ready' && prevStatus !== 'nj_ready') openNjModal(jobId);
+        }
     } catch(err) {
         console.error('Status check failed:', err);
     }
@@ -462,13 +629,523 @@ async function deleteJob(jobId) {
 // Auto-poll any job that is in an active stage on page load
 document.addEventListener('DOMContentLoaded', () => {
     {% for job in jobs %}
-    {% if job.status in ('created', 'fetching', 'aligning', 'trimming', 'submitted', 'running') %}
+    {% if job.status in ('created', 'fetching', 'aligning', 'trimming', 'submitted', 'running', 'nj_running') %}
     schedulePoll({{ job.id }});
     {% endif %}
     {% endfor %}
 });
 
-// ── Tree viewer ───────────────────────────────────────────────────────────���───
+// ── Add Species modal ─────────────────────────────────────────────────────────
+
+let _asJobId  = null;
+let _asQueue  = {};   // {accession: {accession, species, length, description}}
+
+function openAddSpeciesModal() {
+    // Determine which job is currently active
+    _asJobId = _njJobId || _fetchPreviewJobId;
+    if (!_asJobId) { alert('No active job. Open from the fetch preview or NJ review modal.'); return; }
+    _asQueue = {};
+    document.getElementById('asSearchInput').value  = '';
+    document.getElementById('asSearchMsg').textContent   = '';
+    document.getElementById('asQueryDisplay').textContent = '';
+    document.getElementById('asAddMsg').textContent = '';
+    document.getElementById('asAddBtn').disabled    = true;
+    document.getElementById('asResultsBody').innerHTML =
+        '<tr><td colspan="4" style="padding:1rem; color:var(--gray-400); text-align:center;">Search for a species above.</td></tr>';
+    _renderAsQueue();
+    document.getElementById('addSpeciesModal').classList.add('active');
+    document.getElementById('asSearchInput').focus();
+}
+
+function closeAddSpeciesModal() {
+    document.getElementById('addSpeciesModal').classList.remove('active');
+}
+
+async function searchForSpecies() {
+    const q    = document.getElementById('asSearchInput').value.trim();
+    const gene = document.getElementById('asGeneFilter').checked ? '1' : '0';
+    const msg  = document.getElementById('asSearchMsg');
+    const btn  = document.getElementById('asSearchBtn');
+    if (!q) { msg.textContent = 'Enter a species name or accession.'; return; }
+    msg.textContent = 'Searching…'; btn.disabled = true;
+    document.getElementById('asQueryDisplay').textContent = '';
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_asJobId}/search_species` +
+            `?q=${encodeURIComponent(q)}&gene_filter=${gene}`
+        );
+        const data = await resp.json();
+        btn.disabled = false;
+        if (!resp.ok || data.error) { msg.style.color='var(--danger)'; msg.textContent='Error: '+(data.error||resp.statusText); return; }
+        msg.style.color='var(--gray-500)';
+        msg.textContent = `${data.total_found} found, showing ${data.candidates.length}`;
+        document.getElementById('asQueryDisplay').textContent = 'Query: ' + (data.query || '');
+        const tbody = document.getElementById('asResultsBody');
+        if (!data.candidates.length) {
+            tbody.innerHTML = '<tr><td colspan="4" style="padding:1rem; color:var(--gray-400); text-align:center;">No sequences found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.candidates.map(c => {
+            const inQueue = !!_asQueue[c.accession];
+            return `<tr style="border-bottom:1px solid var(--gray-200); ${inQueue?'background:#fffbe5;':''}">
+                <td style="padding:0.2rem 0.5rem; font-family:monospace; font-size:0.75rem;">${escHtml(c.accession)}</td>
+                <td style="padding:0.2rem 0.5rem; text-align:right;">${c.length.toLocaleString()}</td>
+                <td style="padding:0.2rem 0.5rem; color:var(--gray-600); max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(c.description)}">${escHtml(c.description)}</td>
+                <td style="padding:0.2rem 0.4rem; white-space:nowrap;">
+                    ${inQueue
+                        ? `<span style="color:var(--success); font-size:0.75rem;">&#10003; Queued</span>`
+                        : `<button class="btn btn-sm btn-primary" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
+                               onclick="queueSequence('${escHtml(c.accession)}',${c.length},'${escHtml(c.description).replace(/'/g,"&#39;")}','${escHtml(q).replace(/'/g,"&#39;")}')">
+                               Queue &#8594;</button>`}
+                </td>
+            </tr>`;
+        }).join('');
+    } catch(err) {
+        btn.disabled = false;
+        document.getElementById('asSearchMsg').style.color='var(--danger)';
+        document.getElementById('asSearchMsg').textContent = 'Network error: ' + err.message;
+    }
+}
+
+function queueSequence(accession, length, description, species) {
+    _asQueue[accession] = {accession, species, length, description};
+    _renderAsQueue();
+    // Refresh results to show "Queued" badge
+    searchForSpecies();
+}
+
+function dequeueSequence(accession) {
+    delete _asQueue[accession];
+    _renderAsQueue();
+}
+
+function _renderAsQueue() {
+    const list  = document.getElementById('asQueueList');
+    const count = document.getElementById('asQueueCount');
+    const keys  = Object.keys(_asQueue);
+    count.textContent = `(${keys.length})`;
+    document.getElementById('asAddBtn').disabled = keys.length === 0;
+    if (!keys.length) {
+        list.innerHTML = '<em style="color:var(--gray-400);">Nothing queued yet.</em>';
+        return;
+    }
+    list.innerHTML = keys.map(acc => {
+        const it = _asQueue[acc];
+        return `<div style="display:flex; align-items:flex-start; gap:0.25rem; margin-bottom:0.3rem; padding:0.25rem; background:var(--gray-100); border-radius:3px;">
+            <div style="flex:1; min-width:0;">
+                <div style="font-family:monospace; font-size:0.72rem;">${escHtml(acc)}</div>
+                <div style="font-style:italic; font-size:0.72rem; color:var(--gray-600);">${escHtml(it.species)}</div>
+                <div style="font-size:0.7rem; color:var(--gray-400);">${it.length.toLocaleString()} bp</div>
+            </div>
+            <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.05rem 0.25rem; flex-shrink:0;"
+                onclick="dequeueSequence('${escHtml(acc)}')">&#10005;</button>
+        </div>`;
+    }).join('');
+}
+
+async function commitAddSequences() {
+    const keys = Object.keys(_asQueue);
+    if (!keys.length) return;
+    const btn = document.getElementById('asAddBtn');
+    const msg = document.getElementById('asAddMsg');
+    btn.disabled = true; msg.style.color='var(--gray-500)'; msg.textContent = 'Adding sequences…';
+    try {
+        const accessions = keys.map(acc => ({
+            accession: acc,
+            species: _asQueue[acc].species,
+        }));
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_asJobId}/add_sequences`,
+            {method:'POST', headers:{'Content-Type':'application/json'},
+             body: JSON.stringify({accessions})}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            msg.style.color='var(--danger)'; msg.textContent='Error: '+(data.error||resp.statusText);
+            btn.disabled = false; return;
+        }
+        msg.style.color='var(--success)';
+        msg.textContent = `Added ${data.added.length} sequence(s).`;
+        closeAddSpeciesModal();
+        // Update job row status if re-aligning
+        if (data.status === 'aligning') {
+            updateRow(_asJobId, {status:'aligning', message: data.message});
+            schedulePoll(_asJobId);
+            // Close the NJ modal too since we're re-running
+            closeNjModal();
+        } else {
+            // Refresh the fetch preview if open
+            if (_fetchPreviewJobId) openFetchPreview(_fetchPreviewJobId);
+        }
+    } catch(err) {
+        msg.style.color='var(--danger)'; msg.textContent='Network error: '+err.message;
+        btn.disabled = false;
+    }
+}
+
+document.getElementById('addSpeciesModal').addEventListener('click', function(e) {
+    if (e.target === this) closeAddSpeciesModal();
+});
+
+// ── NJ Tree review ────────────────────────────────────────────────────────────
+
+let _njJobId        = null;
+let _njSequences    = [];          // [{id, species, length}]
+let _njChanges      = {};          // old_id → {type:'remove'} | {type:'replace', new_accession, species, length}
+let _altOpenIdx     = null;        // index of row whose alternatives panel is open
+
+async function openNjModal(jobId) {
+    _njJobId     = jobId;
+    _njChanges   = {};
+    _altOpenIdx  = null;
+    document.getElementById('njModalMsg').textContent = '';
+    document.getElementById('njApplyBtn').disabled   = true;
+    document.getElementById('njModal').classList.add('active');
+    document.getElementById('njSeqSummary').textContent = 'Loading…';
+    document.getElementById('njSeqBody').innerHTML      = '';
+    document.getElementById('njModalTitle').textContent = 'Neighbor-Joining Tree Review';
+
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/nj_preview`);
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            document.getElementById('njSeqSummary').textContent = 'Error: ' + (data.error || resp.statusText);
+            return;
+        }
+        _njSequences = data.sequences || [];
+        document.getElementById('njSeqSummary').innerHTML =
+            `<strong>${_njSequences.length}</strong> sequences &nbsp;·&nbsp; ` +
+            `Check rows to remove or replace before approving for CIPRES.`;
+        _renderNjTable();
+        renderPhylogram(data.newick, document.getElementById('njModalSvg'));
+    } catch(err) {
+        document.getElementById('njSeqSummary').textContent = 'Network error: ' + err.message;
+    }
+}
+
+function closeNjModal() {
+    document.getElementById('njModal').classList.remove('active');
+    _njJobId = null;
+}
+
+function _renderNjTable() {
+    const tbody = document.getElementById('njSeqBody');
+    tbody.innerHTML = '';
+    _njSequences.forEach((seq, i) => {
+        const ch  = _njChanges[seq.id];
+        let rowBg = '';
+        let changeCell = '<span style="font-size:0.72rem; color:var(--gray-400);">—</span>';
+        if (ch) {
+            if (ch.type === 'remove') {
+                rowBg = 'background:#fff0f0;';
+                changeCell = '<span style="color:var(--danger); font-size:0.75rem; font-weight:600;">Remove</span>';
+            } else {
+                rowBg = 'background:#fffbe5;';
+                changeCell = `<span style="color:#856404; font-size:0.72rem; font-weight:600;" title="${escHtml(ch.description||'')}">&#8594; ${escHtml(ch.new_accession)}<br><em style="font-weight:normal;">${ch.length ? ch.length.toLocaleString()+' bp' : ''}</em></span>`;
+            }
+        }
+        const acc = seq.id.includes('|') ? seq.id.split('|')[0] : seq.id;
+        const isRemoved = ch && ch.type === 'remove';
+
+        const tr = document.createElement('tr');
+        tr.id = `njrow-${i}`;
+        tr.style.cssText = rowBg + 'border-bottom:1px solid var(--gray-200);';
+        tr.innerHTML = `
+            <td style="padding:0.2rem 0.4rem; text-align:center;">
+                <input type="checkbox" ${isRemoved ? 'checked' : ''} onchange="toggleNjRemove(${i})" title="Remove this sequence">
+            </td>
+            <td style="padding:0.2rem 0.5rem; font-style:italic;">${escHtml(seq.species)}</td>
+            <td style="padding:0.2rem 0.5rem; font-family:monospace; font-size:0.75rem;">${escHtml(acc)}</td>
+            <td style="padding:0.2rem 0.5rem; text-align:right;">${seq.length.toLocaleString()}</td>
+            <td style="padding:0.2rem 0.5rem; min-width:90px;">${changeCell}</td>
+            <td style="padding:0.2rem 0.4rem;">
+                <button class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
+                    id="altbtn-${i}" onclick="toggleAlternatives(${i})">Replace &#9660;</button>
+            </td>`;
+        tbody.appendChild(tr);
+
+        // Alternatives expansion row
+        const altTr = document.createElement('tr');
+        altTr.id = `njalt-${i}`;
+        altTr.style.display = 'none';
+        altTr.innerHTML = `<td colspan="6" style="padding:0; background:var(--gray-50); border-bottom:2px solid var(--gray-300);">
+            <div id="njalt-content-${i}" style="padding:0.5rem 1rem;"></div>
+        </td>`;
+        tbody.appendChild(altTr);
+    });
+    _updateApplyBtn();
+}
+
+function toggleNjRemove(i) {
+    const seq = _njSequences[i];
+    const cb  = document.querySelector(`#njrow-${i} input[type=checkbox]`);
+    if (cb.checked) {
+        _njChanges[seq.id] = {type: 'remove'};
+        // Close alternatives if open
+        if (_altOpenIdx === i) _closeAltRow(i);
+    } else {
+        delete _njChanges[seq.id];
+    }
+    _renderNjTable();
+}
+
+async function toggleAlternatives(i) {
+    const altRow = document.getElementById(`njalt-${i}`);
+    if (_altOpenIdx === i) {
+        _closeAltRow(i);
+        return;
+    }
+    if (_altOpenIdx !== null) _closeAltRow(_altOpenIdx);
+    _altOpenIdx = i;
+    altRow.style.display = '';
+    const content = document.getElementById(`njalt-content-${i}`);
+    content.innerHTML = '<em style="color:var(--gray-500);">Fetching alternatives from NCBI…</em>';
+
+    const seq     = _njSequences[i];
+    const species = seq.species;   // already formatted with spaces
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/fetch_alternatives` +
+            `?species=${encodeURIComponent(species)}`
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            content.innerHTML = `<span style="color:var(--danger);">Error: ${escHtml(data.error || resp.statusText)}</span>`;
+            return;
+        }
+        if (!data.candidates || data.candidates.length === 0) {
+            content.innerHTML = `<em style="color:var(--gray-500);">No alternative sequences found on NCBI for <strong>${escHtml(species)}</strong>.</em>`;
+            return;
+        }
+        let html = `<div style="font-size:0.78rem; margin-bottom:0.4rem; color:var(--gray-600);">
+            ${data.total_found} sequences found for <em>${escHtml(species)}</em> — showing top ${data.candidates.length} by length:
+        </div>
+        <table style="font-size:0.78rem; width:100%; border-collapse:collapse;">
+            <thead><tr style="background:var(--gray-200);">
+                <th style="padding:0.2rem 0.5rem; text-align:left;">Accession</th>
+                <th style="padding:0.2rem 0.5rem; text-align:right;">bp</th>
+                <th style="padding:0.2rem 0.5rem; text-align:left; max-width:260px;">Description</th>
+                <th style="padding:0.2rem 0.4rem;"></th>
+            </tr></thead><tbody>`;
+        data.candidates.forEach((c, ci) => {
+            const isCurrent = seq.id.startsWith(c.accession + '|') || seq.id === c.accession;
+            const isSelected = _njChanges[seq.id] && _njChanges[seq.id].new_accession === c.accession;
+            const rowBg = isSelected ? 'background:#fffbe5;' : (isCurrent ? 'background:#f0f7ff;' : '');
+            html += `<tr style="${rowBg} border-bottom:1px solid var(--gray-200);">
+                <td style="padding:0.2rem 0.5rem; font-family:monospace;">${escHtml(c.accession)}</td>
+                <td style="padding:0.2rem 0.5rem; text-align:right;">${c.length.toLocaleString()}</td>
+                <td style="padding:0.2rem 0.5rem; color:var(--gray-600); max-width:260px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${escHtml(c.description)}">${escHtml(c.description)}</td>
+                <td style="padding:0.2rem 0.4rem; white-space:nowrap;">
+                    ${isCurrent
+                        ? '<span style="color:var(--gray-400); font-size:0.72rem;">current</span>'
+                        : `<button class="btn btn-sm btn-primary" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
+                            onclick="selectReplacement(${i}, '${escHtml(c.accession)}', ${c.length}, '${escHtml(c.description).replace(/'/g,"&#39;")}')">
+                            ${isSelected ? '&#10003; Selected' : 'Use this'}
+                           </button>`}
+                </td>
+            </tr>`;
+        });
+        html += `</tbody></table>
+        <div style="margin-top:0.4rem;">
+            <button class="btn btn-sm btn-outline" style="font-size:0.72rem;" onclick="_closeAltRow(${i})">Close</button>
+        </div>`;
+        content.innerHTML = html;
+    } catch(err) {
+        content.innerHTML = `<span style="color:var(--danger);">Network error: ${escHtml(err.message)}</span>`;
+    }
+}
+
+function _closeAltRow(i) {
+    const altRow = document.getElementById(`njalt-${i}`);
+    if (altRow) altRow.style.display = 'none';
+    if (_altOpenIdx === i) _altOpenIdx = null;
+}
+
+function selectReplacement(i, accession, length, description) {
+    const seq = _njSequences[i];
+    const speciesUnderscored = seq.id.includes('|') ? seq.id.split('|')[1] : seq.species.replace(/ /g, '_');
+    _njChanges[seq.id] = {
+        type: 'replace',
+        new_accession: accession,
+        species: speciesUnderscored,
+        length: length,
+        description: description,
+    };
+    // Uncheck "remove" checkbox if it was checked
+    const cb = document.querySelector(`#njrow-${i} input[type=checkbox]`);
+    if (cb) cb.checked = false;
+    _closeAltRow(i);
+    _renderNjTable();
+}
+
+function _updateApplyBtn() {
+    const hasChanges = Object.keys(_njChanges).length > 0;
+    document.getElementById('njApplyBtn').disabled = !hasChanges;
+}
+
+async function applyNjChanges() {
+    if (!_njJobId) return;
+    const replacements = [];
+    const removals     = [];
+    for (const [old_id, ch] of Object.entries(_njChanges)) {
+        if (ch.type === 'remove') {
+            removals.push(old_id);
+        } else {
+            replacements.push({old_id, new_accession: ch.new_accession, species: ch.species});
+        }
+    }
+    const btn = document.getElementById('njApplyBtn');
+    const msg = document.getElementById('njModalMsg');
+    btn.disabled = true;
+    msg.textContent = 'Sending changes…';
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/replace_and_realign`,
+            {method: 'POST', headers: {'Content-Type':'application/json'},
+             body: JSON.stringify({replacements, removals})}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            msg.textContent = 'Error: ' + (data.error || resp.statusText);
+            btn.disabled = false;
+            return;
+        }
+        const jobId = _njJobId;
+        closeNjModal();
+        updateRow(jobId, {status: data.status, message: data.message});
+        schedulePoll(jobId);
+    } catch(err) {
+        msg.textContent = 'Network error: ' + err.message;
+        btn.disabled = false;
+    }
+}
+
+async function approveForCipres() {
+    if (!_njJobId) return;
+    if (!confirm('Approve these sequences and prepare for CIPRES submission?')) return;
+    const msg = document.getElementById('njModalMsg');
+    msg.textContent = 'Approving…';
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/approve_for_cipres`,
+            {method: 'POST'}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            msg.textContent = 'Error: ' + (data.error || resp.statusText);
+            return;
+        }
+        const jobId = _njJobId;
+        closeNjModal();
+        updateRow(jobId, {status: data.status, message: data.message});
+    } catch(err) {
+        msg.textContent = 'Network error: ' + err.message;
+    }
+}
+
+async function importNjTreeById(jobId) {
+    if (!confirm('Import NJ tree into project? This replaces any existing matrix tree.')) return;
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${jobId}/import_nj`, {method: 'POST'}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
+        alert(data.message || 'NJ tree imported.');
+        location.reload();
+    } catch(err) { alert('Network error: ' + err.message); }
+}
+
+async function importNjTree() {
+    if (_njJobId) await importNjTreeById(_njJobId);
+}
+
+// Close NJ modal on backdrop click
+document.getElementById('njModal').addEventListener('click', function(e) {
+    if (e.target === this) closeNjModal();
+});
+
+// ── Fetch preview / approval ──────────────────────────────────────────────────
+
+async function openFetchPreview(jobId) {
+    _fetchPreviewJobId = jobId;
+    const summary = document.getElementById('fetchModalSummary');
+    const tbody   = document.getElementById('fetchModalBody');
+    const msg     = document.getElementById('fetchModalMsg');
+    summary.textContent = 'Loading…';
+    tbody.innerHTML = '';
+    msg.textContent = '';
+    document.getElementById('fetchApproveBtn').disabled = false;
+    document.getElementById('fetchModal').classList.add('active');
+
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/fetch_preview`);
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            summary.textContent = 'Error: ' + (data.error || resp.statusText);
+            return;
+        }
+        const nRaw    = data.n_raw    || '?';
+        const nDedup  = data.n_deduped || '?';
+        const nFinal  = data.n_sequences || '?';
+        summary.innerHTML =
+            `<strong>${nFinal}</strong> sequences ready for alignment &nbsp;|&nbsp; ` +
+            `Raw: <strong>${nRaw}</strong> → After dedup/filter: <strong>${nDedup}</strong> → Final: <strong>${nFinal}</strong>`;
+        tbody.innerHTML = data.sequences.map((s, i) =>
+            `<tr style="border-bottom:1px solid var(--gray-200);">
+                <td style="padding:0.2rem 0.5rem; color:var(--gray-500);">${i + 1}</td>
+                <td style="padding:0.2rem 0.5rem; font-family:monospace; font-size:0.78rem;">${escHtml(s.id)}</td>
+                <td style="padding:0.2rem 0.5rem; font-style:italic;">${escHtml(s.species)}</td>
+                <td style="padding:0.2rem 0.5rem; text-align:right;">${s.length.toLocaleString()}</td>
+            </tr>`
+        ).join('');
+    } catch(err) {
+        summary.textContent = 'Network error: ' + err.message;
+    }
+}
+
+function closeFetchModal() {
+    document.getElementById('fetchModal').classList.remove('active');
+    _fetchPreviewJobId = null;
+}
+
+async function approveAndAlign() {
+    if (!_fetchPreviewJobId) return;
+    const btn = document.getElementById('fetchApproveBtn');
+    const msg = document.getElementById('fetchModalMsg');
+    btn.disabled = true;
+    msg.textContent = 'Starting alignment…';
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_fetchPreviewJobId}/approve_and_align`,
+            {method: 'POST'}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) {
+            msg.textContent = 'Error: ' + (data.error || resp.statusText);
+            btn.disabled = false;
+            return;
+        }
+        const jobId = _fetchPreviewJobId;
+        closeFetchModal();
+        updateRow(jobId, {status: data.status, message: data.message});
+        schedulePoll(jobId);
+    } catch(err) {
+        msg.textContent = 'Network error: ' + err.message;
+        btn.disabled = false;
+    }
+}
+
+// Close fetch modal on backdrop click
+document.getElementById('fetchModal').addEventListener('click', function(e) {
+    if (e.target === this) closeFetchModal();
+});
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── Tree viewer ───────────────────────────────────────────────────────────────
 
 let _modalJobId = null;
 
@@ -503,7 +1180,7 @@ document.getElementById('treeModal').addEventListener('click', function(e) {
     if (e.target === this) closeTreeModal();
 });
 
-// ── Newick parser ────────────────────────────────────────────────────��────────
+// ── Newick parser ─────────────────────────────────────────────────────────────
 function parseNewick(s) {
     s = s.trim().replace(/;$/, '');
     let i = 0;
@@ -523,7 +1200,7 @@ function parseNewick(s) {
             i++;
             let len = '';
             while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ';') len += s[i++];
-            node.length = parseFloat(len) || 0;
+            node.length = Math.max(0, parseFloat(len) || 0);
         } else {
             node.length = 0;
         }

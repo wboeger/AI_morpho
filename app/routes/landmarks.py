@@ -2,6 +2,7 @@ import os
 import csv
 import io
 import json
+import zipfile
 import numpy as np
 from flask import Blueprint, render_template, request, jsonify, current_app, flash, redirect, url_for
 from flask_login import login_required, current_user
@@ -43,21 +44,11 @@ def upload_landmarks(structure_id):
         return redirect(url_for('landmarks.landmark_editor', structure_id=structure_id))
 
     f = request.files['csv_file']
-    content = f.read().decode('utf-8')
-    reader = csv.reader(io.StringIO(content))
-
-    coords = []
-    for row in reader:
-        # Skip header rows
-        try:
-            vals = [float(v) for v in row if v.strip()]
-            if len(vals) >= 2:
-                coords.append([vals[-2], vals[-1]])  # last two columns as X, Y
-        except ValueError:
-            continue
+    content = f.read().decode('utf-8', errors='replace')
+    coords = _parse_imagej_csv(content)
 
     if not coords:
-        flash('No valid coordinates found in CSV.', 'error')
+        flash('No valid coordinates found in CSV. Expected ImageJ Results table with X and Y columns.', 'error')
         return redirect(url_for('landmarks.landmark_editor', structure_id=structure_id))
 
     # Resample to target count
@@ -223,6 +214,172 @@ def import_boundaries_json(structure_id):
     db.session.commit()
     flash('Imported landmarks and boundaries from JSON.', 'success')
     return redirect(url_for('landmarks.landmark_editor', structure_id=structure_id))
+
+
+def _parse_imagej_csv(text: str) -> list:
+    """Parse an ImageJ Results-table CSV (or plain X,Y CSV) into [[x,y], ...].
+
+    Handles:
+      - ImageJ saveAs("Results") format:  ` ,X,Y\\n0,100.5,200.3\\n...`
+      - Plain two-column CSV:             `100.5,200.3\\n...`
+      - Tab-separated variants
+      - Semicolon-separated variants
+    Returns coordinates in image-pixel space (no scaling applied).
+    """
+    # Auto-detect delimiter
+    sniff = text[:2000]
+    try:
+        dialect = csv.Sniffer().sniff(sniff, delimiters=',\t;')
+    except csv.Error:
+        dialect = csv.excel  # default comma
+
+    reader = csv.reader(io.StringIO(text), dialect)
+    coords = []
+    x_col = None
+    y_col = None
+
+    for row_num, row in enumerate(reader):
+        stripped = [v.strip() for v in row]
+        if not any(stripped):
+            continue
+
+        # Header detection: look for 'X' and 'Y' column labels (case-insensitive)
+        if x_col is None:
+            upper = [v.upper() for v in stripped]
+            if 'X' in upper and 'Y' in upper:
+                x_col = upper.index('X')
+                y_col = upper.index('Y')
+                continue  # skip header row
+
+        # Data row
+        try:
+            if x_col is not None:
+                x = float(stripped[x_col])
+                y = float(stripped[y_col])
+            else:
+                # Fallback: last two parseable numbers in the row
+                nums = [float(v) for v in stripped if v]
+                if len(nums) < 2:
+                    continue
+                x, y = nums[-2], nums[-1]
+            coords.append([x, y])
+        except (ValueError, IndexError):
+            continue
+
+    return coords
+
+
+def _specimen_name_from_stem(stem: str) -> str:
+    """Convert an ImageJ CSV filename stem to a normalized species name.
+
+    The macro saves files as  FirstPart_SecondPart.csv  (first two
+    underscore-separated tokens of the image filename).  We convert
+    underscores to spaces to match Specimen.species_name.
+    """
+    return stem.replace('_', ' ').strip()
+
+
+@landmarks_bp.route('/project/<int:project_id>/landmarks/batch_import', methods=['POST'])
+@login_required
+def batch_import_landmarks(project_id):
+    """Batch-import landmark CSVs from an ImageJ macro ZIP export.
+
+    Expects a ZIP file where each entry is a CSV produced by the
+    Gyro-Landmark macro (one file per specimen, named
+    SpeciesName_SpecimenID.csv).  The user selects the target
+    structure type (hook / anchor / etc.) in the form.
+    """
+    from app.models import Project, Specimen, Structure
+
+    project = Project.query.get_or_404(project_id)
+    structure_type = request.form.get('structure_type', 'hook')
+
+    if 'zip_file' not in request.files or request.files['zip_file'].filename == '':
+        flash('No ZIP file selected.', 'error')
+        return redirect(url_for('project.view_project', project_id=project_id))
+
+    raw = request.files['zip_file'].read()
+    if not zipfile.is_zipfile(io.BytesIO(raw)):
+        flash('Uploaded file is not a valid ZIP archive.', 'error')
+        return redirect(url_for('project.view_project', project_id=project_id))
+
+    # Build a fast specimen lookup: normalized_name → Specimen
+    specimens = Specimen.query.filter_by(project_id=project_id).all()
+    sp_index = {}
+    for sp in specimens:
+        norm = sp.species_name.strip().lower()
+        sp_index[norm] = sp
+
+    imported, skipped, errors = [], [], []
+    target_count = Config.LANDMARK_COUNTS.get(structure_type)
+
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        csv_names = [
+            n for n in zf.namelist()
+            if n.lower().endswith('.csv')
+            and not os.path.basename(n).startswith('.')
+            and os.path.basename(n) not in ('rejected_log.csv', 'qc_log.csv', 'error_log.csv')
+        ]
+
+        for zname in csv_names:
+            base = os.path.basename(zname)
+            stem = base[:-4]  # strip .csv
+            species_guess = _specimen_name_from_stem(stem).lower()
+
+            # Fuzzy match: exact, then starts-with, then substring
+            specimen = sp_index.get(species_guess)
+            if specimen is None:
+                for norm, sp in sp_index.items():
+                    if norm.startswith(species_guess) or species_guess.startswith(norm):
+                        specimen = sp
+                        break
+
+            if specimen is None:
+                skipped.append(f'{base} — no specimen matching "{stem.replace("_", " ")}"')
+                continue
+
+            structure = Structure.query.filter_by(
+                specimen_id=specimen.id, structure_type=structure_type
+            ).first()
+            if structure is None:
+                skipped.append(f'{base} — {specimen.species_name}: no {structure_type} structure')
+                continue
+
+            try:
+                text = zf.read(zname).decode('utf-8', errors='replace')
+                coords = _parse_imagej_csv(text)
+                if not coords:
+                    errors.append(f'{base} — no valid coordinates found')
+                    continue
+
+                coords_arr = np.array(coords)
+                n = target_count
+                if n is None:
+                    n = suggest_landmark_count(
+                        resample_equidistant(coords_arr, 50), structure_type
+                    )
+                resampled = resample_equidistant(coords_arr, n)
+
+                structure.landmarks_json = resampled.tolist()
+                structure.landmark_count = n
+                structure.landmarks_confirmed = False
+                imported.append(f'{specimen.species_name} ({n} landmarks)')
+
+            except Exception as exc:
+                errors.append(f'{base} — {exc}')
+
+    db.session.commit()
+
+    _log(project_id,
+         f'Batch import ({structure_type}): {len(imported)} imported, '
+         f'{len(skipped)} skipped, {len(errors)} errors')
+
+    return render_template('landmarks/batch_import_result.html',
+                           project=project,
+                           structure_type=structure_type,
+                           imported=imported,
+                           skipped=skipped,
+                           errors=errors)
 
 
 def _log(project_id, action):

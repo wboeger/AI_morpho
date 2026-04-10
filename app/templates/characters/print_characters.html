@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Characters – {{ project.name }}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: "Times New Roman", Times, serif;
+            font-size: 11pt;
+            color: #000;
+            background: #fff;
+            padding: 2cm;
+        }
+        h1 { font-size: 16pt; margin-bottom: 0.2rem; }
+        .subtitle { font-size: 10pt; color: #555; margin-bottom: 1.5rem; }
+
+        .no-print { margin-bottom: 1.5rem; }
+        @media print { .no-print { display: none !important; } }
+
+        .char-block {
+            margin-bottom: 1.4rem;
+            padding-bottom: 1.2rem;
+            border-bottom: 1px solid #ccc;
+            page-break-inside: avoid;
+        }
+        .char-header {
+            display: flex;
+            align-items: baseline;
+            gap: 0.6rem;
+            margin-bottom: 0.35rem;
+        }
+        .char-code {
+            font-weight: bold;
+            font-size: 12pt;
+            font-family: monospace;
+        }
+        .char-name { font-size: 12pt; }
+        .char-meta {
+            font-size: 9pt;
+            color: #555;
+            margin-bottom: 0.4rem;
+        }
+        .badge {
+            display: inline-block;
+            border: 1px solid #aaa;
+            border-radius: 3px;
+            padding: 0 0.3rem;
+            font-size: 8.5pt;
+            margin-right: 0.3rem;
+        }
+        .states-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 9.5pt;
+            margin: 0.4rem 0 0.5rem 0;
+        }
+        .states-table th {
+            text-align: left;
+            border-bottom: 1px solid #999;
+            padding: 0.1rem 0.4rem;
+            background: #f5f5f5;
+            font-size: 9pt;
+        }
+        .states-table td {
+            padding: 0.1rem 0.4rem;
+            vertical-align: top;
+            border-bottom: 1px solid #eee;
+        }
+        .method-box {
+            font-size: 9pt;
+            color: #333;
+            margin-top: 0.3rem;
+            line-height: 1.5;
+        }
+        .method-box strong { font-weight: bold; }
+        .method-box em { font-style: italic; }
+        .method-box img { display: none; }  /* hide diagrams in print */
+    </style>
+</head>
+<body>
+
+<div class="no-print">
+    <button onclick="window.print()" style="padding:0.4rem 1rem; cursor:pointer; margin-right:0.5rem;">Print / Save PDF</button>
+    <button onclick="window.close()" style="padding:0.4rem 1rem; cursor:pointer;">Close</button>
+</div>
+
+<h1>Character List — {{ project.name }}</h1>
+<div class="subtitle">
+    Active characters: {{ char_data|length }} &nbsp;|&nbsp;
+    Generated {{ now }}
+</div>
+
+{% for item in char_data %}
+{% set c = item.char %}
+<div class="char-block">
+    <div class="char-header">
+        <span class="char-code">{{ c.code }}</span>
+        <span class="char-name">{{ c.name }}</span>
+    </div>
+    <div class="char-meta">
+        <span class="badge">{{ c.structure_type.replace('_',' ') }}</span>
+        <span class="badge">{{ c.computation_type }}</span>
+        {% if c.geometric_operation %}
+        <span class="badge">{{ c.geometric_operation }}</span>
+        {% endif %}
+        {% if c.parts_involved %}
+        <span style="font-size:9pt; color:#555;">Parts: {{ c.parts_involved | join(', ') }}</span>
+        {% endif %}
+    </div>
+
+    {% if c.description %}
+    <div style="font-size:9.5pt; font-style:italic; margin-bottom:0.35rem; color:#333;">{{ c.description }}</div>
+    {% endif %}
+
+    {% if c.states_json %}
+    <table class="states-table">
+        <thead>
+            <tr>
+                <th style="width:3rem;">State</th>
+                <th style="width:10rem;">Name</th>
+                <th style="width:8rem;">Threshold</th>
+                <th>Description</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in c.states_json %}
+        <tr>
+            <td><strong>{{ s.code }}</strong></td>
+            <td>{{ s.name }}</td>
+            <td>
+                {% if s.threshold_min is not none and s.threshold_max is not none %}
+                    {{ s.threshold_min }} – {{ s.threshold_max }}
+                {% elif s.threshold_min is not none %}
+                    ≥ {{ s.threshold_min }}
+                {% elif s.threshold_max is not none %}
+                    &lt; {{ s.threshold_max }}
+                {% else %}
+                    —
+                {% endif %}
+            </td>
+            <td>{{ s.description or '' }}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% endif %}
+
+    <div class="method-box">{{ item.explanation | safe }}</div>
+</div>
+{% endfor %}
+
+</body>
+</html>

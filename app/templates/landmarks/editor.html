@@ -129,9 +129,17 @@ function findNearest(sx, sy, threshold = 10) {
     return best;
 }
 
-canvas.addEventListener('mousedown', e => {
+// Convert a mouse event to canvas-attribute coordinates (corrects for CSS width:100% scaling)
+function canvasPos(e) {
     const rect = canvas.getBoundingClientRect();
-    const sx = e.clientX - rect.left, sy = e.clientY - rect.top;
+    return [
+        (e.clientX - rect.left) * (canvas.width  / rect.width),
+        (e.clientY - rect.top)  * (canvas.height / rect.height)
+    ];
+}
+
+canvas.addEventListener('mousedown', e => {
+    const [sx, sy] = canvasPos(e);
     if (e.button === 2) { // right-click: delete
         const idx = findNearest(sx, sy);
         if (idx >= 0) { landmarks.splice(idx, 1); draw(); }
@@ -155,8 +163,8 @@ canvas.addEventListener('mousedown', e => {
 });
 canvas.addEventListener('mousemove', e => {
     if (dragging === null) return;
-    const rect = canvas.getBoundingClientRect();
-    const [dx, dy] = toData(e.clientX - rect.left, e.clientY - rect.top);
+    const [sx, sy] = canvasPos(e);
+    const [dx, dy] = toData(sx, sy);
     landmarks[dragging] = [dx, dy];
     draw();
 });
