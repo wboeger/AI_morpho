@@ -183,24 +183,30 @@ def readiness_check(project_id):
 
     for sp in specimens:
         struct_map = {st.structure_type: st for st in sp.structures}
-        issues = []
+        blocking = []   # prevents processing
+        warnings = []   # present but not confirmed
         for stype in required_types:
             st = struct_map.get(stype)
             if st is None:
-                issues.append({'structure': stype, 'problem': 'missing'})
+                blocking.append({'structure': stype, 'problem': 'structure missing'})
             elif not st.landmarks_json:
-                issues.append({'structure': stype, 'problem': 'no landmarks'})
-            elif not st.landmarks_confirmed:
-                issues.append({'structure': stype, 'problem': 'landmarks not confirmed'})
+                blocking.append({'structure': stype, 'problem': 'no landmarks'})
             elif not st.boundary_json:
-                issues.append({'structure': stype, 'problem': 'no boundaries'})
-            elif not st.boundary_confirmed:
-                issues.append({'structure': stype, 'problem': 'boundaries not confirmed'})
-        if issues:
-            results.append({'species': sp.species_name, 'issues': issues})
+                blocking.append({'structure': stype, 'problem': 'no boundaries'})
+            else:
+                if not st.landmarks_confirmed:
+                    warnings.append({'structure': stype, 'problem': 'landmarks not confirmed'})
+                if not st.boundary_confirmed:
+                    warnings.append({'structure': stype, 'problem': 'boundaries not confirmed'})
+        if blocking or warnings:
+            results.append({'species': sp.species_name,
+                            'blocking': blocking, 'warnings': warnings})
 
+    n_blocking = sum(1 for r in results if r['blocking'])
     return jsonify({'status': 'ok', 'not_ready': results, 'total': len(specimens),
-                    'n_not_ready': len(results), 'n_ready': len(specimens) - len(results)})
+                    'n_blocking': n_blocking,
+                    'n_warnings': len(results) - n_blocking,
+                    'n_ready': len(specimens) - len(results)})
 
 
 @project_bp.route('/api/structure/<int:structure_id>/delete', methods=['DELETE'])
