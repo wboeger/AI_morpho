@@ -187,19 +187,25 @@ def readiness_check(project_id):
         warnings = []   # present but not confirmed
         for stype in required_types:
             st = struct_map.get(stype)
+            struct_id = st.id if st else None
             if st is None:
-                blocking.append({'structure': stype, 'problem': 'structure missing'})
+                blocking.append({'structure': stype, 'structure_id': None,
+                                 'specimen_id': sp.id, 'problem': 'structure missing'})
             elif not st.landmarks_json:
-                blocking.append({'structure': stype, 'problem': 'no landmarks'})
+                blocking.append({'structure': stype, 'structure_id': struct_id,
+                                 'specimen_id': sp.id, 'problem': 'no landmarks'})
             elif not st.boundary_json:
-                blocking.append({'structure': stype, 'problem': 'no boundaries'})
+                blocking.append({'structure': stype, 'structure_id': struct_id,
+                                 'specimen_id': sp.id, 'problem': 'no boundaries'})
             else:
                 if not st.landmarks_confirmed:
-                    warnings.append({'structure': stype, 'problem': 'landmarks not confirmed'})
+                    warnings.append({'structure': stype, 'structure_id': struct_id,
+                                     'specimen_id': sp.id, 'problem': 'landmarks not confirmed'})
                 if not st.boundary_confirmed:
-                    warnings.append({'structure': stype, 'problem': 'boundaries not confirmed'})
+                    warnings.append({'structure': stype, 'structure_id': struct_id,
+                                     'specimen_id': sp.id, 'problem': 'boundaries not confirmed'})
         if blocking or warnings:
-            results.append({'species': sp.species_name,
+            results.append({'species': sp.species_name, 'specimen_id': sp.id,
                             'blocking': blocking, 'warnings': warnings})
 
     n_blocking = sum(1 for r in results if r['blocking'])
@@ -207,6 +213,24 @@ def readiness_check(project_id):
                     'n_blocking': n_blocking,
                     'n_warnings': len(results) - n_blocking,
                     'n_ready': len(specimens) - len(results)})
+
+
+@project_bp.route('/api/structure/<int:structure_id>/quick_confirm', methods=['POST'])
+@login_required
+def quick_confirm(structure_id):
+    """Confirm landmarks and/or boundaries without opening the editor."""
+    structure = Structure.query.get_or_404(structure_id)
+    specimen = Specimen.query.get_or_404(structure.specimen_id)
+    data = request.get_json()
+    confirmed = data.get('confirm', [])
+    if 'landmarks' in confirmed and structure.landmarks_json:
+        structure.landmarks_confirmed = True
+    if 'boundaries' in confirmed and structure.boundary_json:
+        structure.boundary_confirmed = True
+    _log(specimen.project_id,
+         f'Quick-confirmed {", ".join(confirmed)} for {specimen.species_name} {structure.structure_type}')
+    db.session.commit()
+    return jsonify({'status': 'ok'})
 
 
 @project_bp.route('/api/structure/<int:structure_id>/delete', methods=['DELETE'])

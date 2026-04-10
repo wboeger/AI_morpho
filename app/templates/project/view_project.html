@@ -193,8 +193,39 @@
         <h3 style="margin:0 0 0.5rem;">Readiness Report</h3>
         <div id="readinessSummary" style="font-size:0.85rem; color:var(--gray-600); margin-bottom:0.75rem;"></div>
         <div id="readinessBody"></div>
-        <div style="margin-top:1rem; text-align:right;">
+        <div style="margin-top:1rem; display:flex; justify-content:space-between; align-items:center;">
+            <button class="btn btn-primary" id="startQueueBtn" onclick="startReviewQueue()" style="display:none;">
+                Review Incomplete &rarr;
+            </button>
             <button class="btn btn-outline" onclick="closeModal('readinessResultModal')">Close</button>
+        </div>
+    </div>
+</div>
+
+<!-- Review queue modal -->
+<div id="reviewQueueModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:440px; max-width:620px;">
+        <!-- Progress bar -->
+        <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1rem;">
+            <div style="flex:1; background:var(--gray-200); border-radius:4px; height:6px;">
+                <div id="queueBar" style="background:var(--primary); height:6px; border-radius:4px; width:0%; transition:width 0.3s;"></div>
+            </div>
+            <span id="queueCounter" style="font-size:0.82rem; color:var(--gray-500); white-space:nowrap;"></span>
+        </div>
+
+        <h3 id="queueSpecies" style="margin:0 0 0.25rem; font-style:italic;"></h3>
+        <p id="queueSubtitle" style="font-size:0.82rem; color:var(--gray-500); margin:0 0 0.75rem;"></p>
+
+        <!-- Issue list -->
+        <div id="queueIssues" style="display:flex; flex-direction:column; gap:0.4rem; margin-bottom:1rem;"></div>
+
+        <!-- Navigation -->
+        <div style="display:flex; gap:0.5rem; justify-content:space-between; align-items:center; border-top:1px solid var(--gray-200); padding-top:0.75rem;">
+            <button class="btn btn-outline" onclick="closeModal('reviewQueueModal')">Close</button>
+            <div style="display:flex; gap:0.5rem;">
+                <button class="btn btn-outline" id="queueSkipBtn" onclick="queueNext(true)">Skip</button>
+                <button class="btn btn-primary" id="queueNextBtn" onclick="queueNext(false)">Next &rarr;</button>
+            </div>
         </div>
     </div>
 </div>
@@ -293,6 +324,9 @@ async function runReadinessCheck() {
         <span style="color:var(--danger); margin-right:0.75rem;">&#10007; Blocked: ${data.n_blocking} / ${data.total}</span>
         <span style="color:#e67e22;">&#9651; Warnings only: ${data.n_warnings} / ${data.total}</span>`;
 
+    _queueItems = data.not_ready;
+    document.getElementById('startQueueBtn').style.display = data.not_ready.length ? '' : 'none';
+
     if (!data.not_ready.length) {
         body.innerHTML = '<p style="color:var(--success); font-weight:600;">All specimens are ready to process.</p>';
     } else {
@@ -319,6 +353,106 @@ async function runReadinessCheck() {
     }
 
     openModal('readinessResultModal');
+}
+
+// ── Review queue ──
+let _queueItems = [];   // [{species, specimen_id, blocking:[...], warnings:[...]}]
+let _queueIdx = 0;
+
+function startReviewQueue() {
+    if (!_queueItems.length) return;
+    _queueIdx = 0;
+    closeModal('readinessResultModal');
+    renderQueueItem();
+    openModal('reviewQueueModal');
+}
+
+function renderQueueItem() {
+    const total = _queueItems.length;
+    const item  = _queueItems[_queueIdx];
+    const pct   = Math.round((_queueIdx / total) * 100);
+
+    document.getElementById('queueBar').style.width = pct + '%';
+    document.getElementById('queueCounter').textContent = `${_queueIdx + 1} / ${total}`;
+    document.getElementById('queueSpecies').textContent = item.species;
+
+    const nBlocking = item.blocking.length;
+    const nWarn     = item.warnings.length;
+    document.getElementById('queueSubtitle').textContent =
+        (nBlocking ? `${nBlocking} blocking` : '') +
+        (nBlocking && nWarn ? ' · ' : '') +
+        (nWarn ? `${nWarn} warning${nWarn > 1 ? 's' : ''}` : '');
+
+    const allIssues = [
+        ...item.blocking.map(i => ({...i, level: 'blocking'})),
+        ...item.warnings.map(i => ({...i, level: 'warning'}))
+    ];
+
+    const issueEl = document.getElementById('queueIssues');
+    issueEl.innerHTML = allIssues.map(iss => {
+        const isBlock = iss.level === 'blocking';
+        const bg    = isBlock ? '#fde8e8' : '#fef9e7';
+        const color = isBlock ? '#c0392b' : '#d35400';
+        const bdr   = isBlock ? '#f5b7b1' : '#f8c471';
+        const label = iss.structure.replace(/_/g, ' ') + ' — ' + iss.problem;
+        let actions = '';
+
+        if (iss.problem === 'landmarks not confirmed' && iss.structure_id) {
+            actions = `<button class="btn btn-sm btn-outline" style="margin-left:auto;"
+                onclick="quickConfirm(${iss.structure_id}, ['landmarks'], this)">Confirm Landmarks</button>`;
+        } else if (iss.problem === 'boundaries not confirmed' && iss.structure_id) {
+            actions = `<button class="btn btn-sm btn-outline" style="margin-left:auto;"
+                onclick="quickConfirm(${iss.structure_id}, ['boundaries'], this)">Confirm Boundaries</button>`;
+        } else if (iss.problem === 'no landmarks' && iss.structure_id) {
+            actions = `<a href="/structure/${iss.structure_id}/landmarks" class="btn btn-sm btn-outline" style="margin-left:auto;" target="_blank">Open Landmark Editor</a>`;
+        } else if (iss.problem === 'no boundaries' && iss.structure_id) {
+            actions = `<a href="/structure/${iss.structure_id}/boundaries" class="btn btn-sm btn-outline" style="margin-left:auto;" target="_blank">Open Boundary Editor</a>`;
+        } else if (iss.problem === 'structure missing') {
+            actions = `<button class="btn btn-sm btn-outline" style="margin-left:auto;"
+                onclick="closeModal('reviewQueueModal'); openAddStructure(${item.specimen_id}, '${item.species.replace(/'/g,"\\'")}')">Add Structure</button>`;
+        }
+
+        return `<div style="display:flex; align-items:center; gap:0.5rem; padding:0.4rem 0.6rem;
+                     background:${bg}; border:1px solid ${bdr}; border-radius:5px; color:${color}; font-size:0.85rem;">
+                    <span style="flex:1;">${label}</span>${actions}
+                </div>`;
+    }).join('');
+
+    // Show/hide Next button
+    const isLast = _queueIdx >= total - 1;
+    document.getElementById('queueNextBtn').textContent = isLast ? 'Finish' : 'Next →';
+    document.getElementById('queueSkipBtn').style.display = isLast ? 'none' : '';
+}
+
+async function quickConfirm(structureId, targets, btn) {
+    btn.disabled = true;
+    btn.textContent = 'Confirming…';
+    const resp = await fetch(`/api/structure/${structureId}/quick_confirm`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({confirm: targets})
+    });
+    const data = await resp.json();
+    if (data.status === 'ok') {
+        btn.textContent = '✓ Confirmed';
+        btn.style.background = 'var(--success)';
+        btn.style.color = '#fff';
+        btn.style.borderColor = 'var(--success)';
+    } else {
+        btn.textContent = 'Error';
+        btn.disabled = false;
+    }
+}
+
+function queueNext(skip) {
+    const total = _queueItems.length;
+    if (_queueIdx >= total - 1) {
+        closeModal('reviewQueueModal');
+        location.reload();   // refresh so the table reflects changes
+        return;
+    }
+    _queueIdx++;
+    renderQueueItem();
 }
 
 // ── Add structure ──
