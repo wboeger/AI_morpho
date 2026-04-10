@@ -53,6 +53,7 @@
     <form method="POST" action="{{ url_for('project.compute_all_characters_route', project_id=project.id) }}" style="display:inline;">
         <button type="submit" class="btn btn-outline">Compute All Characters</button>
     </form>
+    <button class="btn btn-outline" onclick="openModal('readinessModal')">Check Readiness</button>
 </div>
 
 <!-- ImageJ Batch Import -->
@@ -164,6 +165,40 @@
 
 <!-- ── Modals ── -->
 
+<!-- Readiness check — structure selector -->
+<div id="readinessModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:320px; max-width:420px;">
+        <h3 style="margin:0 0 0.75rem;">Check Readiness</h3>
+        <p style="font-size:0.85rem; color:var(--gray-500); margin-bottom:0.75rem;">
+            Select the structures that every specimen must have fully processed
+            (landmarks confirmed + boundaries confirmed).
+        </p>
+        <div style="display:flex; flex-direction:column; gap:0.4rem; margin-bottom:1rem;">
+            {% for st in [('hook','Hook'),('anchor','Anchor'),('superficial_bar','Superficial Bar'),('deep_bar','Deep Bar'),('mco','MCO')] %}
+            <label style="display:flex; align-items:center; gap:0.5rem; font-size:0.9rem; cursor:pointer;">
+                <input type="checkbox" class="readiness-check" value="{{ st[0] }}" checked> {{ st[1] }}
+            </label>
+            {% endfor %}
+        </div>
+        <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+            <button class="btn btn-outline" onclick="closeModal('readinessModal')">Cancel</button>
+            <button class="btn btn-primary" onclick="runReadinessCheck()">Check</button>
+        </div>
+    </div>
+</div>
+
+<!-- Readiness results -->
+<div id="readinessResultModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:420px; max-width:680px; max-height:80vh; overflow-y:auto;">
+        <h3 style="margin:0 0 0.5rem;">Readiness Report</h3>
+        <div id="readinessSummary" style="font-size:0.85rem; color:var(--gray-600); margin-bottom:0.75rem;"></div>
+        <div id="readinessBody"></div>
+        <div style="margin-top:1rem; text-align:right;">
+            <button class="btn btn-outline" onclick="closeModal('readinessResultModal')">Close</button>
+        </div>
+    </div>
+</div>
+
 <!-- Add structure modal -->
 <div id="addStructureModal" class="gyro-modal" style="display:none;">
     <div class="gyro-modal-box" style="min-width:360px; max-width:500px;">
@@ -234,6 +269,63 @@ function openModal(id)  { document.getElementById(id).style.display = 'flex'; }
 document.querySelectorAll('.gyro-modal').forEach(m => {
     m.addEventListener('click', e => { if (e.target === m) m.style.display = 'none'; });
 });
+
+// ── Readiness check ──
+async function runReadinessCheck() {
+    const types = [...document.querySelectorAll('.readiness-check:checked')].map(cb => cb.value);
+    if (!types.length) { alert('Select at least one structure type.'); return; }
+    closeModal('readinessModal');
+
+    const resp = await fetch(`/api/project/{{ project.id }}/readiness_check`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({structure_types: types})
+    });
+    const data = await resp.json();
+    if (data.error) { alert(data.error); return; }
+
+    const problemLabels = {
+        'missing': 'structure missing',
+        'no landmarks': 'no landmarks',
+        'landmarks not confirmed': 'landmarks not confirmed',
+        'no boundaries': 'no boundaries',
+        'boundaries not confirmed': 'boundaries not confirmed'
+    };
+    const problemColors = {
+        'missing': '#e74c3c',
+        'no landmarks': '#e67e22',
+        'landmarks not confirmed': '#f39c12',
+        'no boundaries': '#e67e22',
+        'boundaries not confirmed': '#f39c12'
+    };
+
+    const summary = document.getElementById('readinessSummary');
+    const body = document.getElementById('readinessBody');
+
+    const checkedLabels = types.map(t => t.replace(/_/g,' ')).join(', ');
+    summary.innerHTML = `Checking: <strong>${checkedLabels}</strong><br>
+        <span style="color:var(--success);">&#10003; Ready: ${data.n_ready} / ${data.total}</span> &nbsp;
+        <span style="color:var(--danger);">&#9888; Not ready: ${data.n_not_ready} / ${data.total}</span>`;
+
+    if (!data.not_ready.length) {
+        body.innerHTML = '<p style="color:var(--success); font-weight:600;">All specimens are ready.</p>';
+    } else {
+        body.innerHTML = data.not_ready.map(sp => `
+            <div style="border:1px solid var(--gray-200); border-radius:6px; padding:0.5rem 0.75rem; margin-bottom:0.5rem;">
+                <em style="font-size:0.9rem;">${sp.species}</em>
+                <div style="display:flex; flex-wrap:wrap; gap:0.3rem; margin-top:0.3rem;">
+                    ${sp.issues.map(iss => `
+                        <span style="font-size:0.78rem; padding:0.15rem 0.5rem; border-radius:4px;
+                              background:${problemColors[iss.problem]}22; color:${problemColors[iss.problem]};
+                              border:1px solid ${problemColors[iss.problem]}55;">
+                            ${iss.structure.replace(/_/g,' ')} — ${problemLabels[iss.problem]}
+                        </span>`).join('')}
+                </div>
+            </div>`).join('');
+    }
+
+    openModal('readinessResultModal');
+}
 
 // ── Add structure ──
 function openAddStructure(specimenId, speciesName) {

@@ -168,6 +168,41 @@ def delete_specimen(project_id, specimen_id):
     return jsonify({'status': 'ok', 'species': species_name})
 
 
+@project_bp.route('/api/project/<int:project_id>/readiness_check', methods=['POST'])
+@login_required
+def readiness_check(project_id):
+    """Check which specimens are missing or incomplete for selected structure types."""
+    _get_project_or_404(project_id)
+    data = request.get_json()
+    required_types = data.get('structure_types', [])
+    if not required_types:
+        return jsonify({'error': 'No structure types selected.'}), 400
+
+    specimens = Specimen.query.filter_by(project_id=project_id).order_by(Specimen.species_name).all()
+    results = []
+
+    for sp in specimens:
+        struct_map = {st.structure_type: st for st in sp.structures}
+        issues = []
+        for stype in required_types:
+            st = struct_map.get(stype)
+            if st is None:
+                issues.append({'structure': stype, 'problem': 'missing'})
+            elif not st.landmarks_json:
+                issues.append({'structure': stype, 'problem': 'no landmarks'})
+            elif not st.landmarks_confirmed:
+                issues.append({'structure': stype, 'problem': 'landmarks not confirmed'})
+            elif not st.boundary_json:
+                issues.append({'structure': stype, 'problem': 'no boundaries'})
+            elif not st.boundary_confirmed:
+                issues.append({'structure': stype, 'problem': 'boundaries not confirmed'})
+        if issues:
+            results.append({'species': sp.species_name, 'issues': issues})
+
+    return jsonify({'status': 'ok', 'not_ready': results, 'total': len(specimens),
+                    'n_not_ready': len(results), 'n_ready': len(specimens) - len(results)})
+
+
 @project_bp.route('/api/structure/<int:structure_id>/delete', methods=['DELETE'])
 @login_required
 def delete_structure(structure_id):
