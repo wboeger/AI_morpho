@@ -4,11 +4,53 @@
 
 A web-based collaborative platform for taxonomists to describe sclerotized structures of Gyrodactylidae species and produce phylogenetic character matrices. Takes microscopy images as input, extracts landmarks automatically (hooks/anchors), supports manual visual coding (bars/MCO), and outputs character matrices in standard phylogenetic formats plus auto-generated taxonomic descriptions and diagnoses.
 
-**Technology stack**: Python 3.10+ / Flask / SQLite / HTML+CSS+JS / D3.js / PyTorch (U-Net) / NumPy / Pillow / OpenCV
+**Technology stack**: Python 3.10+ / Flask / SQLite / HTML+CSS+JS / D3.js / NumPy / Pillow / OpenCV / Anthropic SDK
 
 **Working directory**: `/Users/walterapboeger/Desktop/Gyromorphometry/AI_morpho2`
 
 **Reference data from previous work**: `/Users/walterapboeger/Desktop/Gyromorphometry/AI_morpho/` (existing pipeline with hooks and anchors implemented — use as reference for geometric computation logic, NOT as code to import)
+
+---
+
+## Current Implementation Status (April 2026)
+
+All core phases are fully implemented. The following features have been added beyond the original specification:
+
+### AI Advisor (`app/routes/ai_advisor.py`)
+- Sends project context (character definitions, value statistics, specimen counts) to Claude, GPT-4o, or Gemini
+- Returns structured JSON with: new character suggestions (with formula and states), state improvement proposals, redundancy flags, and general observations
+- Accepted suggestions are created as `CharacterDefinition` records (code prefix `AI##`) directly from the UI
+- API keys entered per session, never stored in DB
+- Prompt size capped at 60k chars; response limited to 5 suggestions per section to avoid JSON truncation
+
+### ImageJ Macro ZIP Batch Import (`app/routes/landmarks.py`)
+- `batch_import_landmarks`: accepts a ZIP of CSVs produced by the Gyro-Landmark macro
+- Fuzzy name matching (exact → starts-with → substring) against `Specimen.species_name`
+- Auto-resamples to `Config.LANDMARK_COUNTS` or adaptive count
+- Result page: imported / skipped / errors summary
+
+### Per-Structure Image Upload (`app/routes/project.py`)
+- `upload_structure_image`: POST `/api/structure/<id>/upload_image`
+- **img** / **img✓** button on every structure row in the specimen list
+- Modal file picker; replaces existing image path on structure record
+
+### Character Workshop Improvements
+- Drag-and-drop row reordering via HTML5 drag API; persists via `display_order` column
+- **Print Characters** page: all active characters with states table and geometric explanation
+- **Distribution** button: fixed backend (None/NaN/Inf filtering) and frontend (loading state, error display, char name in title)
+
+### Character Matrix Improvements
+- Species rows ordered to match ladderized phylogenetic tree leaf order
+- Tree ladderized (fewer leaves first) on full tree before pruning, both server-side and client-side — guarantees no crossing lines
+- Gene tree deduplication: multiple accessions per species collapsed to one row via `_seen` set in `pruneTree`
+- Outgroup re-rooting: dropdown + clickable leaf dots on tree; uses BioPython `root_with_outgroup` server-side; saves new newick to `project.tree_newick`
+
+### Landmark Editor Fix
+- Canvas coordinate mismatch corrected: `canvasPos(e)` scales CSS mouse coordinates to canvas attribute coordinates (`canvas.width / rect.width`)
+
+### SQLite WAL Mode
+- `PRAGMA journal_mode=WAL` and `PRAGMA busy_timeout=30000` set on every connection via SQLAlchemy event listener in `app/__init__.py`
+- Eliminates "database is locked" errors during concurrent CSV uploads
 
 ---
 

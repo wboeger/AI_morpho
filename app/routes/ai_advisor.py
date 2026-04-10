@@ -83,7 +83,7 @@ Based on this, please suggest:
 3. **Redundant or problematic characters** — any that appear redundant, have zero variance, or are likely correlated with others already defined.
 4. **General observations** about the quality or completeness of the morphometric scheme.
 
-Respond ONLY with a valid JSON object in this exact structure (no markdown, no extra text):
+Respond ONLY with a valid JSON object in this exact structure (no markdown, no extra text). Be concise — limit to the 5 most important suggestions per section, keep descriptions under 100 words each:
 {{
   "new_characters": [
     {{
@@ -125,7 +125,7 @@ def _call_claude(api_key: str, prompt: str) -> dict:
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
         model='claude-opus-4-6',
-        max_tokens=4096,
+        max_tokens=8096,
         messages=[{'role': 'user', 'content': prompt}]
     )
     return json.loads(_strip_fences(message.content[0].text))

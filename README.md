@@ -5,11 +5,13 @@ A web-based pipeline for morphometric analysis, automated taxonomic description,
 ## Features
 
 - **ImageJ macros**: Interactive landmarking macros for hooks and anchors — contour extraction via wand tool, 3 anatomical landmarks, equidistant resampling to 100 pseudolandmarks
-- **Landmark management**: Import, visualize, and edit 2D pseudolandmarks for hooks, anchors, bars, and MCO
+- **Landmark management**: Import, visualize, and edit 2D pseudolandmarks for hooks, anchors, bars, and MCO. Upload individual CSVs or batch-import a ZIP archive of ImageJ macro outputs
+- **Image management**: Upload structure images individually per specimen directly from the project page, or batch-import from a folder
 - **Boundary assignment**: Define anatomical part boundaries with click, range, or lasso selection
 - **Character computation**: Automatic geometric character states via Procrustes-aligned measurements (ratios, angles, curvatures, sinuosity)
-- **Character workshop**: Define, edit, reorder, and delete character states; view measurement explanations and specimen reference panels
-- **Character matrix**: Interactive matrix with confidence coloring, cell-level override, gallery views, and optional phylogenetic tree panel with synchronized leaf–row alignment
+- **Character workshop**: Define, edit, drag-and-drop reorder, and delete character states; view measurement explanations and specimen reference panels; print all characters to PDF
+- **AI Advisor**: Send project data to Claude, GPT-4o, or Gemini and receive expert suggestions for new characters, improved state definitions, and redundancy flags — accepted suggestions are added to the workshop automatically
+- **Character matrix**: Interactive matrix with confidence coloring, cell-level override, gallery views, and phylogenetic tree panel with ladderized tree, synchronized leaf–row alignment, and outgroup re-rooting
 - **Gallery**: Sortable specimen gallery with color-coded landmark shapes, structure type switcher, lightbox zoom, and inline state assignment
 - **Species descriptions**: Auto-generated morphological descriptions from character data
 - **Taxonomic diagnoses**: Comparative diagnoses for user-defined taxonomic groups
@@ -65,7 +67,7 @@ pip install -r requirements.txt
 
 > **Note on PyTorch**: The `torch` and `torchvision` packages are large. If you do not plan to use the U-Net segmentation module, you can install without them:
 > ```bash
-> pip install Flask Flask-SQLAlchemy Flask-Login Flask-WTF Werkzeug numpy Pillow opencv-python-headless biopython requests
+> pip install Flask Flask-SQLAlchemy Flask-Login Flask-WTF Werkzeug numpy Pillow opencv-python-headless biopython requests anthropic
 > ```
 
 ### 4. Initialize the data directory
@@ -86,6 +88,8 @@ The server starts at **http://127.0.0.1:5001**. Open this URL in your browser.
 
 > **macOS note**: Port 5000 is occupied by AirPlay Receiver (System Settings → General → AirDrop & Handoff). GyroMorpho uses port 5001 by default.
 
+---
+
 ## Quick Start Guide
 
 ### Step 1: Register and create a project
@@ -95,6 +99,8 @@ The server starts at **http://127.0.0.1:5001**. Open this URL in your browser.
 3. Click **New Project**, enter a name and description.
 
 The project dashboard shows a **Pipeline** bar at the top with the full workflow.
+
+---
 
 ### Step 2: Extract landmarks with ImageJ macros
 
@@ -120,21 +126,37 @@ The macro workflow:
 
 Full backward navigation at every stage.
 
+---
+
 ### Step 3: Import data into GyroMorpho
 
-**Import landmarks** — click **+ Add Folder**, enter the CSV folder path, select structure type, click **Scan** then **Import All**.
+#### Import landmarks from folder
+
+Click **Import from Folders**, enter the CSV folder path, select structure type, click **Scan** then **Import All**.
 
 Supported filename formats:
 - `Gyrodactylus_salaris.csv`
 - `AB063294Gyrodactylusanguillae.csv`
 - `JF836137.1|Gyrocerviceanseris_passamaquoddyensis.csv`
 
-**Import boundaries** — import JSON files mapping specimen names to part indices (1-based):
+#### Batch import landmarks from ZIP archive
+
+On the project page, use the **Import Landmarks from ImageJ Macro** card: select the structure type, choose a ZIP file containing the CSVs produced by the macro, and click **Import ZIP**. Each CSV must be named `GenusName_speciesName.csv`. The system matches files to specimens by name (fuzzy matching) and resamples automatically.
+
+#### Import images
+
+**From folder**: Enter path to folder with PNG/JPG/GIF via **Import from Folders** → Images tab; images matched by species name.
+
+**Per structure**: In the specimen list, each structure row has an **img** button. Click it to upload or replace the image for that specific structure directly from the project page.
+
+#### Import boundaries
+
+Import JSON files mapping specimen names to part indices (1-based):
 ```json
 { "Gyrodactylus_salaris": { "Point": [1,2,3,4,5], "Shaft": [6,7,8,9,10] } }
 ```
 
-**Import images** — enter path to folder with PNG/JPG/GIF; images matched by species name.
+---
 
 ### Step 4: Review boundaries
 
@@ -144,30 +166,66 @@ Each specimen's structure has an **Edit Boundaries** link. The boundary editor p
 
 Click **Confirm** to save and trigger character computation.
 
+---
+
 ### Step 5: Character matrix
 
 Click **Character Matrix** from the project page:
 - Rows = species, columns = characters; confidence coloring: green/yellow/red/gray
 - Click any cell for details and override options
 - Filter by structure type (Hook, Anchor, Bar, MCO) or DNA-only / unconfirmed
-- **Upload a tree** (Newick/NEXUS) via the tree upload form — matrix rows reorder to match phylogenetic leaf order and an SVG clade panel appears alongside the matrix with synchronized scrolling
+- **Tree panel**: upload a Newick/NEXUS file or import from the Phylogeny pipeline — matrix rows reorder to match the **ladderized** phylogenetic leaf order and an SVG clade panel appears with synchronized scrolling
+- **Outgroup re-rooting**: select a species from the dropdown or click a leaf dot on the tree to re-root the phylogeny
+
+---
 
 ### Step 6: Character workshop
 
 Click **Characters** from the project page:
 - Toggle characters active/inactive; create new characters; edit thresholds
+- **Drag-and-drop reorder** rows to control column order in the matrix
+- **Print Characters**: opens a print-friendly page with all active characters, their states, and method explanations — use browser Print / Save as PDF
+- **Distribution**: view histogram of raw values across all specimens for any character
 - Two-panel editor: form (left) + reference specimen panel (right)
-- **Measurement explanation**: collapsible box explaining the geometric operation and state mapping
 
-### Step 7: Species descriptions
+---
+
+### Step 7: AI Advisor
+
+Click **AI Advisor** in the top navigation bar (available within any project). The advisor sends your project's character definitions and value statistics to an AI model and returns:
+
+- **Suggested new characters**: biologically motivated measurements not yet defined, with proposed formula and states. Click **Add to Project** to create the character immediately in the workshop.
+- **State improvements**: proposed refinements to existing character discretizations based on value distributions.
+- **Redundant/problematic characters**: characters flagged as correlated, zero-variance, or otherwise uninformative.
+- **General observations**: overall commentary on the completeness and quality of the morphometric scheme.
+
+**Supported providers**:
+
+| Provider | Model | API key source |
+|----------|-------|----------------|
+| Claude (Anthropic) | claude-opus-4-6 | https://console.anthropic.com |
+| GPT-4o (OpenAI) | gpt-4o | https://platform.openai.com/api-keys |
+| Gemini (Google) | gemini-2.0-flash / 1.5-flash | https://aistudio.google.com/app/apikey |
+
+API keys are entered once per session and are never stored in the database.
+
+> **Note**: No images are transmitted — only character definitions, specimen counts, and value statistics are sent to the AI provider.
+
+---
+
+### Step 8: Species descriptions
 
 Click **Descriptions** — auto-generated morphological descriptions in standard taxonomic prose. Click **Regenerate** after updating character values.
 
-### Step 8: Taxonomic diagnoses
+---
+
+### Step 9: Taxonomic diagnoses
 
 Click **Diagnoses** — create taxonomic groups (genus, subfamily) and generate comparative diagnoses.
 
-### Step 9: Export
+---
+
+### Step 10: Export
 
 Click **Export**:
 
@@ -181,13 +239,13 @@ Click **Export**:
 | Descriptions | Formatted species descriptions | Publications |
 | Diagnoses | Formatted group diagnoses | Publications |
 
-### Step 10: Phylogenetic pipeline
+---
+
+### Step 11: Phylogenetic pipeline
 
 Click **Phylogeny** in the top navigation bar. Two modes are available:
 
 #### NCBI Pipeline (full automated pipeline)
-
-Replicates the R v8/v9 pipeline entirely in Python:
 
 1. **Configure** target taxon (e.g. *Gyrodactylidae*), gene/marker query (e.g. 18S terms), minimum sequence length, accessions to exclude, outgroup families with selection mode (`each_genus` = top N per genus; `top_species` = top N longest overall), NCBI email, and CIPRES credentials.
 2. Click **Start Pipeline** — the system runs in the background:
@@ -199,9 +257,8 @@ Replicates the R v8/v9 pipeline entirely in Python:
    - Progress updates automatically every 6 seconds
 3. When stage reaches **trimmed**, click **Submit to CIPRES** to run RAxML-NG on XSEDE
 4. Click **Check Status** to poll CIPRES; the job auto-polls while running
-5. When completed, click **Download & Root** — downloads `infile.txt.raxml.support`, roots with `ape::root()` using the configured outgroup genera. All files saved to `Results/phylogeny/` within the job directory
-6. A **phylogenetic tree popup** appears automatically showing the rooted phylogram with tip labels, bootstrap values, and a scale bar
-7. Click **Import into Project** to set the tree as the project reference phylogeny — the character matrix will then reorder rows by tree leaf order and display the clade panel
+5. When completed, click **Download & Root** — downloads `infile.txt.raxml.support`, roots with `ape::root()` using the configured outgroup genera
+6. Click **Import into Project** to set the tree as the project reference phylogeny
 
 #### Upload FASTA
 
@@ -216,6 +273,8 @@ export CIPRES_PASSWORD=your_password
 export CIPRES_APP_KEY=your_app_key
 ```
 
+---
+
 ## How Character States Are Computed
 
 ### Generalized Procrustes Analysis (GPA)
@@ -225,27 +284,27 @@ All specimens of the same structure type are aligned before measurement:
 2. **Scale**: scale to unit centroid size (removes size differences)
 3. **Rotate**: iterative rotation to minimize sum of squared distances to mean shape
 
-This ensures measurements are scale-independent and orientation-independent.
-
 ### Geometric operations
 
-| Operation | Description | Example |
-|-----------|-------------|---------|
-| `ratio_arc_length` | Ratio of arc lengths of two parts | C01: Point/Shaft |
-| `sinuosity` | Arc length / chord length | C03: Point waviness |
-| `mean_curvature` | Mean Menger curvature | C05: Shaft curvature |
-| `junction_angle` | Angle at part junction | C02: Point-Shaft angle |
-| `direction_angle` | Angle between direction vectors | C06: Shaft-Base angle |
-| `relative_position` | Normalized vertical displacement | C04: Point vs Toe |
-| `max_curvature` | Maximum local curvature | Sharpest bend |
-| `presence_threshold` | Part arc as fraction of total | C10: Heel presence |
-| `sinuosity_with_direction` | Signed sinuosity | C04: Point direction |
-| `angle_between_parts` | Angle at fork between two parts | A09: Shaft-root angle |
-| `point_curvature` | Deviation angle between point midline and middle shaft axis | A02: Point curvature |
+| Operation | Description |
+|-----------|-------------|
+| `ratio_arc_length` | Ratio of arc lengths of two parts |
+| `sinuosity` | Arc length / chord length |
+| `mean_curvature` | Mean Menger curvature |
+| `junction_angle` | Angle at part junction |
+| `direction_angle` | Angle between direction vectors |
+| `relative_position` | Normalized vertical displacement |
+| `max_curvature` | Maximum local curvature |
+| `presence_threshold` | Part arc as fraction of total |
+| `sinuosity_with_direction` | Signed sinuosity |
+| `angle_between_parts` | Angle at fork between two parts |
+| `point_curvature` | Deviation angle between point midline and middle shaft axis |
 
 ### State mapping
 
-Raw numeric values are mapped to discrete states via threshold ranges. Confidence = distance from nearest threshold boundary (farther = higher confidence).
+Raw numeric values are mapped to discrete states via threshold ranges. Confidence = distance from nearest threshold boundary.
+
+---
 
 ## Default Character Library
 
@@ -255,6 +314,8 @@ Raw numeric values are mapped to discrete states via threshold ranges. Confidenc
 - **B01–B06**: Superficial bar (6 manual)
 - **D01–D03**: Deep bar (3 manual)
 - **M01–M06**: MCO (6 manual)
+
+---
 
 ## Project Structure
 
@@ -266,8 +327,8 @@ AI_morpho2/
   macros/                       # ImageJ landmarking macros
   phylogeny/                    # Reference R pipeline scripts (v8, v9)
   app/
-    __init__.py                 # Flask app factory + DB migration
-    models.py                   # SQLAlchemy data models (incl. PhylogenyJob)
+    __init__.py                 # Flask app factory + DB migration + SQLite WAL mode
+    models.py                   # SQLAlchemy data models
     characters.py               # Character computation engine + default library
     geometry.py                 # Geometric functions (curvature, angles, etc.)
     procrustes.py               # GPA, PCA, Procrustes alignment
@@ -275,40 +336,48 @@ AI_morpho2/
     export.py                   # Export format generators
     routes/
       auth.py                   # Authentication
-      project.py                # Project dashboard, specimen import
-      landmarks.py              # Landmark editor
+      project.py                # Project dashboard, specimen/image import
+      landmarks.py              # Landmark editor + ImageJ ZIP batch import
       boundaries.py             # Boundary editor
-      characters.py             # Character workshop
-      matrix.py                 # Character matrix, tree upload
+      characters.py             # Character workshop (reorder, print, distribution)
+      matrix.py                 # Character matrix, tree upload, outgroup re-rooting
       descriptions.py           # Species descriptions & diagnoses
       export.py                 # Export routes
       phylogeny.py              # Phylogenetic pipeline (NCBI→MAFFT→trimAl→CIPRES)
+      ai_advisor.py             # AI Advisor (Claude / GPT-4o / Gemini integration)
     templates/
-      phylogeny/phylogeny.html  # Phylogeny pipeline UI
-      matrix/matrix_view.html   # Matrix with tree panel
+      ai_advisor/advisor.html   # AI Advisor UI
+      characters/workshop.html  # Character workshop with drag-and-drop reordering
+      characters/print_characters.html  # Print-friendly character list
+      landmarks/editor.html     # Landmark editor (canvas coordinate fix)
+      landmarks/batch_import_result.html  # ZIP import results summary
+      matrix/matrix_view.html   # Matrix with ladderized tree panel
     static/
       css/style.css
       diagrams/                 # SVG measurement diagrams
   data/                         # Created at runtime (DB + uploads)
 ```
 
+---
+
 ## Data Storage
 
-- **`data/db.sqlite`** — all structured data: specimens, structures, landmarks, boundaries, character definitions and values, DNA sequences, descriptions, diagnoses, phylogeny jobs, activity logs
+- **`data/db.sqlite`** — all structured data (WAL journal mode enabled for concurrency)
 - **`data/uploads/`** — specimen images
-- **`phylogeny/Results/job_TIMESTAMP/`** — per-job phylogenetic pipeline files:
-  - `18S_raw.fa`, `18S_aligned.fa`, `18S_trimmed.fa`
-  - `infile.txt.raxml.support` and all other CIPRES output files
-  - `rooted_tree.tre` — rooted phylogenetic tree
+- **`phylogeny/Results/job_TIMESTAMP/`** — per-job phylogenetic pipeline files
+
+---
 
 ## Configuration
 
 Edit `config.py` to customize:
 - `SECRET_KEY`: set a secure random key for production
 - `UPLOAD_FOLDER`: where specimen images and pipeline files are stored
-- `CIPRES_BASE_URL`, `CIPRES_USER`, `CIPRES_APP_KEY`: CIPRES defaults (overridable via environment variables or the UI form)
+- `CIPRES_BASE_URL`, `CIPRES_USER`, `CIPRES_APP_KEY`: CIPRES defaults
 - `STRUCTURE_PARTS`: part names for each structure type
 - `LANDMARK_COUNTS`: fixed landmark counts (hook=100, anchor=100)
+
+---
 
 ## Multi-user Workflow
 
@@ -317,29 +386,37 @@ Edit `config.py` to customize:
 3. Members can be **admin** (full access) or **annotator** (data entry)
 4. All actions are logged in the activity log; character overrides record who, when, and why
 
+---
+
 ## Troubleshooting
 
-**Port already in use**: On macOS, AirPlay Receiver occupies port 5000. GyroMorpho runs on port 5001. Disable AirPlay Receiver in System Settings → General → AirDrop & Handoff if you need port 5000.
+**Port already in use**: GyroMorpho runs on port 5001. Disable AirPlay Receiver in System Settings → General → AirDrop & Handoff if port 5000 conflicts.
 
-**"Database is locked"**: Ensure only one instance of `run.py` is running. Delete any stale `data/db.sqlite-journal` file.
+**"Database is locked"**: SQLite WAL mode is enabled automatically. If the error persists, ensure only one instance is running and delete any stale `data/db.sqlite-journal` file.
 
 **Characters show all "?"**: Click **Compute All Characters** on the project page. Both landmarks and confirmed boundaries must be present.
 
-**Species names not matching on import**: Use the **Scan** button to preview filename parsing before importing.
+**Species names not matching on import**: Use the **Scan** button to preview filename parsing before importing. For ZIP batch import, ensure CSVs are named `Genus_species.csv`.
 
-**Thresholds wrong for my data**: Check raw value distributions via the Character Workshop after importing new data.
+**Landmark shape wrong scale vs. image**: Fixed in the current version (canvas coordinate system mismatch corrected). If the issue recurs, check that the browser zoom level is 100%.
+
+**Thresholds wrong for my data**: Check raw value distributions via the **Distribution** button in the Character Workshop after importing new data.
+
+**AI Advisor — 400 Bad Request (Gemini)**: The free Gemini tier has limited quota. Enable billing at https://aistudio.google.com or switch to Claude/OpenAI.
+
+**AI Advisor — API key invalid**: The API key field is cleared automatically on error. Paste your key fresh each time — do not copy error messages into the field.
 
 **Gallery shapes have no colors**: Ensure boundaries are confirmed for the structure type being viewed.
 
-**NCBI pipeline stuck**: If the server restarts while a pipeline is running (fetching/aligning/trimming), the job will be stuck in that stage. Delete the stuck job and resubmit.
+**NCBI pipeline stuck**: If the server restarts while a pipeline is running, the job will be stuck. Delete the stuck job and resubmit.
 
-**CIPRES "Response ended prematurely"**: All CIPRES communication uses `curl` subprocess calls. Ensure `curl` is on your PATH and your credentials are correct.
+**Tree not displaying in matrix**: Import a tree via the Phylogeny page or upload a Newick file from the matrix page.
 
-**Tree not displaying in matrix**: The tree panel only shows if a tree has been imported into the project. Use the **Phylogeny** page to run a pipeline and import, or upload a Newick/NEXUS file directly from the matrix page.
+**trimAl not found**: `brew install trimal` (macOS) or http://trimal.cgenomics.org/
 
-**trimAl not found**: Install with `brew install trimal` (macOS) or from http://trimal.cgenomics.org/
+**MAFFT not found**: `brew install mafft` (macOS) or https://mafft.cbrc.jp/
 
-**MAFFT not found**: Install with `brew install mafft` (macOS) or from https://mafft.cbrc.jp/
+---
 
 ## Citation
 
