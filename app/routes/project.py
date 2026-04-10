@@ -398,71 +398,72 @@ def import_folders(project_id):
                 errors.append(f'No CSV files in: {folder_path}')
                 continue
 
-            for csv_path in csv_files:
-                filename = os.path.basename(csv_path)
-                base = os.path.splitext(filename)[0]
+            with db.session.no_autoflush:
+                for csv_path in csv_files:
+                    filename = os.path.basename(csv_path)
+                    base = os.path.splitext(filename)[0]
 
-                # Parse species name and optional accession from filename
-                species_name, accession = _parse_species_from_filename(base)
+                    # Parse species name and optional accession from filename
+                    species_name, accession = _parse_species_from_filename(base)
 
-                if not species_name:
-                    errors.append(f'Could not parse species from: {filename}')
-                    total_skipped += 1
-                    continue
+                    if not species_name:
+                        errors.append(f'Could not parse species from: {filename}')
+                        total_skipped += 1
+                        continue
 
-                # Load landmarks from CSV
-                landmarks = _load_landmarks_csv(csv_path)
-                if not landmarks:
-                    errors.append(f'No valid coordinates in: {filename}')
-                    total_skipped += 1
-                    continue
+                    # Load landmarks from CSV
+                    landmarks = _load_landmarks_csv(csv_path)
+                    if not landmarks:
+                        errors.append(f'No valid coordinates in: {filename}')
+                        total_skipped += 1
+                        continue
 
-                # Find or create specimen (match by species name in this project)
-                specimen = Specimen.query.filter_by(
-                    project_id=project_id, species_name=species_name
-                ).first()
+                    # Find or create specimen (match by species name in this project)
+                    specimen = Specimen.query.filter_by(
+                        project_id=project_id, species_name=species_name
+                    ).first()
 
-                if not specimen:
-                    specimen = Specimen(
-                        project_id=project_id,
-                        species_name=species_name,
-                        specimen_id_label=accession or '',
-                        created_by=current_user.id,
-                    )
-                    db.session.add(specimen)
-                    db.session.flush()
-
-                    # If we found an accession, add as DNA sequence
-                    if accession:
-                        dna = DNASequence(
-                            specimen_id=specimen.id,
-                            marker='ITS',  # default; user can change later
-                            accession=accession,
-                            available=True,
+                    if not specimen:
+                        specimen = Specimen(
+                            project_id=project_id,
+                            species_name=species_name,
+                            specimen_id_label=accession or '',
+                            created_by=current_user.id,
                         )
-                        db.session.add(dna)
+                        db.session.add(specimen)
+                        db.session.flush()
 
-                # Check if this structure type already exists for this specimen
-                existing_struct = Structure.query.filter_by(
-                    specimen_id=specimen.id, structure_type=structure_type
-                ).first()
+                        # If we found an accession, add as DNA sequence
+                        if accession:
+                            dna = DNASequence(
+                                specimen_id=specimen.id,
+                                marker='ITS',  # default; user can change later
+                                accession=accession,
+                                available=True,
+                            )
+                            db.session.add(dna)
 
-                if existing_struct:
-                    # Update landmarks on existing structure
-                    existing_struct.landmarks_json = landmarks
-                    existing_struct.landmark_count = len(landmarks)
-                    existing_struct.landmarks_confirmed = True
-                else:
-                    structure = Structure(
-                        specimen_id=specimen.id,
-                        structure_type=structure_type,
-                        landmarks_json=landmarks,
-                        landmark_count=len(landmarks),
-                        landmarks_confirmed=True,
-                    )
-                    db.session.add(structure)
+                    # Check if this structure type already exists for this specimen
+                    existing_struct = Structure.query.filter_by(
+                        specimen_id=specimen.id, structure_type=structure_type
+                    ).first()
 
-                total_imported += 1
+                    if existing_struct:
+                        # Update landmarks on existing structure
+                        existing_struct.landmarks_json = landmarks
+                        existing_struct.landmark_count = len(landmarks)
+                        existing_struct.landmarks_confirmed = True
+                    else:
+                        structure = Structure(
+                            specimen_id=specimen.id,
+                            structure_type=structure_type,
+                            landmarks_json=landmarks,
+                            landmark_count=len(landmarks),
+                            landmarks_confirmed=True,
+                        )
+                        db.session.add(structure)
+
+                    total_imported += 1
 
         _log(project_id, f'Folder import: {total_imported} structures from {len(folders)} folders')
         db.session.commit()

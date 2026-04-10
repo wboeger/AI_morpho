@@ -321,52 +321,53 @@ def batch_import_landmarks(project_id):
             and os.path.basename(n) not in ('rejected_log.csv', 'qc_log.csv', 'error_log.csv')
         ]
 
-        for zname in csv_names:
-            base = os.path.basename(zname)
-            stem = base[:-4]  # strip .csv
-            species_guess = _specimen_name_from_stem(stem).lower()
+        with db.session.no_autoflush:
+            for zname in csv_names:
+                base = os.path.basename(zname)
+                stem = base[:-4]  # strip .csv
+                species_guess = _specimen_name_from_stem(stem).lower()
 
-            # Fuzzy match: exact, then starts-with, then substring
-            specimen = sp_index.get(species_guess)
-            if specimen is None:
-                for norm, sp in sp_index.items():
-                    if norm.startswith(species_guess) or species_guess.startswith(norm):
-                        specimen = sp
-                        break
+                # Fuzzy match: exact, then starts-with, then substring
+                specimen = sp_index.get(species_guess)
+                if specimen is None:
+                    for norm, sp in sp_index.items():
+                        if norm.startswith(species_guess) or species_guess.startswith(norm):
+                            specimen = sp
+                            break
 
-            if specimen is None:
-                skipped.append(f'{base} — no specimen matching "{stem.replace("_", " ")}"')
-                continue
-
-            structure = Structure.query.filter_by(
-                specimen_id=specimen.id, structure_type=structure_type
-            ).first()
-            if structure is None:
-                skipped.append(f'{base} — {specimen.species_name}: no {structure_type} structure')
-                continue
-
-            try:
-                text = zf.read(zname).decode('utf-8', errors='replace')
-                coords = _parse_imagej_csv(text)
-                if not coords:
-                    errors.append(f'{base} — no valid coordinates found')
+                if specimen is None:
+                    skipped.append(f'{base} — no specimen matching "{stem.replace("_", " ")}"')
                     continue
 
-                coords_arr = np.array(coords)
-                n = target_count
-                if n is None:
-                    n = suggest_landmark_count(
-                        resample_equidistant(coords_arr, 50), structure_type
-                    )
-                resampled = resample_equidistant(coords_arr, n)
+                structure = Structure.query.filter_by(
+                    specimen_id=specimen.id, structure_type=structure_type
+                ).first()
+                if structure is None:
+                    skipped.append(f'{base} — {specimen.species_name}: no {structure_type} structure')
+                    continue
 
-                structure.landmarks_json = resampled.tolist()
-                structure.landmark_count = n
-                structure.landmarks_confirmed = False
-                imported.append(f'{specimen.species_name} ({n} landmarks)')
+                try:
+                    text = zf.read(zname).decode('utf-8', errors='replace')
+                    coords = _parse_imagej_csv(text)
+                    if not coords:
+                        errors.append(f'{base} — no valid coordinates found')
+                        continue
 
-            except Exception as exc:
-                errors.append(f'{base} — {exc}')
+                    coords_arr = np.array(coords)
+                    n = target_count
+                    if n is None:
+                        n = suggest_landmark_count(
+                            resample_equidistant(coords_arr, 50), structure_type
+                        )
+                    resampled = resample_equidistant(coords_arr, n)
+
+                    structure.landmarks_json = resampled.tolist()
+                    structure.landmark_count = n
+                    structure.landmarks_confirmed = False
+                    imported.append(f'{specimen.species_name} ({n} landmarks)')
+
+                except Exception as exc:
+                    errors.append(f'{base} — {exc}')
 
     db.session.commit()
 
