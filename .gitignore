@@ -10,6 +10,9 @@ build/
 data/db.sqlite
 data/uploads/
 
+# Local results
+results saved by WB/
+
 # U-Net weights (large binary files)
 unet/weights/*.pth
 unet/weights/*.pt
