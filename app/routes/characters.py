@@ -652,7 +652,11 @@ def a02_diagram_svg(project_id):
                     if np.linalg.norm(axis_a[0] - fork_point) > np.linalg.norm(axis_a[-1] - fork_point):
                         axis_a = axis_a[::-1]
                         axis_a_full = axis_a
-                    v1 = _midline_vector(axis_a[:max(2, 2 * len(axis_a) // 3)])
+                    # Direct line from mid-base (fork end) to tip
+                    v1_raw = axis_a[-1] - axis_a[0]
+                    nrm1 = np.linalg.norm(v1_raw)
+                    if nrm1 > 1e-10:
+                        v1 = v1_raw / nrm1
 
                 axis_b = _central_axis(lm, shaft_idx, ref_point=fork_point)
                 axis_b_full = axis_b

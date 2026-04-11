@@ -305,14 +305,18 @@ def point_curvature_angle(landmarks: np.ndarray, boundary: dict) -> float:
                 min_dist = d
                 fork_point = (ae + be) / 2.0
 
-    # Point axis: basal + middle portion (first 2/3 from fork, excluding distal tip)
+    # Point axis: direct line from mid-base (fork end) to tip.
+    # axis_a[0] = midpoint of basal cross-section; axis_a[-1] = tip midpoint.
     axis_a = _central_axis(landmarks, point_idx, ref_point=fork_point)
     if len(axis_a) < 2:
         return 0.0
     if np.linalg.norm(axis_a[0] - fork_point) > np.linalg.norm(axis_a[-1] - fork_point):
         axis_a = axis_a[::-1]
-    two_thirds_a = max(2, 2 * len(axis_a) // 3)
-    v1 = _midline_vector(axis_a[:two_thirds_a])
+    v1_raw = axis_a[-1] - axis_a[0]
+    nrm1 = np.linalg.norm(v1_raw)
+    if nrm1 < 1e-10:
+        return 0.0
+    v1 = v1_raw / nrm1
 
     # Shaft axis: middle portion (skip first and last quarter)
     axis_b = _central_axis(landmarks, shaft_idx, ref_point=fork_point)
