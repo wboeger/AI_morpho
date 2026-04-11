@@ -35,11 +35,11 @@
 <line class="bk" x1="81" y1="200" x2="89" y2="200"/>
 
 <!-- Shaft midline: vertical red dashed, crosses junction -->
-<line class="sm" x1="100" y1="68" x2="100" y2="315"/>
+<line class="sm" x1="100" y1="58" x2="100" y2="325"/>
 
-<!-- Point midline: green dashed, through junction at θ=20° -->
-<!-- passes through junction(100,230): from (86,192) to (139,338) -->
-<line class="pm" x1="86" y1="192" x2="139" y2="338"/>
+<!-- Point midline: green dashed, through junction at θ=20° (extended +10 each end) -->
+<!-- passes through junction(100,230) ✓ -->
+<line class="pm" x1="83" y1="183" x2="142" y2="347"/>
 
 <!-- Angle arc at LOWER crossing (between shaft-down and point direction), θ=20° -->
 <!-- arc start: junction+(0,+26)=(100,256); arc end: junction+d*26=(109,254) -->
@@ -78,10 +78,10 @@
 <line class="bk" x1="281" y1="200" x2="289" y2="200"/>
 
 <!-- Shaft midline -->
-<line class="sm" x1="300" y1="68" x2="300" y2="315"/>
+<line class="sm" x1="300" y1="58" x2="300" y2="325"/>
 
-<!-- Point midline: from (262,216) to (408,269), passes through junction(300,230) -->
-<line class="pm" x1="262" y1="216" x2="408" y2="269"/>
+<!-- Point midline: extended +10 each end, passes through junction(300,230) ✓ -->
+<line class="pm" x1="253" y1="213" x2="417" y2="272"/>
 
 <!-- Angle arc at LOWER crossing, θ=70° -->
 <!-- arc start: (300,256); arc end: junction+d*26=(324,239) -->
@@ -99,10 +99,10 @@
 <text class="tlb" x="300" y="415">45° – 90°</text>
 
 
-<!-- ══════════════ PANEL 3 — STATE 2: strongly curved (~135°) ══════════════ -->
-<!-- θ=135°: point direction (base→tip) = (0.707, -0.707) -->
-<!-- Tip is clearly ABOVE junction level, curving back past perpendicular -->
-<!-- deviation = 180 - angle_between(v1, shaft-upward) = 180 - 45° = 135° -->
+<!-- ══════════════ PANEL 3 — STATE 2: strongly curved (~140°) ══════════════ -->
+<!-- θ=140°: point direction (base→tip) = (sin40°, -cos40°) = (0.643, -0.766) -->
+<!-- Tip is strongly ABOVE junction, clearly past perpendicular -->
+<!-- deviation = 180 - angle_between(v1, shaft-upward) = 180 - 40° = 140° -->
 
 <!-- Shaft rectangle -->
 <path class="af" d="M 491,108 L 491,230 L 509,230 L 509,108 Z"/>
@@ -110,33 +110,33 @@
 <path class="af" d="M 491,108 L 477,85 L 495,94 Z"/>
 <path class="af" d="M 509,108 L 523,85 L 505,94 Z"/>
 
-<!-- Point shape: base=(506,236)/(494,224), tip=(564,166) -->
-<!-- v1=(0.707,-0.707); perp 90°CW=(-0.707,-0.707); base pts = junction ± perp*8 -->
-<path class="af" d="M 506,236 L 564,166 L 494,224 Z"/>
+<!-- Point shape: v1=(0.643,-0.766); perp90CW=(-0.766,-0.643) -->
+<!-- base_left=junction-perp*8=(506,235), base_right=(494,225), tip=(555,165) -->
+<path class="af" d="M 506,235 L 555,165 L 494,225 Z"/>
 
 <!-- Middle shaft bracket -->
 <line class="bk" x1="485" y1="138" x2="485" y2="200"/>
 <line class="bk" x1="481" y1="138" x2="489" y2="138"/>
 <line class="bk" x1="481" y1="200" x2="489" y2="200"/>
 
-<!-- Shaft midline -->
-<line class="sm" x1="500" y1="68" x2="500" y2="315"/>
+<!-- Shaft midline (extended +10 each end) -->
+<line class="sm" x1="500" y1="58" x2="500" y2="325"/>
 
-<!-- Point midline (direct base→tip): from (475,255) to (568,163) -->
-<!-- passes through junction(500,230): t=0.269, y=230.3 ✓ -->
-<line class="pm" x1="475" y1="255" x2="568" y2="163"/>
+<!-- Point midline (direct base→tip, extended +10 each end): (471,265) to (564,153) -->
+<!-- passes through junction(500,230): t=0.312, y=230.1 ✓ -->
+<line class="pm" x1="471" y1="265" x2="564" y2="153"/>
 
-<!-- Angle arc: shaft-down to point direction, 135° CCW (sweep=0) -->
-<!-- arc start: junction+(0,+26)=(500,256) -->
-<!-- arc end: junction+v1*26=(518,212); distance from center=26 ✓ -->
-<!-- CCW from south(90°) to NE(315°) = 135° ✓ -->
-<path class="arc" d="M 500,256 A 26,26 0 0,0 518,212"/>
+<!-- Angle arc: shaft-down (south) to point direction, 140° CCW (sweep=0) -->
+<!-- arc start: junction+(0,+26)=(500,256) [shaft-downward] -->
+<!-- arc end: junction+v1*26=(517,210); CCW 140° ✓ -->
+<!-- cross_z=(-v2)×v1=(0,1)×(0.643,-0.766)=-0.643<0 → sweep=0 ✓ -->
+<path class="arc" d="M 500,256 A 26,26 0 0,0 517,210"/>
 
-<!-- Angle label at arc midpoint (22.5° SVG angle, right of junction) -->
-<text class="alb" x="527" y="243">~135°</text>
+<!-- Angle label at arc bisector (20° SVG angle from east) -->
+<text class="alb" x="528" y="243">~140°</text>
 
 <!-- Part labels -->
-<text class="plb" x="548" y="160">Point</text>
+<text class="plb" x="557" y="160">Point</text>
 <text class="plb" x="473" y="172">Shaft</text>
 
 <!-- State label -->

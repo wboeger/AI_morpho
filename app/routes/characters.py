@@ -707,7 +707,7 @@ def a02_diagram_svg(project_id):
                 if axis_b_full is not None and len(axis_b_full) >= 2:
                     projs = [np.dot(p - fork_point, v2) for p in axis_b_full]
                     sf_min, sf_max = min(projs), max(projs)
-                    sf_ext = (sf_max - sf_min) * 0.08
+                    sf_ext = (sf_max - sf_min) * 0.08 + 10 / scale
                     s0 = svg_pt(fork_point + v2 * (sf_min - sf_ext))
                     s1 = svg_pt(fork_point + v2 * (sf_max + sf_ext))
                 else:
@@ -721,9 +721,9 @@ def a02_diagram_svg(project_id):
                 if axis_a_full is not None and len(axis_a_full) >= 2:
                     projs = [np.dot(p - fork_point, v1) for p in axis_a_full]
                     pf_max = max(projs)
-                    p_ext = pf_max * 0.20   # extend 20% past junction
+                    p_ext = pf_max * 0.20 + 10 / scale   # extend past junction
                     p0 = svg_pt(fork_point - v1 * p_ext)
-                    p1 = svg_pt(fork_point + v1 * (pf_max * 1.05))
+                    p1 = svg_pt(fork_point + v1 * (pf_max + 10 / scale))
                 else:
                     reach = PANEL_H * 0.5
                     p0 = (jx - v1[0]*reach*0.25, jy - v1[1]*reach*0.25)
@@ -748,24 +748,16 @@ def a02_diagram_svg(project_id):
                                    f'x2="{bx - perp[0]*4:.1f}" y2="{by - perp[1]*4:.1f}"/>')
 
                 # ── Angle arc ────────────────────────────────────────────────────
-                # When raw_val ≤ 90° the inner-hook arc (−v2 → v1) IS the
-                # smaller arc.  When raw_val > 90° that arc is obtuse; the
-                # smaller arc is on the other side (v2 → v1), subtending
-                # 180° − raw_val.  Always draw the smaller arc; label raw_val.
+                # Arc always from shaft-downward (-v2) to point direction (v1).
+                # This directly subtends the deviation angle for all states:
+                #   0° = straight hook, 90° = perpendicular, >90° = recurved.
                 r = 24
-                if raw_val <= 90:
-                    asx, asy = jx - v2[0]*r, jy - v2[1]*r
-                    aex, aey = jx + v1[0]*r, jy + v1[1]*r
-                    bv      = v1 - v2
-                    cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
-                else:
-                    asx, asy = jx + v2[0]*r, jy + v2[1]*r
-                    aex, aey = jx + v1[0]*r, jy + v1[1]*r
-                    bv      = v2 + v1
-                    cross_z = v2[0]*v1[1] - v2[1]*v1[0]
-
+                asx, asy = jx - v2[0]*r, jy - v2[1]*r   # shaft-downward
+                aex, aey = jx + v1[0]*r, jy + v1[1]*r   # tip direction
+                cross_z  = (-v2[0])*v1[1] - (-v2[1])*v1[0]
                 sweep = 1 if cross_z > 0 else 0
-                large = 0  # always the small arc
+                large = 0  # deviation ≤ 180°, never a reflex arc
+                bv = v1 - v2  # bisector for label placement
                 out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
                            f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
 
