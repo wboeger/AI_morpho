@@ -131,19 +131,28 @@ def _migrate_a02_states():
     new_formula = ('deviation angle between middle shaft midline and point midline '
                    '(0°=straight, 90°=right-angle, >90°=recurved)')
 
-    from app.models import CharacterDefinition
-    changed = 0
+    from app.models import CharacterDefinition, CharacterValue
+    from app.characters import map_value_to_state
+    any_changed = False
     for char in CharacterDefinition.query.filter_by(code='A02').all():
-        old_states = char.states_json or []
-        # Detect old definition by presence of the out-of-order code '2' as middle state
-        codes = [s.get('code') for s in old_states]
-        if codes == ['0', '2', '1'] or 'approximately 90 degrees' in str(old_states):
-            char.states_json = new_states
-            char.formula = new_formula
-            changed += 1
-    if changed:
+        # Always ensure states_json is the current definition
+        char.states_json = new_states
+        char.formula = new_formula
+
+        # Remap any CharacterValues whose state is inconsistent with current thresholds
+        remapped = 0
+        for cv in CharacterValue.query.filter_by(character_id=char.id).all():
+            if cv.raw_value is not None:
+                expected_state, expected_conf = map_value_to_state(cv.raw_value, new_states)
+                if cv.state != expected_state:
+                    cv.state = expected_state
+                    cv.confidence = expected_conf
+                    remapped += 1
+        if remapped:
+            print(f'[migrate] A02 project {char.project_id}: remapped {remapped} value(s) to new thresholds.')
+            any_changed = True
+    if any_changed:
         db.session.commit()
-        print(f'[migrate] Updated A02 states in {changed} project(s).')
 
 
 def _migrate_phylogeny_jobs():

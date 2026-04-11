@@ -660,6 +660,14 @@ def a02_diagram_svg(project_id):
                     shaft_mid_pts = axis_b[s:e]
                     v2 = _midline_vector(shaft_mid_pts)
 
+                    # v2 must point FROM junction TOWARD root (away from fork).
+                    # _midline_vector can return either direction; verify against
+                    # the shaft centroid and flip if necessary.
+                    if v2 is not None and shaft_idx:
+                        shaft_centroid = lm[shaft_idx].mean(axis=0)
+                        if np.dot(v2, shaft_centroid - fork_point) < 0:
+                            v2 = -v2
+
             # ── Orientation normalisation ─────────────────────────────────────
             # Rotate every specimen so the shaft axis points straight DOWN
             # (SVG +y direction) and the point goes to the RIGHT, matching
