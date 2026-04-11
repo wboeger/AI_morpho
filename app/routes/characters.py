@@ -660,47 +660,10 @@ def a02_diagram_svg(project_id):
                     shaft_mid_pts = axis_b[s:e]
                     v2 = _midline_vector(shaft_mid_pts)
 
-                    # v2 must point FROM junction TOWARD root.
-                    # Use shaft landmark centroid as ground-truth direction.
+                    # Ensure v2 points FROM junction TOWARD root (away from point).
                     shaft_centroid = lm[shaft_idx].mean(axis=0)
                     if np.dot(v2, shaft_centroid - fork_point) < 0:
                         v2 = -v2
-
-                # For display orientation use a more robust reference:
-                # the direct vector from fork to the shaft-landmark centroid.
-                # This avoids tilt caused by local curvature in the middle portion.
-                shaft_centroid = lm[shaft_idx].mean(axis=0)
-                disp_dir = shaft_centroid - fork_point
-                dn = np.linalg.norm(disp_dir)
-                if dn > 1e-6:
-                    v2_disp = disp_dir / dn   # reliable junction→root unit vector
-                else:
-                    v2_disp = v2 if v2 is not None else np.array([0.0, 1.0])
-
-            # ── Orientation normalisation ─────────────────────────────────────
-            # Rotate every specimen so fork→root points straight UP in SVG
-            # (roots at top, point/tip at bottom) — consistent across all panels.
-            if v2 is not None:
-                # Map v2_disp → (0, -1): fork→root goes upward in SVG = roots at top.
-                # Correct formula: theta = atan2(-vx, -vy) so R(theta)@v2_disp = (0,-1)
-                theta = float(np.arctan2(-v2_disp[0], -v2_disp[1]))
-                cos_t, sin_t = np.cos(theta), np.sin(theta)
-                R = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
-
-                # Rotate everything around fork_point
-                lm = (R @ (lm - fork_point).T).T + fork_point
-                v2 = R @ v2          # ≈ (0, -1) after rotation (pointing up = toward root)
-                if v1 is not None:
-                    v1 = R @ v1
-                if shaft_mid_pts is not None:
-                    shaft_mid_pts = (R @ (shaft_mid_pts - fork_point).T).T + fork_point
-
-                # Flip horizontally if point goes to the left (so all face same way)
-                if v1 is not None and v1[0] < 0:
-                    lm[:, 0] = 2 * fork_point[0] - lm[:, 0]
-                    v1 = np.array([-v1[0], v1[1]])
-                    if shaft_mid_pts is not None:
-                        shaft_mid_pts[:, 0] = 2 * fork_point[0] - shaft_mid_pts[:, 0]
 
             # Coordinate normalisation: fit landmarks into panel with padding
             pad = 14
@@ -765,11 +728,10 @@ def a02_diagram_svg(project_id):
                 r = 24
                 asx, asy = jx - v2[0]*r, jy - v2[1]*r   # start on shaft-continuation side
                 aex, aey = jx + v1[0]*r, jy + v1[1]*r   # end on point side
-                # Sweep direction: clockwise in SVG (y-down) is sweep=1.
-                # In SVG space, cross_z < 0 means v1 is clockwise from -v2 (short path).
-                # After the roots-at-top rotation v2≈(0,-1), typical hooks have cross_z<0.
+                # Sweep: in SVG y-down space, cross_z > 0 means v1 is clockwise
+                # from -v2, so use sweep=1 (clockwise) for the small arc.
                 cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
-                sweep = 0 if cross_z > 0 else 1
+                sweep = 1 if cross_z > 0 else 0
                 large = 1 if raw_val > 180 else 0
                 out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
                            f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
