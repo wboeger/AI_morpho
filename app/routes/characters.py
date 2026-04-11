@@ -632,6 +632,7 @@ def a02_diagram_svg(project_id):
             # Compute junction, axes (mirrors point_curvature_angle logic)
             fork_point = v1 = v2 = None
             shaft_mid_pts = None
+            axis_a_full = axis_b_full = None
             if point_idx and shaft_idx:
                 a_ends = [lm[point_idx[0]], lm[point_idx[-1]]]
                 b_ends = [lm[shaft_idx[0]], lm[shaft_idx[-1]]]
@@ -646,15 +647,19 @@ def a02_diagram_svg(project_id):
                 fork_point = fp
 
                 axis_a = _central_axis(lm, point_idx, ref_point=fork_point)
+                axis_a_full = axis_a
                 if len(axis_a) >= 2:
                     if np.linalg.norm(axis_a[0] - fork_point) > np.linalg.norm(axis_a[-1] - fork_point):
                         axis_a = axis_a[::-1]
+                        axis_a_full = axis_a
                     v1 = _midline_vector(axis_a[:max(2, len(axis_a) // 2)])
 
                 axis_b = _central_axis(lm, shaft_idx, ref_point=fork_point)
+                axis_b_full = axis_b
                 if len(axis_b) >= 4:
                     if np.linalg.norm(axis_b[0] - fork_point) > np.linalg.norm(axis_b[-1] - fork_point):
                         axis_b = axis_b[::-1]
+                        axis_b_full = axis_b
                     n = len(axis_b)
                     s, e = max(1, n // 4), min(n - 1, 3 * n // 4)
                     shaft_mid_pts = axis_b[s:e]
@@ -694,27 +699,41 @@ def a02_diagram_svg(project_id):
             if v1 is not None and v2 is not None and fork_point is not None:
                 jx, jy = svg_pt(fork_point)
 
-                # Line length: use ~60% of panel height for reach
-                reach = PANEL_H * 0.55
+                # ── Shaft midline: span the full shaft axis extent ─────────────
+                if axis_b_full is not None and len(axis_b_full) >= 2:
+                    projs = [np.dot(p - fork_point, v2) for p in axis_b_full]
+                    sf_min, sf_max = min(projs), max(projs)
+                    sf_ext = (sf_max - sf_min) * 0.08
+                    s0 = svg_pt(fork_point + v2 * (sf_min - sf_ext))
+                    s1 = svg_pt(fork_point + v2 * (sf_max + sf_ext))
+                else:
+                    reach = PANEL_H * 0.5
+                    s0 = (jx - v2[0]*reach*0.3, jy - v2[1]*reach*0.3)
+                    s1 = (jx + v2[0]*reach*0.7, jy + v2[1]*reach*0.7)
+                out.append(f'<line class="sm" x1="{s0[0]:.1f}" y1="{s0[1]:.1f}" '
+                           f'x2="{s1[0]:.1f}" y2="{s1[1]:.1f}"/>')
 
-                # Shaft midline (red dashed) through junction along ±v2
-                out.append(f'<line class="sm" '
-                           f'x1="{jx - v2[0]*reach*0.35:.1f}" y1="{jy - v2[1]*reach*0.35:.1f}" '
-                           f'x2="{jx + v2[0]*reach*0.65:.1f}" y2="{jy + v2[1]*reach*0.65:.1f}"/>')
-
-                # Point midline (green dashed) through junction along ±v1
-                out.append(f'<line class="pm" '
-                           f'x1="{jx - v1[0]*reach*0.25:.1f}" y1="{jy - v1[1]*reach*0.25:.1f}" '
-                           f'x2="{jx + v1[0]*reach*0.75:.1f}" y2="{jy + v1[1]*reach*0.75:.1f}"/>')
+                # ── Point midline: span the full point axis, cross past junction ─
+                if axis_a_full is not None and len(axis_a_full) >= 2:
+                    projs = [np.dot(p - fork_point, v1) for p in axis_a_full]
+                    pf_max = max(projs)
+                    p_ext = pf_max * 0.20   # extend 20% past junction
+                    p0 = svg_pt(fork_point - v1 * p_ext)
+                    p1 = svg_pt(fork_point + v1 * (pf_max * 1.05))
+                else:
+                    reach = PANEL_H * 0.5
+                    p0 = (jx - v1[0]*reach*0.25, jy - v1[1]*reach*0.25)
+                    p1 = (jx + v1[0]*reach*0.75, jy + v1[1]*reach*0.75)
+                out.append(f'<line class="pm" x1="{p0[0]:.1f}" y1="{p0[1]:.1f}" '
+                           f'x2="{p1[0]:.1f}" y2="{p1[1]:.1f}"/>')
 
                 # Junction dot
                 out.append(f'<circle class="jd" cx="{jx:.1f}" cy="{jy:.1f}" r="3"/>')
 
-                # Middle-shaft bracket (orange) along the shaft midline region
+                # Middle-shaft bracket (orange)
                 if shaft_mid_pts is not None and len(shaft_mid_pts) >= 2:
                     ms0x, ms0y = svg_pt(shaft_mid_pts[0])
                     ms1x, ms1y = svg_pt(shaft_mid_pts[-1])
-                    # Perpendicular offset (left of v2)
                     perp = np.array([-v2[1], v2[0]])
                     off = 9
                     bx0, by0 = ms0x + perp[0]*off, ms0y + perp[1]*off
@@ -724,20 +743,28 @@ def a02_diagram_svg(project_id):
                         out.append(f'<line class="bk" x1="{bx:.1f}" y1="{by:.1f}" '
                                    f'x2="{bx - perp[0]*4:.1f}" y2="{by - perp[1]*4:.1f}"/>')
 
-                # Angle arc: from junction + r*(-v2) to junction + r*v1
+                # ── Angle arc: show the "upper" angle ────────────────────────────
+                # At the junction the two lines form two pairs of equal opposite
+                # angles.  Pick the pair whose bisector points upward in the SVG
+                # (smaller y) — the concave/inner angle of the hook.
                 r = 24
-                asx, asy = jx - v2[0]*r, jy - v2[1]*r   # start on shaft-continuation side
-                aex, aey = jx + v1[0]*r, jy + v1[1]*r   # end on point side
-                # Sweep: in SVG y-down space, cross_z > 0 means v1 is clockwise
-                # from -v2, so use sweep=1 (clockwise) for the small arc.
-                cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
+                bv_test = v2 - v1   # bisector direction for the v2 / −v1 arc
+                if bv_test[1] < 0:  # this bisector points up in SVG → use it
+                    asx, asy = jx + v2[0]*r, jy + v2[1]*r
+                    aex, aey = jx - v1[0]*r, jy - v1[1]*r
+                    bv      = bv_test
+                    cross_z = v2[0]*(-v1[1]) - v2[1]*(-v1[0])
+                else:               # opposite arc has the upward bisector
+                    asx, asy = jx - v2[0]*r, jy - v2[1]*r
+                    aex, aey = jx + v1[0]*r, jy + v1[1]*r
+                    bv      = -bv_test
+                    cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
+
                 sweep = 1 if cross_z > 0 else 0
                 large = 1 if raw_val > 180 else 0
                 out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
                            f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
 
-                # Angle label at arc bisector
-                bv = np.array([-v2[0], -v2[1]]) + np.array([v1[0], v1[1]])
                 bn = np.linalg.norm(bv)
                 bv = bv / bn if bn > 1e-6 else np.array([1.0, 0.0])
                 lx, ly = jx + bv[0]*(r + 13), jy + bv[1]*(r + 13)
