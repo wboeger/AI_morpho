@@ -660,6 +660,31 @@ def a02_diagram_svg(project_id):
                     shaft_mid_pts = axis_b[s:e]
                     v2 = _midline_vector(shaft_mid_pts)
 
+            # ── Orientation normalisation ─────────────────────────────────────
+            # Rotate every specimen so the shaft axis points straight DOWN
+            # (SVG +y direction) and the point goes to the RIGHT, matching
+            # the reference orientation of the first panel.
+            if v2 is not None:
+                # Rotation angle to map v2 → (0, 1) [downward in SVG]
+                theta = float(np.arctan2(v2[0], v2[1]))
+                cos_t, sin_t = np.cos(theta), np.sin(theta)
+                R = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
+
+                # Rotate everything around fork_point
+                lm = (R @ (lm - fork_point).T).T + fork_point
+                v2 = R @ v2          # ≈ (0, 1) after rotation
+                if v1 is not None:
+                    v1 = R @ v1
+                if shaft_mid_pts is not None:
+                    shaft_mid_pts = (R @ (shaft_mid_pts - fork_point).T).T + fork_point
+
+                # Flip horizontally if point goes to the left (so all face same way)
+                if v1 is not None and v1[0] < 0:
+                    lm[:, 0] = 2 * fork_point[0] - lm[:, 0]
+                    v1 = np.array([-v1[0], v1[1]])
+                    if shaft_mid_pts is not None:
+                        shaft_mid_pts[:, 0] = 2 * fork_point[0] - shaft_mid_pts[:, 0]
+
             # Coordinate normalisation: fit landmarks into panel with padding
             pad = 14
             mn, mx = lm.min(axis=0), lm.max(axis=0)
