@@ -42,8 +42,9 @@
 <line class="pm" x1="86" y1="192" x2="139" y2="338"/>
 
 <!-- Angle arc at LOWER crossing (between shaft-down and point direction), θ=20° -->
-<!-- arc start: junction+(0,26)=(100,256); arc end: junction+d*26=(109,254) -->
-<path class="arc" d="M 100,256 A 26,26 0 0,1 109,254"/>
+<!-- arc start: junction+(0,+26)=(100,256); arc end: junction+d*26=(109,254) -->
+<!-- sweep=0 (CCW on screen): from south CCW to SE = short 20° arc -->
+<path class="arc" d="M 100,256 A 26,26 0 0,0 109,254"/>
 
 <!-- Angle label at bisector (10° from downward) -->
 <text class="alb" x="109" y="278">~20°</text>
@@ -84,7 +85,7 @@
 
 <!-- Angle arc at LOWER crossing, θ=70° -->
 <!-- arc start: (300,256); arc end: junction+d*26=(324,239) -->
-<path class="arc" d="M 300,256 A 26,26 0 0,1 324,239"/>
+<path class="arc" d="M 300,256 A 26,26 0 0,0 324,239"/>
 
 <!-- Angle label at bisector (35° from downward) -->
 <text class="alb" x="325" y="270">~70°</text>
@@ -123,14 +124,13 @@
 <!-- Point midline: from (464,247) to (585,190), passes through junction(500,230) -->
 <line class="pm" x1="464" y1="247" x2="585" y2="190"/>
 
-<!-- Angle arc at UPPER crossing (shaft-up to point direction) -->
-<!-- For θ>90° the lower angle is obtuse; the SMALLER arc is at the upper crossing -->
-<!-- arc start: junction+(0,-26)=(500,204); arc end: junction+d*26=(524,219) -->
-<!-- cross product of (0,-1) × (0.906,-0.423) = 0.906 > 0 → sweep=1 (clockwise) -->
-<path class="arc" d="M 500,204 A 26,26 0 0,1 524,219"/>
+<!-- Angle arc at LOWER crossing (shaft-down to point direction), 115° -->
+<!-- arc start: junction+(0,+26)=(500,256); arc end: junction+d*26=(524,219) -->
+<!-- sweep=0 (CCW in SVG): from south(90°) CCW to NE(335°) = 115° ✓ -->
+<path class="arc" d="M 500,256 A 26,26 0 0,0 524,219"/>
 
-<!-- Angle label (actual measured angle = 115°; arc shows supplement 65° for clarity) -->
-<text class="alb" x="527" y="192">~115°</text>
+<!-- Angle label at arc midpoint (~32.5° SVG angle from junction) -->
+<text class="alb" x="530" y="248">~115°</text>
 
 <!-- Part labels -->
 <text class="plb" x="551" y="180">Point</text>
