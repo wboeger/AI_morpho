@@ -660,21 +660,30 @@ def a02_diagram_svg(project_id):
                     shaft_mid_pts = axis_b[s:e]
                     v2 = _midline_vector(shaft_mid_pts)
 
-                    # v2 must point FROM junction TOWARD root (away from fork).
-                    # _midline_vector can return either direction; verify against
-                    # the shaft centroid and flip if necessary.
-                    if v2 is not None and shaft_idx:
-                        shaft_centroid = lm[shaft_idx].mean(axis=0)
-                        if np.dot(v2, shaft_centroid - fork_point) < 0:
-                            v2 = -v2
+                    # v2 must point FROM junction TOWARD root.
+                    # Use shaft landmark centroid as ground-truth direction.
+                    shaft_centroid = lm[shaft_idx].mean(axis=0)
+                    if np.dot(v2, shaft_centroid - fork_point) < 0:
+                        v2 = -v2
+
+                # For display orientation use a more robust reference:
+                # the direct vector from fork to the shaft-landmark centroid.
+                # This avoids tilt caused by local curvature in the middle portion.
+                shaft_centroid = lm[shaft_idx].mean(axis=0)
+                disp_dir = shaft_centroid - fork_point
+                dn = np.linalg.norm(disp_dir)
+                if dn > 1e-6:
+                    v2_disp = disp_dir / dn   # reliable junction→root unit vector
+                else:
+                    v2_disp = v2 if v2 is not None else np.array([0.0, 1.0])
 
             # ── Orientation normalisation ─────────────────────────────────────
-            # Rotate every specimen so the shaft axis points straight DOWN
-            # (SVG +y direction) and the point goes to the RIGHT, matching
-            # the reference orientation of the first panel.
+            # Rotate every specimen so fork→root points straight UP in SVG
+            # (roots at top, point/tip at bottom) — consistent across all panels.
             if v2 is not None:
-                # Rotation angle to map v2 → (0, 1) [downward in SVG]
-                theta = float(np.arctan2(v2[0], v2[1]))
+                # Map v2_disp → (0, -1): fork→root goes upward in SVG = roots at top.
+                # Correct formula: theta = atan2(-vx, -vy) so R(theta)@v2_disp = (0,-1)
+                theta = float(np.arctan2(-v2_disp[0], -v2_disp[1]))
                 cos_t, sin_t = np.cos(theta), np.sin(theta)
                 R = np.array([[cos_t, -sin_t], [sin_t, cos_t]])
 
