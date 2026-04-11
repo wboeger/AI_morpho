@@ -329,6 +329,15 @@ def point_curvature_angle(landmarks: np.ndarray, boundary: dict) -> float:
     end = min(n - 1, 2 * n // 3)
     v2 = _midline_vector(axis_b[start:end])
 
+    # PCA sign is arbitrary — orient v2 to point FROM junction TOWARD root.
+    # axis_b[0] is at junction; centroid of middle third is toward root.
+    mid_centroid = axis_b[start:end].mean(axis=0)
+    if np.dot(v2, mid_centroid - fork_point) < 0:
+        v2 = -v2
+
+    # Bend angle = angle between shaft-travel direction (root→junction = -v2)
+    # and point direction (junction→tip = v1).
+    # angle_between(v1, -v2) = 180 - angle_between(v1, v2)
     return 180.0 - angle_between_vectors(v1, v2)
 
 
