@@ -689,7 +689,7 @@ def a02_diagram_svg(project_id):
 
                 # Rotate everything around fork_point
                 lm = (R @ (lm - fork_point).T).T + fork_point
-                v2 = R @ v2          # ≈ (0, 1) after rotation
+                v2 = R @ v2          # ≈ (0, -1) after rotation (pointing up = toward root)
                 if v1 is not None:
                     v1 = R @ v1
                 if shaft_mid_pts is not None:
@@ -765,9 +765,11 @@ def a02_diagram_svg(project_id):
                 r = 24
                 asx, asy = jx - v2[0]*r, jy - v2[1]*r   # start on shaft-continuation side
                 aex, aey = jx + v1[0]*r, jy + v1[1]*r   # end on point side
-                # Sweep direction via cross product (z component of (-v2) × v1)
+                # Sweep direction: clockwise in SVG (y-down) is sweep=1.
+                # In SVG space, cross_z < 0 means v1 is clockwise from -v2 (short path).
+                # After the roots-at-top rotation v2≈(0,-1), typical hooks have cross_z<0.
                 cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
-                sweep = 1 if cross_z > 0 else 0
+                sweep = 0 if cross_z > 0 else 1
                 large = 1 if raw_val > 180 else 0
                 out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
                            f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
