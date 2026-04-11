@@ -743,25 +743,25 @@ def a02_diagram_svg(project_id):
                         out.append(f'<line class="bk" x1="{bx:.1f}" y1="{by:.1f}" '
                                    f'x2="{bx - perp[0]*4:.1f}" y2="{by - perp[1]*4:.1f}"/>')
 
-                # ── Angle arc: show the "upper" angle ────────────────────────────
-                # At the junction the two lines form two pairs of equal opposite
-                # angles.  Pick the pair whose bisector points upward in the SVG
-                # (smaller y) — the concave/inner angle of the hook.
+                # ── Angle arc ────────────────────────────────────────────────────
+                # When raw_val ≤ 90° the inner-hook arc (−v2 → v1) IS the
+                # smaller arc.  When raw_val > 90° that arc is obtuse; the
+                # smaller arc is on the other side (v2 → v1), subtending
+                # 180° − raw_val.  Always draw the smaller arc; label raw_val.
                 r = 24
-                bv_test = v2 - v1   # bisector direction for the v2 / −v1 arc
-                if bv_test[1] < 0:  # this bisector points up in SVG → use it
-                    asx, asy = jx + v2[0]*r, jy + v2[1]*r
-                    aex, aey = jx - v1[0]*r, jy - v1[1]*r
-                    bv      = bv_test
-                    cross_z = v2[0]*(-v1[1]) - v2[1]*(-v1[0])
-                else:               # opposite arc has the upward bisector
+                if raw_val <= 90:
                     asx, asy = jx - v2[0]*r, jy - v2[1]*r
                     aex, aey = jx + v1[0]*r, jy + v1[1]*r
-                    bv      = -bv_test
+                    bv      = v1 - v2
                     cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
+                else:
+                    asx, asy = jx + v2[0]*r, jy + v2[1]*r
+                    aex, aey = jx + v1[0]*r, jy + v1[1]*r
+                    bv      = v2 + v1
+                    cross_z = v2[0]*v1[1] - v2[1]*v1[0]
 
                 sweep = 1 if cross_z > 0 else 0
-                large = 1 if raw_val > 180 else 0
+                large = 0  # always the small arc
                 out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
                            f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
 
