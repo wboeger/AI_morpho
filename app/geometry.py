@@ -318,15 +318,15 @@ def point_curvature_angle(landmarks: np.ndarray, boundary: dict) -> float:
         return 0.0
     v1 = v1_raw / nrm1
 
-    # Shaft axis: middle portion (skip first and last quarter)
+    # Shaft axis: middle third only (skip first and last third)
     axis_b = _central_axis(landmarks, shaft_idx, ref_point=fork_point)
     if len(axis_b) < 4:
         return 0.0
     if np.linalg.norm(axis_b[0] - fork_point) > np.linalg.norm(axis_b[-1] - fork_point):
         axis_b = axis_b[::-1]
     n = len(axis_b)
-    start = max(1, n // 4)
-    end = min(n - 1, 3 * n // 4)
+    start = max(1, n // 3)
+    end = min(n - 1, 2 * n // 3)
     v2 = _midline_vector(axis_b[start:end])
 
     return 180.0 - angle_between_vectors(v1, v2)

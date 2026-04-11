@@ -665,7 +665,7 @@ def a02_diagram_svg(project_id):
                         axis_b = axis_b[::-1]
                         axis_b_full = axis_b
                     n = len(axis_b)
-                    s, e = max(1, n // 4), min(n - 1, 3 * n // 4)
+                    s, e = max(1, n // 3), min(n - 1, 2 * n // 3)
                     shaft_mid_pts = axis_b[s:e]
                     v2 = _midline_vector(shaft_mid_pts)
 

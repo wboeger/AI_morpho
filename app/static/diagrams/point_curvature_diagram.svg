@@ -29,10 +29,10 @@
 <!-- perp=(cos20°,-sin20°)=(0.940,-0.342); base pts = junction ± perp*8 -->
 <path class="af" d="M 93,233 L 137,332 L 108,227 Z"/>
 
-<!-- Middle shaft bracket (25%–75% of shaft height, left side) -->
-<line class="bk" x1="85" y1="138" x2="85" y2="200"/>
-<line class="bk" x1="81" y1="138" x2="89" y2="138"/>
-<line class="bk" x1="81" y1="200" x2="89" y2="200"/>
+<!-- Middle shaft bracket (middle third of shaft height, left side) -->
+<line class="bk" x1="85" y1="149" x2="85" y2="189"/>
+<line class="bk" x1="81" y1="149" x2="89" y2="149"/>
+<line class="bk" x1="81" y1="189" x2="89" y2="189"/>
 
 <!-- Shaft midline: vertical red dashed, crosses junction -->
 <line class="sm" x1="100" y1="58" x2="100" y2="325"/>
@@ -72,10 +72,10 @@
 <!-- perp=(cos70°,-sin70°)=(0.342,-0.940) -->
 <path class="af" d="M 297,238 L 401,267 L 303,223 Z"/>
 
-<!-- Middle shaft bracket -->
-<line class="bk" x1="285" y1="138" x2="285" y2="200"/>
-<line class="bk" x1="281" y1="138" x2="289" y2="138"/>
-<line class="bk" x1="281" y1="200" x2="289" y2="200"/>
+<!-- Middle shaft bracket (middle third) -->
+<line class="bk" x1="285" y1="149" x2="285" y2="189"/>
+<line class="bk" x1="281" y1="149" x2="289" y2="149"/>
+<line class="bk" x1="281" y1="189" x2="289" y2="189"/>
 
 <!-- Shaft midline -->
 <line class="sm" x1="300" y1="58" x2="300" y2="325"/>
@@ -114,10 +114,10 @@
 <!-- base_left=junction-perp*8=(506,235), base_right=(494,225), tip=(555,165) -->
 <path class="af" d="M 506,235 L 555,165 L 494,225 Z"/>
 
-<!-- Middle shaft bracket -->
-<line class="bk" x1="485" y1="138" x2="485" y2="200"/>
-<line class="bk" x1="481" y1="138" x2="489" y2="138"/>
-<line class="bk" x1="481" y1="200" x2="489" y2="200"/>
+<!-- Middle shaft bracket (middle third) -->
+<line class="bk" x1="485" y1="149" x2="485" y2="189"/>
+<line class="bk" x1="481" y1="149" x2="489" y2="149"/>
+<line class="bk" x1="481" y1="189" x2="489" y2="189"/>
 
 <!-- Shaft midline (extended +10 each end) -->
 <line class="sm" x1="500" y1="58" x2="500" y2="325"/>
@@ -148,9 +148,9 @@
 <line x1="15"  y1="440" x2="37"  y2="440" stroke="#1a6e2a" stroke-width="1.5" stroke-dasharray="5,2"/>
 <text class="leg" x="41"  y="444">point midline</text>
 <line x1="128" y1="440" x2="150" y2="440" stroke="#b03020" stroke-width="1.5" stroke-dasharray="5,2"/>
-<text class="leg" x="154" y="444">shaft midline (middle region)</text>
+<text class="leg" x="154" y="444">shaft midline (middle third)</text>
 <path d="M 340,444 A 7,7 0 0,1 347,444" stroke="#6020a0" stroke-width="1.8" fill="none"/>
 <text class="leg" x="350" y="444">deviation angle</text>
 <line x1="432" y1="440" x2="447" y2="440" stroke="#cc6600" stroke-width="1.8"/>
-<text class="leg" x="450" y="444">middle shaft region</text>
+<text class="leg" x="450" y="444">middle third of shaft</text>
 </svg>
