@@ -490,7 +490,7 @@ def _build_measurement_explanation(char):
             '<strong>90°</strong> = point is perpendicular to the shaft (classic hook); '
             '<strong>&gt;90°</strong> = point recurves back past perpendicular.'
             '<br><br>'
-            '<img src="/static/diagrams/point_curvature_diagram.svg" alt="Point curvature angle diagram" '
+            '<img src="/api/project/{project_id}/character/A02/diagram.svg" alt="Point curvature angle diagram" '
             'style="max-width:600px; width:100%; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
         ),
         'A09': (
@@ -509,7 +509,7 @@ def _build_measurement_explanation(char):
 
     char_explanation = _CHAR_EXPLANATIONS.get(char.code)
     if char_explanation:
-        method = char_explanation.format(parts=part_str)
+        method = char_explanation.format(parts=part_str, project_id=char.project_id)
     else:
         method = _OP_EXPLANATIONS.get(op, 'Custom geometric computation on {parts}.').format(parts=part_str)
 
@@ -541,6 +541,225 @@ def _build_measurement_explanation(char):
         lines.append('Values between thresholds are assigned with proportional confidence; the best-matching state is chosen.')
 
     return '<br>'.join(lines)
+
+
+@characters_bp.route('/api/project/<int:project_id>/character/A02/diagram.svg')
+@login_required
+def a02_diagram_svg(project_id):
+    """Generate the A02 (point curvature) diagram SVG from actual specimen data.
+
+    Queries one structure per state (0, 1, 2), renders their real landmark
+    outlines with the computed shaft/point midlines and deviation angle arc.
+    Falls back to a placeholder panel when no example exists for a state.
+    """
+    from flask import Response
+    from app.geometry import _central_axis, _midline_vector, angle_between_vectors
+
+    char = CharacterDefinition.query.filter_by(project_id=project_id, code='A02').first()
+
+    # Pick best example per state: prefer auto-assigned, highest confidence
+    examples = {}
+    if char:
+        for state_code in ('0', '1', '2'):
+            cv = (CharacterValue.query
+                  .filter_by(character_id=char.id, state=state_code)
+                  .join(Structure, CharacterValue.structure_id == Structure.id)
+                  .filter(
+                      Structure.landmarks_json.isnot(None),
+                      Structure.boundary_json.isnot(None),
+                  )
+                  .order_by(CharacterValue.confidence.desc())
+                  .first())
+            if cv:
+                examples[state_code] = cv
+
+    # Layout
+    PANEL_W, PANEL_H = 182, 290
+    MARGIN, GAP = 8, 8
+    CAPTION_H, LEGEND_H = 52, 32
+    W = 3 * PANEL_W + 2 * GAP + 2 * MARGIN
+    H = MARGIN + PANEL_H + CAPTION_H + LEGEND_H
+
+    state_labels = {
+        '0': ('State 0 — slightly curved', 'angle &lt; 45°'),
+        '1': ('State 1 — moderately curved', '45° – 90°'),
+        '2': ('State 2 — strongly curved', 'angle &gt; 90°'),
+    }
+
+    out = []
+    out.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}">')
+    out.append('<rect width="100%" height="100%" fill="white"/>')
+    out.append('''<defs><style>
+.ol{fill:#dde8f4;stroke:#3a6ea8;stroke-width:1.2;}
+.ph{fill:rgba(26,110,42,0.22);stroke:#1a6e2a;stroke-width:1.5;fill:none;}
+.sh{fill:rgba(160,48,32,0.18);stroke:#b03020;stroke-width:1.5;fill:none;}
+.sm{stroke:#b03020;stroke-width:1.8;stroke-dasharray:6,3;fill:none;}
+.pm{stroke:#1a6e2a;stroke-width:1.8;stroke-dasharray:6,3;fill:none;}
+.arc{stroke:#6020a0;stroke-width:2.2;fill:none;}
+.jd{fill:#6020a0;}
+.bk{stroke:#cc6600;stroke-width:1.4;fill:none;}
+.alb{font-family:Arial,sans-serif;font-size:12px;font-weight:bold;fill:#6020a0;text-anchor:middle;}
+.slb{font-family:Arial,sans-serif;font-size:11px;fill:#222;text-anchor:middle;}
+.tlb{font-family:Arial,sans-serif;font-size:9px;fill:#555;text-anchor:middle;}
+.sp{font-family:Arial,sans-serif;font-size:9px;font-style:italic;fill:#333;text-anchor:middle;}
+.leg{font-family:Arial,sans-serif;font-size:9px;fill:#333;}
+</style></defs>''')
+
+    for i, state_code in enumerate(('0', '1', '2')):
+        px = MARGIN + i * (PANEL_W + GAP)
+        py = MARGIN
+        pcx = px + PANEL_W / 2
+        lbl, thresh = state_labels[state_code]
+
+        cv = examples.get(state_code)
+        if cv is None:
+            # Placeholder
+            out.append(f'<rect x="{px}" y="{py}" width="{PANEL_W}" height="{PANEL_H}" '
+                       f'fill="#f6f6f6" stroke="#ccc" stroke-width="1" rx="4"/>')
+            out.append(f'<text x="{pcx:.1f}" y="{py + PANEL_H/2:.1f}" '
+                       f'text-anchor="middle" font-family="Arial" font-size="10" fill="#aaa">'
+                       f'No specimen in this state</text>')
+        else:
+            structure = Structure.query.get(cv.structure_id)
+            specimen  = Specimen.query.get(structure.specimen_id)
+            lm        = np.array(structure.landmarks_json)
+            boundary  = structure.boundary_json or {}
+            raw_val   = cv.raw_value if cv.raw_value is not None else 0.0
+
+            point_idx = boundary.get('Point', [])
+            shaft_idx = boundary.get('Shaft', [])
+
+            # Compute junction, axes (mirrors point_curvature_angle logic)
+            fork_point = v1 = v2 = None
+            shaft_mid_pts = None
+            if point_idx and shaft_idx:
+                a_ends = [lm[point_idx[0]], lm[point_idx[-1]]]
+                b_ends = [lm[shaft_idx[0]], lm[shaft_idx[-1]]]
+                min_d = float('inf')
+                fp = (a_ends[0] + b_ends[0]) / 2.0
+                for ae in a_ends:
+                    for be in b_ends:
+                        d = np.linalg.norm(ae - be)
+                        if d < min_d:
+                            min_d = d
+                            fp = (ae + be) / 2.0
+                fork_point = fp
+
+                axis_a = _central_axis(lm, point_idx, ref_point=fork_point)
+                if len(axis_a) >= 2:
+                    if np.linalg.norm(axis_a[0] - fork_point) > np.linalg.norm(axis_a[-1] - fork_point):
+                        axis_a = axis_a[::-1]
+                    v1 = _midline_vector(axis_a[:max(2, len(axis_a) // 2)])
+
+                axis_b = _central_axis(lm, shaft_idx, ref_point=fork_point)
+                if len(axis_b) >= 4:
+                    if np.linalg.norm(axis_b[0] - fork_point) > np.linalg.norm(axis_b[-1] - fork_point):
+                        axis_b = axis_b[::-1]
+                    n = len(axis_b)
+                    s, e = max(1, n // 4), min(n - 1, 3 * n // 4)
+                    shaft_mid_pts = axis_b[s:e]
+                    v2 = _midline_vector(shaft_mid_pts)
+
+            # Coordinate normalisation: fit landmarks into panel with padding
+            pad = 14
+            mn, mx = lm.min(axis=0), lm.max(axis=0)
+            span = mx - mn
+            scale = min((PANEL_W - 2 * pad) / max(span[0], 1),
+                        (PANEL_H - 2 * pad) / max(span[1], 1))
+            orig_ctr = (mn + mx) / 2.0
+
+            def svg_pt(pt):
+                pt = np.array(pt)
+                x = (pt[0] - orig_ctr[0]) * scale + pcx
+                y = (pt[1] - orig_ctr[1]) * scale + py + PANEL_H / 2
+                return float(x), float(y)
+
+            # Full outline
+            pts_str = ' '.join(f'{svg_pt(p)[0]:.1f},{svg_pt(p)[1]:.1f}' for p in lm)
+            out.append(f'<polygon class="ol" points="{pts_str}"/>')
+
+            # Highlight parts
+            if point_idx:
+                s = ' '.join(f'{svg_pt(lm[j])[0]:.1f},{svg_pt(lm[j])[1]:.1f}' for j in point_idx)
+                out.append(f'<polyline class="ph" points="{s}"/>')
+            if shaft_idx:
+                s = ' '.join(f'{svg_pt(lm[j])[0]:.1f},{svg_pt(lm[j])[1]:.1f}' for j in shaft_idx)
+                out.append(f'<polyline class="sh" points="{s}"/>')
+
+            if v1 is not None and v2 is not None and fork_point is not None:
+                jx, jy = svg_pt(fork_point)
+
+                # Line length: use ~60% of panel height for reach
+                reach = PANEL_H * 0.55
+
+                # Shaft midline (red dashed) through junction along ±v2
+                out.append(f'<line class="sm" '
+                           f'x1="{jx - v2[0]*reach*0.35:.1f}" y1="{jy - v2[1]*reach*0.35:.1f}" '
+                           f'x2="{jx + v2[0]*reach*0.65:.1f}" y2="{jy + v2[1]*reach*0.65:.1f}"/>')
+
+                # Point midline (green dashed) through junction along ±v1
+                out.append(f'<line class="pm" '
+                           f'x1="{jx - v1[0]*reach*0.25:.1f}" y1="{jy - v1[1]*reach*0.25:.1f}" '
+                           f'x2="{jx + v1[0]*reach*0.75:.1f}" y2="{jy + v1[1]*reach*0.75:.1f}"/>')
+
+                # Junction dot
+                out.append(f'<circle class="jd" cx="{jx:.1f}" cy="{jy:.1f}" r="3"/>')
+
+                # Middle-shaft bracket (orange) along the shaft midline region
+                if shaft_mid_pts is not None and len(shaft_mid_pts) >= 2:
+                    ms0x, ms0y = svg_pt(shaft_mid_pts[0])
+                    ms1x, ms1y = svg_pt(shaft_mid_pts[-1])
+                    # Perpendicular offset (left of v2)
+                    perp = np.array([-v2[1], v2[0]])
+                    off = 9
+                    bx0, by0 = ms0x + perp[0]*off, ms0y + perp[1]*off
+                    bx1, by1 = ms1x + perp[0]*off, ms1y + perp[1]*off
+                    out.append(f'<line class="bk" x1="{bx0:.1f}" y1="{by0:.1f}" x2="{bx1:.1f}" y2="{by1:.1f}"/>')
+                    for bx, by in ((bx0, by0), (bx1, by1)):
+                        out.append(f'<line class="bk" x1="{bx:.1f}" y1="{by:.1f}" '
+                                   f'x2="{bx - perp[0]*4:.1f}" y2="{by - perp[1]*4:.1f}"/>')
+
+                # Angle arc: from junction + r*(-v2) to junction + r*v1
+                r = 24
+                asx, asy = jx - v2[0]*r, jy - v2[1]*r   # start on shaft-continuation side
+                aex, aey = jx + v1[0]*r, jy + v1[1]*r   # end on point side
+                # Sweep direction via cross product (z component of (-v2) × v1)
+                cross_z = (-v2[0])*v1[1] - (-v2[1])*v1[0]
+                sweep = 1 if cross_z > 0 else 0
+                large = 1 if raw_val > 180 else 0
+                out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
+                           f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
+
+                # Angle label at arc bisector
+                bv = np.array([-v2[0], -v2[1]]) + np.array([v1[0], v1[1]])
+                bn = np.linalg.norm(bv)
+                bv = bv / bn if bn > 1e-6 else np.array([1.0, 0.0])
+                lx, ly = jx + bv[0]*(r + 13), jy + bv[1]*(r + 13)
+                out.append(f'<text class="alb" x="{lx:.1f}" y="{ly + 4:.1f}">{raw_val:.0f}°</text>')
+
+            # Species name
+            sp_name = specimen.species_name if specimen else '?'
+            out.append(f'<text class="sp" x="{pcx:.1f}" y="{py + PANEL_H + 13:.1f}">{sp_name}</text>')
+
+        # State caption
+        cap_y = py + PANEL_H + 27
+        out.append(f'<text class="slb" x="{pcx:.1f}" y="{cap_y:.1f}">{lbl}</text>')
+        out.append(f'<text class="tlb" x="{pcx:.1f}" y="{cap_y + 13:.1f}">{thresh}</text>')
+
+    # Legend
+    ly = MARGIN + PANEL_H + CAPTION_H + 10
+    out.append(f'<line x1="10" y1="{ly}" x2="32" y2="{ly}" stroke="#1a6e2a" stroke-width="1.5" stroke-dasharray="5,2"/>')
+    out.append(f'<text class="leg" x="36" y="{ly+4}">point midline</text>')
+    out.append(f'<line x1="130" y1="{ly}" x2="152" y2="{ly}" stroke="#b03020" stroke-width="1.5" stroke-dasharray="5,2"/>')
+    out.append(f'<text class="leg" x="156" y="{ly+4}">shaft midline (middle portion)</text>')
+    out.append(f'<circle cx="348" cy="{ly}" r="4" fill="#6020a0"/>')
+    out.append(f'<text class="leg" x="355" y="{ly+4}">junction &amp; angle</text>')
+    out.append(f'<line x1="445" y1="{ly}" x2="460" y2="{ly}" stroke="#cc6600" stroke-width="2"/>')
+    out.append(f'<text class="leg" x="463" y="{ly+4}">middle shaft region</text>')
+
+    out.append('</svg>')
+    return Response('\n'.join(out), mimetype='image/svg+xml',
+                   headers={'Cache-Control': 'no-cache'})
 
 
 def _log(project_id, action):
