@@ -31,6 +31,26 @@
     </p>
 </div>
 
+<!-- Ask a Question -->
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="margin-bottom:0.75rem;">Ask the Advisor</h3>
+    <p style="font-size:0.85rem; color:var(--gray-500); margin-bottom:0.75rem;">
+        Type any question about your project, specimens, characters, or methodology. The advisor has full access to your project data.
+    </p>
+    <div style="display:flex; gap:0.5rem; align-items:flex-end;">
+        <textarea id="questionInput" rows="2"
+            placeholder="e.g. Which characters show the most variation across specimens? Are there any outliers in A02?"
+            style="flex:1; padding:0.4rem 0.6rem; border:1px solid var(--gray-300); border-radius:4px;
+                   font-size:0.9rem; resize:vertical; font-family:inherit;"></textarea>
+        <button class="btn btn-primary" id="askBtn" onclick="askQuestion()">Ask</button>
+    </div>
+
+    <!-- Chat history -->
+    <div id="chatHistory" style="margin-top:0.75rem; display:none;
+         max-height:420px; overflow-y:auto; display:flex; flex-direction:column; gap:0.6rem;">
+    </div>
+</div>
+
 <!-- Status -->
 <div id="statusBox" style="display:none; margin-bottom:1rem;" class="card">
     <div id="statusMsg" style="color:var(--gray-600); font-size:0.9rem;">Analyzing...</div>
@@ -214,6 +234,86 @@ async function acceptCharacter(idx) {
 
 function escHtml(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Ask a Question ──────────────────────────────────────────────────────────
+const chatHistoryData = [];  // [{q, a}, ...]
+
+document.getElementById('questionInput').addEventListener('keydown', function(e) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) askQuestion();
+});
+
+async function askQuestion() {
+    const apiKey   = document.getElementById('apiKeyInput').value.trim();
+    const provider = document.getElementById('providerSelect').value;
+    const qInput   = document.getElementById('questionInput');
+    const question = qInput.value.trim();
+
+    if (!apiKey)   { alert('Please enter an API key first.'); return; }
+    if (!question) { alert('Please type a question.'); return; }
+
+    const btn = document.getElementById('askBtn');
+    btn.disabled = true;
+    btn.textContent = '…';
+
+    // Show thinking bubble
+    const histEl = document.getElementById('chatHistory');
+    histEl.style.display = 'flex';
+    const thinkingId = 'thinking-' + Date.now();
+    histEl.insertAdjacentHTML('beforeend', `
+        <div id="${thinkingId}" style="align-self:flex-start; max-width:85%;
+             background:var(--gray-100); border-radius:8px; padding:0.55rem 0.8rem;
+             font-size:0.88rem; color:var(--gray-500); font-style:italic;">
+            Thinking…
+        </div>`);
+    histEl.scrollTop = histEl.scrollHeight;
+
+    // Add user bubble immediately
+    histEl.insertAdjacentHTML('afterbegin', `
+        <div style="align-self:flex-end; max-width:85%;
+             background:#dbeafe; border-radius:8px; padding:0.55rem 0.8rem;
+             font-size:0.88rem; color:#1e3a5f; white-space:pre-wrap;">${escHtml(question)}</div>`);
+
+    qInput.value = '';
+
+    try {
+        const fd = new FormData();
+        fd.append('provider', provider);
+        fd.append('api_key', apiKey);
+        fd.append('question', question);
+        fd.append('history', JSON.stringify(chatHistoryData));
+
+        const resp = await fetch(`/project/${projectId}/ai_advisor/ask`, {
+            method: 'POST', body: fd
+        });
+        const data = await resp.json();
+
+        document.getElementById(thinkingId)?.remove();
+
+        if (data.error) {
+            histEl.insertAdjacentHTML('beforeend', `
+                <div style="align-self:flex-start; max-width:85%;
+                     background:#fff0f0; border-radius:8px; padding:0.55rem 0.8rem;
+                     font-size:0.88rem; color:var(--danger);">Error: ${escHtml(data.error)}</div>`);
+        } else {
+            chatHistoryData.push({q: question, a: data.answer});
+            histEl.insertAdjacentHTML('beforeend', `
+                <div style="align-self:flex-start; max-width:85%;
+                     background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px;
+                     padding:0.55rem 0.8rem; font-size:0.88rem; color:#14532d;
+                     white-space:pre-wrap;">${escHtml(data.answer)}</div>`);
+        }
+    } catch(e) {
+        document.getElementById(thinkingId)?.remove();
+        histEl.insertAdjacentHTML('beforeend', `
+            <div style="align-self:flex-start; max-width:85%;
+                 background:#fff0f0; border-radius:8px; padding:0.55rem 0.8rem;
+                 font-size:0.88rem; color:var(--danger);">Network error: ${escHtml(e.message)}</div>`);
+    } finally {
+        btn.disabled = false;
+        btn.textContent = 'Ask';
+        histEl.scrollTop = histEl.scrollHeight;
+    }
 }
 </script>
 {% endblock %}

@@ -120,6 +120,33 @@ Respond ONLY with a valid JSON object in this exact structure (no markdown, no e
 }}"""
 
 
+def _build_question_prompt(context: dict, question: str, history: list | None = None) -> str:
+    ctx = dict(context)
+    if len(ctx.get('characters', [])) > 30:
+        ctx['characters'] = ctx['characters'][:30]
+        ctx['characters_truncated'] = True
+    ctx_json = json.dumps(ctx, indent=2)
+    if len(ctx_json) > 60000:
+        ctx_json = ctx_json[:60000] + '\n  ... (truncated)'
+
+    history_block = ''
+    if history:
+        pairs = '\n'.join(
+            f'User: {h["q"]}\nAdvisor: {h["a"]}' for h in history[-4:]
+        )
+        history_block = f'\nPrevious exchanges:\n{pairs}\n'
+
+    return (
+        'You are an expert in helminth morphology and geometric morphometrics, '
+        'specializing in monogenean parasites (Gyrodactylidae and related groups). '
+        'You are acting as a scientific advisor for the following project.\n\n'
+        f'Project data:\n{ctx_json}\n'
+        f'{history_block}\n'
+        f'User question: {question}\n\n'
+        'Answer concisely and scientifically. Use plain text (no JSON).'
+    )
+
+
 def _call_claude(api_key: str, prompt: str) -> dict:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
@@ -183,6 +210,49 @@ def _call_gemini(api_key: str, prompt: str) -> dict:
     raise last_err
 
 
+def _call_freeform(provider: str, api_key: str, prompt: str) -> str:
+    """Call the chosen AI provider and return a plain-text answer."""
+    if provider == 'claude':
+        import anthropic
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model='claude-opus-4-6',
+            max_tokens=2048,
+            messages=[{'role': 'user', 'content': prompt}]
+        )
+        return msg.content[0].text.strip()
+
+    if provider == 'openai':
+        data = _http_post(
+            'https://api.openai.com/v1/chat/completions',
+            {'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 2048},
+            {'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'},
+        )
+        return data['choices'][0]['message']['content'].strip()
+
+    if provider == 'gemini':
+        models = ['gemini-2.0-flash-001', 'gemini-1.5-flash-latest', 'gemini-1.5-pro-latest']
+        last_err = None
+        for model in models:
+            url = (f'https://generativelanguage.googleapis.com/v1beta/models/'
+                   f'{model}:generateContent?key={api_key}')
+            try:
+                data = _http_post(
+                    url,
+                    {'contents': [{'parts': [{'text': prompt}]}],
+                     'generationConfig': {'maxOutputTokens': 2048}},
+                    {'Content-Type': 'application/json'},
+                )
+                return data['candidates'][0]['content']['parts'][0]['text'].strip()
+            except RuntimeError as e:
+                last_err = e
+                if 'HTTP 404' not in str(e):
+                    raise
+        raise last_err
+
+    raise ValueError(f'Unknown provider: {provider}')
+
+
 @ai_advisor_bp.route('/project/<int:project_id>/ai_advisor')
 @login_required
 def advisor_page(project_id):
@@ -229,6 +299,33 @@ def analyze(project_id):
 
     except json.JSONDecodeError as e:
         return jsonify({'error': f'AI returned invalid JSON: {e}'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@ai_advisor_bp.route('/project/<int:project_id>/ai_advisor/ask', methods=['POST'])
+@login_required
+def ask_question(project_id):
+    """Answer a free-form user question using project data as context."""
+    Project.query.get_or_404(project_id)
+    provider = request.form.get('provider', 'claude')
+    api_key  = request.form.get('api_key', '').strip()
+    question = request.form.get('question', '').strip()
+    history  = json.loads(request.form.get('history', '[]'))
+
+    if not api_key:
+        return jsonify({'error': 'No API key provided.'}), 400
+    if not question:
+        return jsonify({'error': 'Please enter a question.'}), 400
+    if ' ' in api_key or api_key.startswith('Error'):
+        return jsonify({'error': 'Invalid API key.'}), 400
+
+    session['ai_provider'] = provider
+    try:
+        context = _build_project_context(project_id)
+        prompt  = _build_question_prompt(context, question, history)
+        answer  = _call_freeform(provider, api_key, prompt)
+        return jsonify({'status': 'ok', 'answer': answer})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
