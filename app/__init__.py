@@ -96,6 +96,7 @@ def create_app(config_class=None):
         db.create_all()
         _migrate_phylogeny_jobs()
         _migrate_a02_states()
+        _migrate_character_states()
 
     # Start hourly backup scheduler (only in the main process, not reloader child)
     import sys
@@ -156,6 +157,99 @@ def _migrate_a02_states():
         if remapped:
             print(f'[migrate] A02 project {char.project_id}: remapped {remapped} value(s) to new thresholds.')
             any_changed = True
+    if any_changed:
+        db.session.commit()
+
+
+def _migrate_character_states():
+    """Update state definitions for A09, C12, C06, A01, C10 and remap existing values."""
+    from sqlalchemy import inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'character_definitions' not in inspector.get_table_names():
+        return
+
+    from app.models import CharacterDefinition, CharacterValue
+    from app.characters import map_value_to_state
+
+    updates = {
+        'A09': [
+            {'code': '0', 'name': 'nearly aligned',
+             'description': 'Root nearly continuous with shaft (<25°)',
+             'threshold_min': None, 'threshold_max': 25},
+            {'code': '1', 'name': 'moderately divergent',
+             'description': 'Moderate deviation (25°–60°)',
+             'threshold_min': 25, 'threshold_max': 60},
+            {'code': '2', 'name': 'widely divergent',
+             'description': 'Root departs sharply from shaft (>60°)',
+             'threshold_min': 60, 'threshold_max': None},
+        ],
+        'C12': [
+            {'code': '0', 'name': 'abrupt',
+             'description': 'Sharp angle at heel-shaft transition (<15°)',
+             'threshold_min': None, 'threshold_max': 15},
+            {'code': '1', 'name': 'moderate',
+             'description': 'Moderate transition angle (15°–40°)',
+             'threshold_min': 15, 'threshold_max': 40},
+            {'code': '2', 'name': 'gradual',
+             'description': 'Smooth, gradual transition (>40°)',
+             'threshold_min': 40, 'threshold_max': None},
+        ],
+        'C06': [
+            {'code': '0', 'name': 'near-perpendicular',
+             'description': 'Shaft nearly perpendicular to base (<60°)',
+             'threshold_min': None, 'threshold_max': 60},
+            {'code': '1', 'name': 'moderately angled',
+             'description': 'Shaft at moderate angle to base (60°–100°)',
+             'threshold_min': 60, 'threshold_max': 100},
+            {'code': '2', 'name': 'obtusely angled',
+             'description': 'Shaft obtusely angled relative to base (100°–140°)',
+             'threshold_min': 100, 'threshold_max': 140},
+            {'code': '3', 'name': 'strongly divergent',
+             'description': 'Shaft strongly divergent from base (>140°)',
+             'threshold_min': 140, 'threshold_max': None},
+        ],
+        'A01': [
+            {'code': '0', 'name': 'much shorter than shaft',
+             'description': 'Point much shorter than shaft (<0.45)',
+             'threshold_min': None, 'threshold_max': 0.45},
+            {'code': '1', 'name': 'approximately half the shaft',
+             'description': 'Point approximately half shaft length (0.45–0.55)',
+             'threshold_min': 0.45, 'threshold_max': 0.55},
+            {'code': '2', 'name': 'shorter than shaft',
+             'description': 'Point shorter than shaft (0.55–1.0)',
+             'threshold_min': 0.55, 'threshold_max': 1.0},
+            {'code': '3', 'name': 'longer than shaft',
+             'description': 'Point as long as or longer than shaft (>1.0)',
+             'threshold_min': 1.0, 'threshold_max': None},
+        ],
+        'C10': [
+            {'code': '0', 'name': 'reduced',
+             'description': 'Heel barely discernible or absent (<0.08)',
+             'threshold_min': None, 'threshold_max': 0.08},
+            {'code': '1', 'name': 'moderate',
+             'description': 'Heel clearly present, moderate size (0.08–0.18)',
+             'threshold_min': 0.08, 'threshold_max': 0.18},
+            {'code': '2', 'name': 'prominent',
+             'description': 'Heel large and conspicuous (>0.18)',
+             'threshold_min': 0.18, 'threshold_max': None},
+        ],
+    }
+
+    any_changed = False
+    for code, new_states in updates.items():
+        for char in CharacterDefinition.query.filter_by(code=code).all():
+            char.states_json = new_states
+            remapped = 0
+            for cv in CharacterValue.query.filter_by(character_id=char.id).all():
+                if cv.raw_value is not None:
+                    expected_state, expected_conf = map_value_to_state(cv.raw_value, new_states)
+                    if cv.state != expected_state:
+                        cv.state = expected_state
+                        cv.confidence = expected_conf
+                        remapped += 1
+            if remapped:
+                print(f'[migrate] {code} project {char.project_id}: remapped {remapped} value(s).')
+                any_changed = True
     if any_changed:
         db.session.commit()
 
