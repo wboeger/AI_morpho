@@ -319,6 +319,100 @@ def character_distribution(project_id, char_id):
     })
 
 
+def _jenks_breaks(values: list, k: int):
+    """Fisher-Jenks optimal 1-D classification (pure numpy, O(n²k)).
+
+    Returns (breaks, gvf) where breaks is a list of k-1 boundary values
+    and gvf is the Goodness of Variance Fit (0–1; higher = better separation).
+    """
+    v = np.sort(np.array(values, dtype=float))
+    n = len(v)
+    if k >= n:
+        return [float((v[i] + v[i + 1]) / 2) for i in range(n - 1)], 1.0
+
+    # DP tables: (n+1) × (k+1), 1-indexed on data
+    INF = float('inf')
+    # wcss[i][j] = min within-class SS for first i points into j classes
+    # lower[i][j] = starting index (1-based) of last class
+    wcss  = [[INF] * (k + 1) for _ in range(n + 1)]
+    lower = [[0]   * (k + 1) for _ in range(n + 1)]
+
+    # Base: 1 class
+    cumsum  = np.cumsum(v)
+    cumsum2 = np.cumsum(v ** 2)
+    for i in range(1, n + 1):
+        s  = cumsum[i - 1]
+        s2 = cumsum2[i - 1]
+        wcss[i][1]  = s2 - s * s / i
+        lower[i][1] = 1
+
+    for j in range(2, k + 1):
+        for i in range(j, n + 1):
+            for l in range(j - 1, i):
+                seg_n  = i - l
+                seg_s  = cumsum[i - 1] - (cumsum[l - 1] if l > 0 else 0)
+                seg_s2 = cumsum2[i - 1] - (cumsum2[l - 1] if l > 0 else 0)
+                seg_v  = seg_s2 - seg_s * seg_s / seg_n
+                cand   = wcss[l][j - 1] + seg_v
+                if cand < wcss[i][j]:
+                    wcss[i][j]  = cand
+                    lower[i][j] = l + 1  # first 1-based index of this last class
+
+    # Traceback class boundaries
+    klass = [0] * (k + 1)
+    klass[k] = n
+    for j in range(k, 1, -1):
+        klass[j - 1] = lower[klass[j]][j] - 1
+
+    # Breaks = midpoints between last element of one class and first of next
+    breaks = []
+    for j in range(1, k):
+        idx = klass[j]        # last 0-based index of class j
+        breaks.append(float((v[idx - 1] + v[idx]) / 2.0))
+
+    total_var = float(np.var(v) * n)
+    gvf = (total_var - wcss[n][k]) / total_var if total_var > 1e-12 else 1.0
+    return breaks, float(gvf)
+
+
+@characters_bp.route('/api/project/<int:project_id>/characters/<int:char_id>/suggest_thresholds')
+@login_required
+def suggest_thresholds(project_id, char_id):
+    """Return Jenks natural-break suggestions for 2, 3, and 4 classes."""
+    char = CharacterDefinition.query.get_or_404(char_id)
+    values = [cv.raw_value for cv in
+              CharacterValue.query.filter_by(character_id=char_id).all()
+              if cv.raw_value is not None]
+    if len(values) < 4:
+        return jsonify({'error': 'Not enough data (need ≥ 4 measured values).'}), 400
+
+    v = np.array(values, dtype=float)
+    n_bins = max(8, min(25, len(values) // 2))
+    counts, edges = np.histogram(v, bins=n_bins)
+
+    suggestions = {}
+    for k in range(2, 5):
+        if k <= len(values):
+            breaks, gvf = _jenks_breaks(values, k)
+            suggestions[str(k)] = {
+                'breaks': [round(b, 4) for b in breaks],
+                'gvf': round(gvf, 4),
+            }
+
+    return jsonify({
+        'n': len(values),
+        'min':  round(float(v.min()), 4),
+        'max':  round(float(v.max()), 4),
+        'mean': round(float(v.mean()), 4),
+        'std':  round(float(v.std()),  4),
+        'histogram': {
+            'counts': counts.tolist(),
+            'edges':  [round(float(e), 4) for e in edges],
+        },
+        'suggestions': suggestions,
+    })
+
+
 def _recompute_character(char_def, project_id):
     """Recompute a single character for all relevant structures."""
     structures = (Structure.query

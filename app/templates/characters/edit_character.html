@@ -54,7 +54,34 @@
         {% endif %}
 
         <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
-            <legend style="font-weight:600;">States</legend>
+            <legend style="font-weight:600; display:flex; align-items:center; gap:0.75rem;">
+                States
+                {% if char.computation_type == 'geometric' %}
+                <button type="button" class="btn btn-sm btn-outline" id="suggestBtn"
+                    onclick="loadSuggestions()"
+                    style="font-size:0.75rem; padding:0.15rem 0.5rem;">
+                    ⚙ Suggest Thresholds
+                </button>
+                {% endif %}
+            </legend>
+
+            <!-- Threshold suggestion panel -->
+            <div id="suggestionPanel" style="display:none; margin-bottom:0.75rem;
+                 border:1px solid #b8d4f0; border-radius:6px; padding:0.75rem; background:#f0f7ff;">
+                <div id="suggestionLoading" style="font-size:0.85rem; color:var(--gray-500);">Computing…</div>
+                <div id="suggestionContent" style="display:none;">
+                    <div style="font-size:0.8rem; color:var(--gray-600); margin-bottom:0.5rem;" id="suggestionStats"></div>
+                    <canvas id="suggestionHistogram" height="60"
+                        style="width:100%; border-radius:3px; background:#fff; display:block; margin-bottom:0.6rem;"></canvas>
+                    <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:0.6rem;" id="suggestionOptions"></div>
+                    <div style="display:flex; gap:0.5rem; align-items:center;">
+                        <button type="button" class="btn btn-sm btn-primary" onclick="applySuggestion()">Apply to States</button>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="document.getElementById('suggestionPanel').style.display='none'">Close</button>
+                        <span style="font-size:0.78rem; color:var(--gray-500);">Existing states will be replaced.</span>
+                    </div>
+                </div>
+            </div>
+
             <div style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; align-items:center; font-size:0.8rem; color:var(--gray-500); margin-bottom:0.3rem;">
                 <span></span><span>Code</span><span>Name</span><span>Description</span><span>Thresholds</span><span></span>
             </div>
@@ -390,6 +417,138 @@ function openRefLightbox(idx) {
         body.innerHTML = `<div style="height:200px;display:flex;align-items:center;justify-content:center;color:var(--gray-500);">No image</div>`;
     }
     document.getElementById('refLightbox').classList.add('active');
+}
+
+// ── Jenks threshold suggestion ──────────────────────────────────────────────
+const SUGGEST_URL = `/api/project/{{ project.id }}/characters/{{ char.id }}/suggest_thresholds`;
+let _suggestionData = null;
+let _selectedK = 3;
+
+async function loadSuggestions() {
+    const panel = document.getElementById('suggestionPanel');
+    const loading = document.getElementById('suggestionLoading');
+    const content = document.getElementById('suggestionContent');
+    panel.style.display = 'block';
+    loading.style.display = 'block';
+    content.style.display = 'none';
+    document.getElementById('suggestBtn').disabled = true;
+
+    try {
+        const resp = await fetch(SUGGEST_URL);
+        const data = await resp.json();
+        if (data.error) {
+            loading.textContent = 'Error: ' + data.error;
+            return;
+        }
+        _suggestionData = data;
+        renderSuggestions(data);
+        loading.style.display = 'none';
+        content.style.display = 'block';
+    } catch(e) {
+        loading.textContent = 'Network error: ' + e.message;
+    } finally {
+        document.getElementById('suggestBtn').disabled = false;
+    }
+}
+
+function renderSuggestions(data) {
+    document.getElementById('suggestionStats').textContent =
+        `${data.n} values · min ${data.min} · max ${data.max} · mean ${data.mean} · std ${data.std}`;
+
+    // Draw histogram
+    drawSuggestionHistogram(data);
+
+    // Render option buttons
+    const opts = document.getElementById('suggestionOptions');
+    opts.innerHTML = '';
+    for (const [k, s] of Object.entries(data.suggestions)) {
+        const ki = parseInt(k);
+        const btn = document.createElement('label');
+        btn.style.cssText = 'display:flex;align-items:center;gap:0.3rem;cursor:pointer;font-size:0.82rem;padding:0.3rem 0.6rem;border:1px solid var(--gray-300);border-radius:4px;';
+        btn.innerHTML = `<input type="radio" name="klass" value="${k}" ${ki === _selectedK ? 'checked' : ''}>
+            <strong>${k} classes</strong>&nbsp;
+            <span style="color:var(--gray-500);">GVF ${(s.gvf*100).toFixed(1)}%</span>&nbsp;
+            <span style="color:#1a5490;">[ ${s.breaks.map(b=>b.toFixed(3)).join(' | ')} ]</span>`;
+        btn.querySelector('input').addEventListener('change', () => {
+            _selectedK = ki;
+            drawSuggestionHistogram(_suggestionData);
+        });
+        opts.appendChild(btn);
+    }
+    // Default to k=3 or best GVF
+    const best = Object.entries(data.suggestions).reduce((a, [k, s]) => s.gvf > a[1] ? [k, s.gvf] : a, ['3', 0]);
+    _selectedK = parseInt(best[0]);
+    opts.querySelector(`input[value="${_selectedK}"]`).checked = true;
+    drawSuggestionHistogram(data);
+}
+
+function drawSuggestionHistogram(data) {
+    const canvas = document.getElementById('suggestionHistogram');
+    canvas.width = canvas.offsetWidth || 400;
+    const W = canvas.width, H = canvas.height;
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, W, H);
+
+    const { counts, edges } = data.histogram;
+    const maxCount = Math.max(...counts, 1);
+    const vmin = edges[0], vmax = edges[edges.length - 1];
+    const vrange = vmax - vmin || 1;
+    const pad = 4;
+
+    // Bars
+    for (let i = 0; i < counts.length; i++) {
+        const x  = pad + (edges[i] - vmin) / vrange * (W - 2*pad);
+        const x2 = pad + (edges[i+1] - vmin) / vrange * (W - 2*pad);
+        const bh = (counts[i] / maxCount) * (H - pad * 2);
+        ctx.fillStyle = '#93c5fd';
+        ctx.fillRect(x, H - pad - bh, x2 - x - 1, bh);
+    }
+
+    // Break lines for selected k
+    const kStr = String(_selectedK);
+    const breaks = data.suggestions[kStr]?.breaks || [];
+    ctx.strokeStyle = '#dc2626';
+    ctx.lineWidth = 1.5;
+    breaks.forEach(b => {
+        const bx = pad + (b - vmin) / vrange * (W - 2*pad);
+        ctx.beginPath(); ctx.moveTo(bx, 0); ctx.lineTo(bx, H); ctx.stroke();
+    });
+}
+
+function applySuggestion() {
+    if (!_suggestionData) return;
+    const breaks = _suggestionData.suggestions[String(_selectedK)]?.breaks;
+    if (!breaks) return;
+
+    // Build k state rows
+    const container = document.getElementById('statesContainer');
+    container.innerHTML = '';
+    const k = _selectedK;
+    for (let i = 0; i < k; i++) {
+        const tmin = i === 0     ? '' : String(breaks[i-1]);
+        const tmax = i === k - 1 ? '' : String(breaks[i]);
+        const name = i === 0     ? 'state 0 (edit name)' :
+                     i === k - 1 ? `state ${i} (edit name)` :
+                                   `state ${i} (edit name)`;
+        container.insertAdjacentHTML('beforeend', `
+            <div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+                <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
+                <input type="text" data-field="code" value="${i}">
+                <input type="text" data-field="name" value="${name}">
+                <input type="text" data-field="desc" placeholder="Description">
+                <div style="display:flex; gap:0.3rem;">
+                    <input type="number" data-field="threshold_min" value="${tmin}" placeholder="Min" step="any" style="width:80px;">
+                    <input type="number" data-field="threshold_max" value="${tmax}" placeholder="Max" step="any" style="width:80px;">
+                </div>
+                <div style="display:flex; gap:0.2rem;">
+                    <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,-1)" style="padding:0.1rem 0.3rem;">&uarr;</button>
+                    <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,1)" style="padding:0.1rem 0.3rem;">&darr;</button>
+                    <button type="button" class="btn btn-sm" onclick="removeState(this)" style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;">&times;</button>
+                </div>
+            </div>`);
+    }
+    initDragDrop();
+    document.getElementById('suggestionPanel').style.display = 'none';
 }
 
 // Initial render
