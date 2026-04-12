@@ -119,17 +119,17 @@ def _migrate_a02_states():
 
     new_states = [
         {'code': '0', 'name': 'slightly curved',
-         'description': 'Point departs only slightly from shaft axis; junction nearly straight (<45°)',
-         'threshold_min': None, 'threshold_max': 45},
+         'description': 'Point departs only slightly from shaft axis; acute exterior angle < 30°',
+         'threshold_min': None, 'threshold_max': 30},
         {'code': '1', 'name': 'moderately curved',
-         'description': 'Distinct bend at point–shaft junction; typical hook shape (45°–90°)',
-         'threshold_min': 45, 'threshold_max': 90},
+         'description': 'Distinct bend at point–shaft junction; typical hook shape (30°–60°)',
+         'threshold_min': 30, 'threshold_max': 60},
         {'code': '2', 'name': 'strongly curved',
-         'description': 'Sharp bend, point approaches or recurves past perpendicular (>90°)',
-         'threshold_min': 90, 'threshold_max': None},
+         'description': 'Sharp bend approaching a right angle; acute exterior angle > 60°',
+         'threshold_min': 60, 'threshold_max': None},
     ]
-    new_formula = ('deviation angle between middle shaft midline and point midline '
-                   '(0°=straight, 90°=right-angle, >90°=recurved)')
+    new_formula = ('acute exterior angle between middle-third shaft midline and point midline '
+                   '(base midpoint to tip); 0°=straight, 90°=right-angle bend')
 
     from app.models import CharacterDefinition, CharacterValue
     from app.characters import map_value_to_state
@@ -139,10 +139,15 @@ def _migrate_a02_states():
         char.states_json = new_states
         char.formula = new_formula
 
-        # Remap any CharacterValues whose state is inconsistent with current thresholds
+        # Convert old bend-angle raw_values (>90°) to acute exterior angle,
+        # then remap states to new thresholds.
         remapped = 0
         for cv in CharacterValue.query.filter_by(character_id=char.id).all():
             if cv.raw_value is not None:
+                # Ensure raw_value is the acute angle (≤ 90°)
+                acute = min(cv.raw_value, 180.0 - cv.raw_value)
+                if abs(acute - cv.raw_value) > 0.01:
+                    cv.raw_value = acute
                 expected_state, expected_conf = map_value_to_state(cv.raw_value, new_states)
                 if cv.state != expected_state:
                     cv.state = expected_state

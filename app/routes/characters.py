@@ -581,9 +581,9 @@ def a02_diagram_svg(project_id):
     H = MARGIN + PANEL_H + CAPTION_H + LEGEND_H
 
     state_labels = {
-        '0': ('State 0 — slightly curved', 'angle &lt; 45°'),
-        '1': ('State 1 — moderately curved', '45° – 90°'),
-        '2': ('State 2 — strongly curved', 'angle &gt; 90°'),
+        '0': ('State 0 — slightly curved', 'acute ext. angle &lt; 30°'),
+        '1': ('State 1 — moderately curved', '30° – 60°'),
+        '2': ('State 2 — strongly curved', 'acute ext. angle &gt; 60°'),
     }
 
     out = []
@@ -747,24 +747,36 @@ def a02_diagram_svg(project_id):
                         out.append(f'<line class="bk" x1="{bx:.1f}" y1="{by:.1f}" '
                                    f'x2="{bx - perp[0]*4:.1f}" y2="{by - perp[1]*4:.1f}"/>')
 
-                # ── Angle arc ────────────────────────────────────────────────────
-                # Arc always from shaft-downward (-v2) to point direction (v1).
-                # This directly subtends the deviation angle for all states:
-                #   0° = straight hook, 90° = perpendicular, >90° = recurved.
+                # ── Angle arc (Acute Exterior Angle) ─────────────────────────────
+                # Always draw the ACUTE arc at the external junction.
+                # bend < 90°: arc from shaft-continuation (-v2) to tip (v1).
+                # bend ≥ 90°: the acute angle is between +v2 and +v1 (both
+                #   point away from junction on the same side for recurved hooks).
                 r = 24
-                asx, asy = jx - v2[0]*r, jy - v2[1]*r   # shaft-downward
-                aex, aey = jx + v1[0]*r, jy + v1[1]*r   # tip direction
-                cross_z  = (-v2[0])*v1[1] - (-v2[1])*v1[0]
+                bend_live = 180.0 - angle_between_vectors(v1, v2)
+                if bend_live > 90.0:
+                    # Acute angle = 180 - bend, arc from +v2 to +v1
+                    asx, asy = jx + v2[0]*r, jy + v2[1]*r
+                    aex, aey = jx + v1[0]*r, jy + v1[1]*r
+                    cross_z  = v2[0]*v1[1] - v2[1]*v1[0]
+                    bv = v1 + v2   # bisector between +v2 and +v1
+                    display_angle = 180.0 - bend_live
+                else:
+                    # Acute angle = bend, arc from -v2 to +v1
+                    asx, asy = jx - v2[0]*r, jy - v2[1]*r
+                    aex, aey = jx + v1[0]*r, jy + v1[1]*r
+                    cross_z  = (-v2[0])*v1[1] - (-v2[1])*v1[0]
+                    bv = v1 - v2   # bisector between -v2 and +v1
+                    display_angle = bend_live
                 sweep = 1 if cross_z > 0 else 0
-                large = 0  # deviation ≤ 180°, never a reflex arc
-                bv = v1 - v2  # bisector for label placement
+                large = 0
                 out.append(f'<path class="arc" d="M {asx:.1f},{asy:.1f} '
                            f'A {r},{r} 0 {large},{sweep} {aex:.1f},{aey:.1f}"/>')
 
                 bn = np.linalg.norm(bv)
                 bv = bv / bn if bn > 1e-6 else np.array([1.0, 0.0])
                 lx, ly = jx + bv[0]*(r + 13), jy + bv[1]*(r + 13)
-                out.append(f'<text class="alb" x="{lx:.1f}" y="{ly + 4:.1f}">{raw_val:.0f}°</text>')
+                out.append(f'<text class="alb" x="{lx:.1f}" y="{ly + 4:.1f}">{display_angle:.0f}°</text>')
 
             # Species name
             sp_name = specimen.species_name if specimen else '?'

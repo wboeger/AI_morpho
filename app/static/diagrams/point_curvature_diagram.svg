@@ -56,11 +56,11 @@
 
 <!-- State label -->
 <text class="slb" x="100" y="400">State 0 — slightly curved</text>
-<text class="tlb" x="100" y="415">angle &lt; 45°</text>
+<text class="tlb" x="100" y="415">angle &lt; 30°</text>
 
 
-<!-- ══════════════ PANEL 2 — STATE 1: moderately curved (~70°) ══════════════ -->
-<!-- θ=70°: point direction = (sin70°, cos70°) = (0.940, 0.342) -->
+<!-- ══════════════ PANEL 2 — STATE 1: moderately curved (~50°) ══════════════ -->
+<!-- θ=50°: point direction = (sin50°, cos50°) = (0.766, 0.643) -->
 
 <!-- Shaft rectangle -->
 <path class="af" d="M 291,108 L 291,230 L 309,230 L 309,108 Z"/>
@@ -68,9 +68,9 @@
 <path class="af" d="M 291,108 L 277,85 L 295,94 Z"/>
 <path class="af" d="M 309,108 L 323,85 L 305,94 Z"/>
 
-<!-- Point shape: base=(297,238)/(303,223), tip=(401,267) -->
-<!-- perp=(cos70°,-sin70°)=(0.342,-0.940) -->
-<path class="af" d="M 297,238 L 401,267 L 303,223 Z"/>
+<!-- Point shape: v1=(0.766,0.643); perp=(-0.643,0.766) -->
+<!-- base_left=junction+perp*8=(295,236), base_right=junction-perp*8=(305,224), tip=(369,288) -->
+<path class="af" d="M 295,236 L 369,288 L 305,224 Z"/>
 
 <!-- Middle shaft bracket (middle third) -->
 <line class="bk" x1="285" y1="149" x2="285" y2="189"/>
@@ -80,29 +80,28 @@
 <!-- Shaft midline -->
 <line class="sm" x1="300" y1="58" x2="300" y2="325"/>
 
-<!-- Point midline: extended +10 each end, passes through junction(300,230) ✓ -->
-<line class="pm" x1="253" y1="213" x2="417" y2="272"/>
+<!-- Point midline: through junction(300,230), extended each end -->
+<line class="pm" x1="277" y1="211" x2="377" y2="294"/>
 
-<!-- Angle arc at LOWER crossing, θ=70° -->
-<!-- arc start: (300,256); arc end: junction+d*26=(324,239) -->
-<path class="arc" d="M 300,256 A 26,26 0 0,0 324,239"/>
+<!-- Angle arc: shaft-downward to point direction, θ=50° -->
+<!-- arc start: (300,256); arc end: junction+v1*26=(320,247) -->
+<path class="arc" d="M 300,256 A 26,26 0 0,0 320,247"/>
 
-<!-- Angle label at bisector (35° from downward) -->
-<text class="alb" x="325" y="270">~70°</text>
+<!-- Angle label at bisector -->
+<text class="alb" x="320" y="272">~50°</text>
 
 <!-- Part labels -->
-<text class="plb" x="382" y="252">Point</text>
+<text class="plb" x="374" y="286">Point</text>
 <text class="plb" x="273" y="172">Shaft</text>
 
 <!-- State label -->
 <text class="slb" x="300" y="400">State 1 — moderately curved</text>
-<text class="tlb" x="300" y="415">45° – 90°</text>
+<text class="tlb" x="300" y="415">30° – 60°</text>
 
 
-<!-- ══════════════ PANEL 3 — STATE 2: strongly curved (~140°) ══════════════ -->
-<!-- θ=140°: point direction (base→tip) = (sin40°, -cos40°) = (0.643, -0.766) -->
-<!-- Tip is strongly ABOVE junction, clearly past perpendicular -->
-<!-- deviation = 180 - angle_between(v1, shaft-upward) = 180 - 40° = 140° -->
+<!-- ══════════════ PANEL 3 — STATE 2: strongly curved (~80°) ══════════════ -->
+<!-- θ=80°: point direction = (sin80°, cos80°) = (0.985, 0.174) -->
+<!-- Acute exterior angle ≈ 80°; point approaches a right angle with the shaft -->
 
 <!-- Shaft rectangle -->
 <path class="af" d="M 491,108 L 491,230 L 509,230 L 509,108 Z"/>
@@ -110,38 +109,37 @@
 <path class="af" d="M 491,108 L 477,85 L 495,94 Z"/>
 <path class="af" d="M 509,108 L 523,85 L 505,94 Z"/>
 
-<!-- Point shape: v1=(0.643,-0.766); perp90CW=(-0.766,-0.643) -->
-<!-- base_left=junction-perp*8=(506,235), base_right=(494,225), tip=(555,165) -->
-<path class="af" d="M 506,235 L 555,165 L 494,225 Z"/>
+<!-- Point shape: v1=(0.985,0.174); perp=(-0.174,0.985) -->
+<!-- base_left=junction+perp*8=(499,238), base_right=junction-perp*8=(501,222), tip at 85px=(584,245) -->
+<path class="af" d="M 499,238 L 584,245 L 501,222 Z"/>
 
 <!-- Middle shaft bracket (middle third) -->
 <line class="bk" x1="485" y1="149" x2="485" y2="189"/>
 <line class="bk" x1="481" y1="149" x2="489" y2="149"/>
 <line class="bk" x1="481" y1="189" x2="489" y2="189"/>
 
-<!-- Shaft midline (extended +10 each end) -->
+<!-- Shaft midline -->
 <line class="sm" x1="500" y1="58" x2="500" y2="325"/>
 
-<!-- Point midline (direct base→tip, extended +10 each end): (471,265) to (564,153) -->
-<!-- passes through junction(500,230): t=0.312, y=230.1 ✓ -->
-<line class="pm" x1="471" y1="265" x2="564" y2="153"/>
+<!-- Point midline: through junction(500,230), extended each end -->
+<!-- start: junction-v1*30=(471,225); end: junction+v1*95=(594,247) -->
+<line class="pm" x1="471" y1="225" x2="594" y2="247"/>
 
-<!-- Angle arc: shaft-down (south) to point direction, 140° CCW (sweep=0) -->
-<!-- arc start: junction+(0,+26)=(500,256) [shaft-downward] -->
-<!-- arc end: junction+v1*26=(517,210); CCW 140° ✓ -->
-<!-- cross_z=(-v2)×v1=(0,1)×(0.643,-0.766)=-0.643<0 → sweep=0 ✓ -->
-<path class="arc" d="M 500,256 A 26,26 0 0,0 517,210"/>
+<!-- Angle arc: shaft-downward to point direction, θ=80° (acute) -->
+<!-- arc start: (500,256); arc end: junction+v1*26=(526,235) -->
+<!-- cross_z=(0,1)×(0.985,0.174)=-0.985<0 → sweep=0 ✓ -->
+<path class="arc" d="M 500,256 A 26,26 0 0,0 526,235"/>
 
-<!-- Angle label at arc bisector (20° SVG angle from east) -->
-<text class="alb" x="528" y="243">~140°</text>
+<!-- Angle label at bisector of -v2=[0,1] and v1=[0.985,0.174] -->
+<text class="alb" x="527" y="264">~80°</text>
 
 <!-- Part labels -->
-<text class="plb" x="557" y="160">Point</text>
+<text class="plb" x="581" y="240">Point</text>
 <text class="plb" x="473" y="172">Shaft</text>
 
 <!-- State label -->
 <text class="slb" x="500" y="400">State 2 — strongly curved</text>
-<text class="tlb" x="500" y="415">angle &gt; 90°</text>
+<text class="tlb" x="500" y="415">angle &gt; 60°</text>
 
 
 <!-- ══════════════════════════ LEGEND ══════════════════════════════════════ -->

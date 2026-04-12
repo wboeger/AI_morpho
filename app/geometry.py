@@ -335,10 +335,14 @@ def point_curvature_angle(landmarks: np.ndarray, boundary: dict) -> float:
     if np.dot(v2, mid_centroid - fork_point) < 0:
         v2 = -v2
 
-    # Bend angle = angle between shaft-travel direction (root→junction = -v2)
-    # and point direction (junction→tip = v1).
-    # angle_between(v1, -v2) = 180 - angle_between(v1, v2)
-    return 180.0 - angle_between_vectors(v1, v2)
+    # Acute Exterior Angle: the acute angle at the external junction between
+    # the shaft midline and the point midline.
+    # Full bend = angle between shaft-continuation (-v2) and point direction (v1)
+    # = 180 - angle_between(v1, v2).
+    # Take the acute version (always ≤ 90°): hooks bent past perpendicular
+    # return the supplementary (acute) angle at the outer junction.
+    bend = 180.0 - angle_between_vectors(v1, v2)
+    return min(bend, 180.0 - bend)
 
 
 def relative_vertical_position(coords_a: np.ndarray, coords_b: np.ndarray) -> float:
