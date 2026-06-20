@@ -24,8 +24,16 @@ import urllib.request
 def seed_if_empty(data_dir: str) -> bool:
     """Return True if a seed was performed, False otherwise."""
     db_path = os.path.join(data_dir, 'db.sqlite')
-    if os.path.exists(db_path):
+    force = os.environ.get('FORCE_SEED', '').strip() in ('1', 'true', 'True', 'yes')
+    if os.path.exists(db_path) and not force:
         return False  # already populated — never overwrite live data
+    if force and os.path.exists(db_path):
+        print('[seed] FORCE_SEED set — overwriting existing data on the volume.')
+        for stale in (db_path, db_path + '-wal', db_path + '-shm'):
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
 
     url = os.environ.get('DATA_SEED_URL', '').strip()
     if not url:
