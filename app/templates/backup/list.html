@@ -9,9 +9,10 @@
   </div>
 
   <p style="color:var(--text-muted,#888); font-size:0.9rem; margin-bottom:1.2rem;">
-    Backups are created automatically every hour and stored in
-    <code>project backup/</code> (excluded from git).<br>
-    The most recent <strong>48</strong> backups are retained.
+    Backups run automatically once a day at noon, compressed to a single
+    <code>.zip</code> each (excluded from git).<br>
+    The most recent <strong>{{ max_backups }}</strong> are retained (plus any
+    pre-restore safety snapshots).
     Location: <code>{{ backup_dir }}</code>
   </p>
 
@@ -24,6 +25,7 @@
         <th style="padding:0.5rem 0.75rem;">#</th>
         <th style="padding:0.5rem 0.75rem;">Timestamp</th>
         <th style="padding:0.5rem 0.75rem; text-align:right;">DB size</th>
+        <th style="padding:0.5rem 0.75rem; text-align:right;">Zip size</th>
         <th style="padding:0.5rem 0.75rem;"></th>
       </tr>
     </thead>
@@ -33,6 +35,7 @@
         <td style="padding:0.5rem 0.75rem; color:var(--text-muted,#888);">{{ loop.index }}</td>
         <td style="padding:0.5rem 0.75rem; font-family:monospace;">{{ b.stamp }}</td>
         <td style="padding:0.5rem 0.75rem; text-align:right;">{{ b.db_kb }} KB</td>
+        <td style="padding:0.5rem 0.75rem; text-align:right;">{{ b.zip_kb }} KB</td>
         <td style="padding:0.5rem 0.75rem; text-align:right;">
           <button class="btn btn-sm btn-outline"
                   onclick="restoreBackup('{{ b.stamp }}', this)"
