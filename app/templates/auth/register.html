@@ -5,14 +5,25 @@
 <div class="auth-wrap">
     <div class="card">
         <h2>Create account</h2>
+        <p style="font-size:0.85rem; color:var(--gray-500,#888); margin-top:-0.5rem;">
+            Admin only — create a login for a colleague.
+        </p>
         <form method="POST">
             <div class="form-group">
                 <label>Username</label>
                 <input type="text" name="username" required autofocus>
             </div>
             <div class="form-group">
-                <label>Email</label>
-                <input type="email" name="email" required>
+                <label>Email <span style="font-weight:400; color:var(--gray-500);">(optional)</span></label>
+                <input type="email" name="email">
+            </div>
+            <div class="form-group">
+                <label>Role</label>
+                <select name="role">
+                    <option value="annotator">Annotator</option>
+                    <option value="reviewer">Reviewer</option>
+                    <option value="admin">Admin</option>
+                </select>
             </div>
             <div class="form-group">
                 <label>Password <span style="font-weight:400; color:var(--gray-500);">(min 6 characters)</span></label>
@@ -21,7 +32,7 @@
             <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.25rem;">Create account</button>
         </form>
         <p style="margin-top:1rem; font-size:0.875rem; text-align:center;">
-            Already have an account? <a href="{{ url_for('auth.login') }}">Sign in</a>
+            <a href="{{ url_for('project.dashboard') }}">← Back to dashboard</a>
         </p>
     </div>
 </div>

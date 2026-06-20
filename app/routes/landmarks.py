@@ -183,6 +183,7 @@ def viewer_data(structure_id):
 
 
 @landmarks_bp.route('/uploads/<path:filename>')
+@login_required
 def serve_upload(filename):
     from flask import send_from_directory
     return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)

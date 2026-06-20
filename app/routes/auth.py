@@ -27,32 +27,38 @@ def login():
 
 
 @auth_bp.route('/register', methods=['GET', 'POST'])
+@login_required
 def register():
-    if current_user.is_authenticated:
+    # Public self-registration is disabled. Only an administrator may create
+    # accounts, so access to the app is controlled entirely by the admin.
+    if current_user.role != 'admin':
+        flash('Only an administrator can create accounts.', 'error')
         return redirect(url_for('project.dashboard'))
 
     if request.method == 'POST':
         username = request.form.get('username', '').strip()
         email = request.form.get('email', '').strip()
         password = request.form.get('password', '')
+        role = request.form.get('role', 'annotator')
+        if role not in ('admin', 'annotator', 'reviewer'):
+            role = 'annotator'
 
-        if User.query.filter_by(username=username).first():
+        if not username:
+            flash('Username is required.', 'error')
+        elif User.query.filter_by(username=username).first():
             flash('Username already taken.', 'error')
-        elif User.query.filter_by(email=email).first():
+        elif email and User.query.filter_by(email=email).first():
             flash('Email already registered.', 'error')
         elif len(password) < 6:
             flash('Password must be at least 6 characters.', 'error')
         else:
-            user = User(username=username, email=email)
+            user = User(username=username, email=email or f'{username}@local', role=role)
             user.set_password(password)
-            # First user becomes admin
-            if User.query.count() == 0:
-                user.role = 'admin'
             db.session.add(user)
             db.session.commit()
-            login_user(user)
-            flash('Account created successfully.', 'success')
-            return redirect(url_for('project.dashboard'))
+            # Do NOT log in as the new user — the admin stays logged in.
+            flash(f'Account "{username}" created ({role}).', 'success')
+            return redirect(url_for('auth.register'))
 
     return render_template('auth/register.html')
 

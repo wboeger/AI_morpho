@@ -111,6 +111,7 @@ def create_app(config_class=None):
         _migrate_a06_names()
         _migrate_structures()
         _migrate_specimens()
+        _ensure_admin()
 
     # Start hourly backup scheduler (only in the main process, not reloader child).
     # Disabled by default on Railway/production via ENABLE_BACKUPS=0 to avoid
@@ -121,6 +122,30 @@ def create_app(config_class=None):
         start_backup_scheduler()
 
     return app
+
+
+def _ensure_admin():
+    """Ensure an administrator account exists.
+
+    On a fresh database (e.g. a new Railway volume without a seeded db), create
+    the admin from ADMIN_USERNAME / ADMIN_PASSWORD env vars. Idempotent: only
+    creates the user if it does not already exist; never changes an existing
+    password here.
+    """
+    from app.models import User
+    username = os.environ.get('ADMIN_USERNAME')
+    password = os.environ.get('ADMIN_PASSWORD')
+    if not username or not password:
+        return
+    if User.query.filter_by(username=username).first():
+        return
+    admin = User(username=username,
+                 email=os.environ.get('ADMIN_EMAIL', f'{username}@local'),
+                 role='admin')
+    admin.set_password(password)
+    db.session.add(admin)
+    db.session.commit()
+    print(f'[auth] Bootstrapped admin account "{username}".')
 
 
 def _migrate_a02_states():

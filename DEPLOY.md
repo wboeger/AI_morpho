@@ -40,12 +40,21 @@ https://github.com/wboeger/AI_morpho/releases/download/data-v1/data.zip
   which `config.py` reads — DB + uploads go there automatically.)
 
 ### 4. Set environment variables
-| Variable        | Value                                                        |
-|-----------------|-------------------------------------------------------------|
-| `SECRET_KEY`    | a long random string (Flask session signing)                |
-| `DATA_SEED_URL` | the release asset URL from step 1                           |
-| `ENABLE_BACKUPS`| `0`  (don't fill the volume with hourly image copies)       |
-| `GALAXY_API_KEY`| your usegalaxy.eu key (only if using phylogeny features)    |
+| Variable         | Value                                                        |
+|------------------|-------------------------------------------------------------|
+| `SECRET_KEY`     | a long random string (Flask session signing)                |
+| `DATA_SEED_URL`  | the release asset URL from step 1                           |
+| `ENABLE_BACKUPS` | `0`  (don't fill the volume with hourly image copies)       |
+| `ADMIN_USERNAME` | `WalterB` (bootstrap admin if the DB has none — safety net) |
+| `ADMIN_PASSWORD` | the admin password                                          |
+| `GALAXY_API_KEY` | your usegalaxy.eu key (only if using phylogeny features)    |
+
+**Access control:** the app is fully behind login — every page and image
+requires authentication, and there is **no public sign-up**. Only the admin can
+create accounts (Dashboard → *Register*, admin-only). The seeded database
+already contains the admin user; `ADMIN_USERNAME`/`ADMIN_PASSWORD` only kick in
+if the database starts empty (no seed), creating the admin automatically.
+Colleagues get a username/password from you and sign in at the app URL.
 
 ### 5. Deploy
 First boot: volume is empty → app downloads `data.zip` from `DATA_SEED_URL`,
