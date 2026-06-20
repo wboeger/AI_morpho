@@ -33,7 +33,7 @@ DATA_DIR     = (os.environ.get('DATA_DIR')
 BACKUP_DIR   = os.path.join(DATA_DIR, 'project backup')
 DB_PATH      = os.path.join(DATA_DIR, 'db.sqlite')
 UPLOADS_DIR  = os.path.join(DATA_DIR, 'uploads')
-MAX_BACKUPS  = 5    # keep the 5 most recent daily backups; prune the oldest
+MAX_BACKUPS  = 2    # keep the 2 most recent daily backups; prune the oldest
 
 
 def _timestamp() -> str:

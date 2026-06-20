@@ -51,7 +51,7 @@ def start_backup_scheduler():
     _backup_timer.daemon = True
     _backup_timer.start()
     next_run = (datetime.now() + timedelta(seconds=delay)).strftime('%Y-%m-%d %H:%M')
-    print(f'[backup] Daily backup scheduler started (next run: {next_run}, keep 5)')
+    print(f'[backup] Daily backup scheduler started (next run: {next_run}, keep 2)')
 
 
 def create_app(config_class=None):
