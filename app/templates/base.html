@@ -167,5 +167,50 @@
 {% endif %}
 
 {% block scripts %}{% endblock %}
+
+<!-- Per-page scroll memory: returning to a page restores its previous scroll. -->
+<script>
+(function () {
+    // Let us manage scroll restoration ourselves (consistent across link nav,
+    // not just back/forward).
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
+    var KEY = 'scroll:' + location.pathname + location.search;
+
+    function save() {
+        try { sessionStorage.setItem(KEY, String(window.scrollY)); } catch (e) {}
+    }
+
+    // Save on any navigation away (covers links, form posts, tab close, bfcache).
+    window.addEventListener('pagehide', save);
+    window.addEventListener('beforeunload', save);
+    // Also save continuously (throttled) so a crash/redirect still has a value.
+    var t = null;
+    window.addEventListener('scroll', function () {
+        if (t) return;
+        t = setTimeout(function () { save(); t = null; }, 250);
+    }, { passive: true });
+
+    function restore() {
+        var y = sessionStorage.getItem(KEY);
+        if (y === null) return;
+        y = parseInt(y, 10) || 0;
+        // Try a few times — content/images may shift layout after load.
+        [0, 60, 200, 500].forEach(function (d) {
+            setTimeout(function () { window.scrollTo(0, y); }, d);
+        });
+    }
+
+    if (document.readyState === 'complete' || document.readyState === 'interactive') {
+        restore();
+    } else {
+        window.addEventListener('DOMContentLoaded', restore);
+    }
+    // Restore again when fully loaded (images change height on long lists).
+    window.addEventListener('load', restore);
+    // bfcache restore (back/forward) — page comes back from cache.
+    window.addEventListener('pageshow', function (e) { if (e.persisted) restore(); });
+})();
+</script>
 </body>
 </html>
