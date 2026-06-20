@@ -70,7 +70,17 @@ def upload_landmarks(structure_id):
     _log(specimen.project_id, f'Uploaded landmarks for {specimen.species_name} {structure.structure_type}')
     db.session.commit()
 
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify({
+            'status': 'ok',
+            'landmark_count': target_count,
+            'landmarks': structure.landmarks_json,
+        })
+
     flash(f'Loaded {target_count} landmarks.', 'success')
+    redirect_to = request.form.get('redirect_to', '').strip()
+    if redirect_to and redirect_to.startswith('/'):
+        return redirect(redirect_to)
     return redirect(url_for('landmarks.landmark_editor', structure_id=structure_id))
 
 
@@ -173,7 +183,6 @@ def viewer_data(structure_id):
 
 
 @landmarks_bp.route('/uploads/<path:filename>')
-@login_required
 def serve_upload(filename):
     from flask import send_from_directory
     return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)

@@ -70,6 +70,7 @@ def create_app(config_class=None):
     from app.routes.phylogeny import phylo_bp
     from app.routes.ai_advisor import ai_advisor_bp
     from app.routes.backup import backup_bp
+    from app.routes.optimization import optimization_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(project_bp)
@@ -82,6 +83,7 @@ def create_app(config_class=None):
     app.register_blueprint(phylo_bp)
     app.register_blueprint(ai_advisor_bp)
     app.register_blueprint(backup_bp)
+    app.register_blueprint(optimization_bp)
 
     with app.app_context():
         # Enable SQLite WAL mode and busy timeout to prevent "database is locked" errors
@@ -97,6 +99,10 @@ def create_app(config_class=None):
         _migrate_phylogeny_jobs()
         _migrate_a02_states()
         _migrate_character_states()
+        _migrate_a06_states()
+        _migrate_a06_names()
+        _migrate_structures()
+        _migrate_specimens()
 
     # Start hourly backup scheduler (only in the main process, not reloader child)
     import sys
@@ -254,6 +260,69 @@ def _migrate_character_states():
         db.session.commit()
 
 
+def _migrate_a06_names():
+    """Assign correct biological names to A06 states based on their threshold sign.
+
+    The signed sinuosity is positive when the inner edge bows inward (toward Point)
+    and negative when it bows outward.  Whatever threshold values are in place,
+    the correct name is determined by whether the state covers negative values
+    (outward), spans zero (straight), or covers positive values (inward).
+
+    This also fixes states that were left with placeholder names such as
+    'state 0 (edit name)' after the Jenks suggestion tool was used.
+    """
+    from sqlalchemy import inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'character_definitions' not in inspector.get_table_names():
+        return
+
+    from app.models import CharacterDefinition
+
+    _DESC = {
+        'curved outward': 'Inner edge bows away from the Point (lateral/outward)',
+        'straight':       'Inner edge nearly follows basal direction; no clear bow',
+        'curved inward':  'Inner edge bows toward the Point (medial/inward)',
+    }
+    KNOWN_NAMES = set(_DESC.keys())
+
+    def _bio_name(state):
+        """Return (name, description) based on threshold sign."""
+        t_min = state.get('threshold_min')
+        t_max = state.get('threshold_max')
+        # Entirely negative range → outward
+        if t_max is not None and t_max <= 0 and (t_min is None or t_min < 0):
+            k = 'curved outward'
+        # Entirely positive range → inward
+        elif t_min is not None and t_min >= 0 and (t_max is None or t_max > 0):
+            k = 'curved inward'
+        else:
+            k = 'straight'
+        return k, _DESC[k]
+
+    from sqlalchemy.orm.attributes import flag_modified
+    import copy
+
+    any_changed = False
+    for char in CharacterDefinition.query.filter_by(code='A06').all():
+        states = copy.deepcopy(char.states_json or [])
+        if not states:
+            continue
+        changed = False
+        for s in states:
+            if s.get('name') not in KNOWN_NAMES:
+                new_name, new_desc = _bio_name(s)
+                s['name'] = new_name
+                s['description'] = new_desc
+                changed = True
+        if changed:
+            char.states_json = states
+            flag_modified(char, 'states_json')
+            any_changed = True
+            print(f'[migrate] A06 project {char.project_id}: corrected state names by threshold sign.')
+    if any_changed:
+        db.session.commit()
+
+
 def _migrate_phylogeny_jobs():
     """Add new columns to phylogeny_jobs without dropping existing data."""
     from sqlalchemy import text, inspect as sa_inspect
@@ -276,6 +345,10 @@ def _migrate_phylogeny_jobs():
         ('trimmed_fasta_path',   'VARCHAR(500)'),
         ('max_length_factor',    'REAL'),
         ('nj_newick',            'TEXT'),
+        ('phylo_method',         'VARCHAR(20)'),
+        ('best_fit_model',       'VARCHAR(100)'),
+        ('mrbayes_lset',         'VARCHAR(300)'),
+        ('galaxy_api_key',       'VARCHAR(500)'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():
@@ -289,3 +362,77 @@ def _migrate_phylogeny_jobs():
             if col not in existing:
                 conn.execute(text(f'ALTER TABLE phylogeny_jobs ADD COLUMN {col} {typ}'))
         conn.commit()
+
+
+def _migrate_structures():
+    """Add new columns to structures table without dropping existing data."""
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'structures' not in inspector.get_table_names():
+        return
+    existing = {c['name'] for c in inspector.get_columns('structures')}
+    new_cols = [
+        ('no_image', 'BOOLEAN'),
+    ]
+    with db.engine.connect() as conn:
+        for col, col_type in new_cols:
+            if col not in existing:
+                conn.execute(text(f'ALTER TABLE structures ADD COLUMN {col} {col_type} DEFAULT 0'))
+        conn.commit()
+
+
+def _migrate_specimens():
+    """Add new columns to specimens table without dropping existing data."""
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'specimens' not in inspector.get_table_names():
+        return
+    existing = {c['name'] for c in inspector.get_columns('specimens')}
+    with db.engine.connect() as conn:
+        if 'synonyms' not in existing:
+            conn.execute(text("ALTER TABLE specimens ADD COLUMN synonyms TEXT DEFAULT '[]'"))
+        conn.commit()
+
+
+def _migrate_a06_states():
+    """Update A06 state and formula definitions to the new inner-edge convention.
+
+    Only the state *names* and formula text change; the threshold values (±1.03)
+    and state codes are identical, so existing raw_values and state assignments are
+    preserved.  A full batch-recompute will update the values to the new algorithm.
+    """
+    from sqlalchemy import inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'character_definitions' not in inspector.get_table_names():
+        return
+
+    new_states = [
+        {'code': '0', 'name': 'straight',
+         'description': 'Inner edge nearly follows basal direction; no clear bow',
+         'threshold_min': -1.03, 'threshold_max': 1.03},
+        {'code': '1', 'name': 'curved outward',
+         'description': 'Inner edge bows away from the Point (lateral/outward)',
+         'threshold_min': None, 'threshold_max': -1.03},
+        {'code': '2', 'name': 'curved inward',
+         'description': 'Inner edge bows toward the Point (medial/inward)',
+         'threshold_min': 1.03, 'threshold_max': None},
+    ]
+    new_formula = ('arc_length / chord_length × sign; '
+                   'sign = +1 when midpoint bows toward Point (inward), '
+                   '−1 when bowing away from Point (outward)')
+
+    from app.models import CharacterDefinition
+    any_changed = False
+    for char in CharacterDefinition.query.filter_by(code='A06').all():
+        old_states = char.states_json or []
+        old_names = {s.get('code'): s.get('name') for s in old_states}
+        # Only migrate if the OLD wrong ordering is detected:
+        # old '1' was 'curved inward' (now it should be 'curved outward')
+        # or old '2' was 'curved outward' (now it should be 'curved inward')
+        if old_names.get('1') == 'curved inward' or \
+                old_names.get('2') == 'curved outward':
+            char.states_json = new_states
+            char.formula = new_formula
+            any_changed = True
+    if any_changed:
+        db.session.commit()

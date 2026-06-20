@@ -36,8 +36,13 @@ class Config:
         'mco': (80, 150),
     }
 
-    # CIPRES phylogenetic analysis
-    CIPRES_BASE_URL = 'https://cipresrest.sdsc.edu/cipresrest/v1'
-    CIPRES_USER = os.environ.get('CIPRES_USER', 'wboeger')
-    CIPRES_PASSWORD = os.environ.get('CIPRES_PASSWORD', '')
-    CIPRES_APP_KEY = os.environ.get('CIPRES_APP_KEY', '')
+    # Galaxy phylogenetic analysis (usegalaxy.eu)
+    GALAXY_BASE_URL = os.environ.get('GALAXY_BASE_URL', 'https://usegalaxy.eu')
+    GALAXY_API_KEY  = os.environ.get('GALAXY_API_KEY', '')
+    # Tool IDs — override via env if usegalaxy.eu updates versions
+    GALAXY_RAXML_TOOL_ID   = os.environ.get(
+        'GALAXY_RAXML_TOOL_ID',
+        'toolshed.g2.bx.psu.edu/repos/iuc/raxml/raxml/8.2.12+galaxy2')
+    GALAXY_MRBAYES_TOOL_ID = os.environ.get(
+        'GALAXY_MRBAYES_TOOL_ID',
+        'toolshed.g2.bx.psu.edu/repos/iuc/mrbayes/mrbayes/3.2.7.a+galaxy0')

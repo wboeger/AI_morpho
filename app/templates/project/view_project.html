@@ -1,26 +1,29 @@
 {% extends "base.html" %}
 {% block title %}{{ project.name }} - GyroMorpho{% endblock %}
 {% block content %}
-<h1>{{ project.name }}</h1>
-{% if project.description %}<p style="color:var(--gray-500); margin-bottom:1rem;">{{ project.description }}</p>{% endif %}
+<div class="page-h">
+    <h1><em class="sp">{{ project.name }}</em></h1>
+    <span class="sub">project workspace</span>
+</div>
+{% if project.description %}<p style="color:var(--ink-3); margin-bottom:14px; max-width:720px;">{{ project.description }}</p>{% endif %}
 
 <!-- Stats -->
-<div class="stats-row">
-    <div class="stat-card">
-        <div class="value">{{ stats.specimens }}</div>
-        <div class="label">Specimens</div>
+<div class="ledger-strip">
+    <div class="ledger-cell">
+        <div class="lbl">Specimens</div>
+        <div class="val">{{ stats.specimens }}</div>
     </div>
-    <div class="stat-card">
-        <div class="value">{{ stats.structures }}</div>
-        <div class="label">Structures</div>
+    <div class="ledger-cell">
+        <div class="lbl">Structures</div>
+        <div class="val">{{ stats.structures }}</div>
     </div>
-    <div class="stat-card">
-        <div class="value">{{ stats.landmarks_done }}</div>
-        <div class="label">Landmarks Done</div>
+    <div class="ledger-cell">
+        <div class="lbl">Landmarks done</div>
+        <div class="val">{{ stats.landmarks_done }}</div>
     </div>
-    <div class="stat-card">
-        <div class="value">{{ stats.boundaries_done }}</div>
-        <div class="label">Boundaries Done</div>
+    <div class="ledger-cell">
+        <div class="lbl">Boundaries done</div>
+        <div class="val">{{ stats.boundaries_done }}</div>
     </div>
 </div>
 
@@ -45,6 +48,10 @@
     <a href="{{ url_for('project.add_specimen', project_id=project.id) }}" class="btn btn-primary">Add Specimen</a>
     <a href="{{ url_for('project.import_folders', project_id=project.id) }}" class="btn btn-primary">Import from Folders</a>
     <a href="{{ url_for('project.bulk_import', project_id=project.id) }}" class="btn btn-outline">Bulk Import CSV</a>
+    <button class="btn btn-outline" onclick="openImportFromProject()"
+            title="Copy landmarks and/or images from another project where species names match">
+        Import from Project
+    </button>
     {% if dna_only %}
     <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline">Show All</a>
     {% else %}
@@ -54,6 +61,7 @@
         <button type="submit" class="btn btn-outline">Compute All Characters</button>
     </form>
     <button class="btn btn-outline" onclick="openModal('readinessModal')">Check Readiness</button>
+    <a href="{{ url_for('project.coverage', project_id=project.id) }}" class="btn btn-outline">Coverage Report</a>
 </div>
 
 <!-- ImageJ Batch Import -->
@@ -67,7 +75,7 @@
           enctype="multipart/form-data"
           style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
         <select name="structure_type" style="padding:0.3rem 0.5rem; border:1px solid var(--gray-300); border-radius:4px; font-size:0.85rem;">
-            {% for st in ['hook','anchor','superficial_bar','deep_bar','mco'] %}
+            {% for st in structure_types %}
             <option value="{{ st }}">{{ st.replace('_',' ').title() }}</option>
             {% endfor %}
         </select>
@@ -92,46 +100,130 @@
         <tbody>
             {% for s in specimens %}
             <tr>
-                <td><em>{{ s.species_name }}</em></td>
-                <td>{{ s.specimen_id_label or '-' }}</td>
                 <td>
-                    {% for st in s.structures %}
-                    <span class="part-chip" style="background:
-                        {% if st.structure_type == 'hook' %}#4a90d9
-                        {% elif st.structure_type == 'anchor' %}#50b383
-                        {% elif st.structure_type == 'superficial_bar' %}#d9844a
-                        {% elif st.structure_type == 'deep_bar' %}#9b59b6
-                        {% else %}#e74c3c{% endif %}">
-                        {{ st.structure_type.replace('_', ' ') }}
-                        {% if st.landmarks_confirmed %}&#10003;{% endif %}
-                    </span>
+                    <span class="sp-name">{{ s.species_name }}</span>
+                    <div class="syn-block" id="syn-block-{{ s.id }}" style="margin-top:0.25rem; display:flex; flex-wrap:wrap; align-items:center; gap:0.2rem;">
+                        {% for syn in (s.synonyms or []) %}
+                        <span class="syn-chip" style="display:inline-flex; align-items:center; gap:0.15rem;
+                              background:var(--gray-100,#f0f0f0); border:1px solid var(--gray-300,#ccc);
+                              border-radius:3px; padding:0.05rem 0.35rem; font-size:0.72rem; color:var(--gray-600,#555); font-style:italic;">
+                            {{ syn }}
+                            <button type="button" title="Remove synonym"
+                                    onclick="removeSynonym({{ s.id }}, {{ syn|tojson }}, this)"
+                                    style="background:none;border:none;cursor:pointer;color:inherit;opacity:0.6;
+                                           font-size:0.7rem;padding:0;line-height:1;"
+                                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">&#10005;</button>
+                        </span>
+                        {% endfor %}
+                        <button type="button" class="syn-add-btn" title="Add synonym"
+                                onclick="showSynInput({{ s.id }}, this)"
+                                style="font-size:0.7rem; padding:0.05rem 0.3rem; opacity:0.6;"
+                                onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">+ syn</button>
+                        <span id="syn-input-{{ s.id }}" style="display:none; align-items:center; gap:0.2rem;">
+                            <input type="text" id="syn-text-{{ s.id }}"
+                                   placeholder="synonym name"
+                                   style="font-size:0.72rem; padding:0.1rem 0.3rem; border:1px solid var(--gray-300,#ccc);
+                                          border-radius:3px; width:140px; font-style:italic;"
+                                   onkeydown="if(event.key==='Enter')addSynonym({{ s.id }});if(event.key==='Escape')hideSynInput({{ s.id }})">
+                            <button type="button" onclick="addSynonym({{ s.id }})"
+                                    style="font-size:0.7rem; padding:0.1rem 0.4rem;">&#10003;</button>
+                            <button type="button" onclick="hideSynInput({{ s.id }})"
+                                    style="font-size:0.7rem; padding:0.1rem 0.4rem;">&#10005;</button>
+                        </span>
+                    </div>
+                </td>
+                <td><span class="mono tiny muted">{{ s.specimen_id_label or '—' }}</span></td>
+                <td>
+                    {% set visible_structs = s.structures | selectattr('structure_type', 'in', structure_types) | list %}
+                    {% for st in visible_structs %}
+                    {% set chip_color =
+                        '#4a90d9' if st.structure_type == 'hook' else
+                        '#50b383' if st.structure_type == 'anchor' else
+                        '#d9844a' if st.structure_type == 'superficial_bar' else
+                        '#9b59b6' if st.structure_type == 'deep_bar' else '#e74c3c' %}
+                    <div style="display:inline-flex; flex-direction:column; align-items:flex-start; gap:0.2rem; vertical-align:top; margin-right:0.3rem;">
+                        <span class="part-chip struct-chip"
+                              style="background:{{ chip_color }}{% if st.no_image %}; opacity:0.55; text-decoration:line-through;{% endif %};
+                                     display:inline-flex; align-items:center; gap:0.25rem;">
+                            {{ st.structure_type.replace('_', ' ') }}
+                            {% if st.no_image %}<span title="No image available" style="font-size:0.75rem;">&#8856;</span>
+                            {% elif st.landmarks_confirmed %}<span>&#10003;</span>{% endif %}
+                            <button type="button"
+                                    onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')"
+                                    title="Remove this structure"
+                                    style="background:none; border:none; color:inherit; opacity:0.65; cursor:pointer;
+                                           font-size:0.8rem; line-height:1; padding:0 0 0 0.1rem;"
+                                    onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.65'">&#10005;</button>
+                        </span>
+                        <span id="chip-thumb-{{ st.id }}" data-species="{{ s.species_name|e }}" data-stype="{{ st.structure_type.replace('_',' ') }}">
+                        {% if st.image_path and not st.no_image %}
+                        <img src="/uploads/{{ st.image_path }}"
+                             alt="{{ s.species_name }} {{ st.structure_type.replace('_',' ') }}"
+                             style="max-height:90px; max-width:130px; object-fit:contain;
+                                    border-radius:3px; border:1px solid var(--gray-200,#e5e5e5);
+                                    background:#fafafa; cursor:zoom-in;"
+                             onclick="openImageLightbox('/uploads/{{ st.image_path }}', '{{ s.species_name|e }} — {{ st.structure_type.replace('_',' ') }}')">
+                        {% elif st.no_image %}
+                        <span style="font-size:0.72rem; color:var(--gray-400,#aaa); font-style:italic;">no image available</span>
+                        {% else %}
+                        <span style="font-size:0.72rem; color:var(--gray-300,#ccc);">—</span>
+                        {% endif %}
+                        </span>
+                    </div>
                     {% endfor %}
-                    <button class="btn btn-sm btn-outline" title="Add structure"
-                            onclick="openAddStructure({{ s.id }}, '{{ s.species_name|e }}')">+</button>
+                    {# Add / No-image buttons for missing structure types #}
+                    {% set existing_types = s.structures | map(attribute='structure_type') | list %}
+                    {% for stype in structure_types %}
+                    {% if stype not in existing_types %}
+                    <span style="display:inline-flex; gap:0.2rem; align-items:center;">
+                        <button class="btn btn-sm btn-outline" title="Add {{ stype.replace('_',' ') }}"
+                                onclick="openAddStructure({{ s.id }}, '{{ s.species_name|e }}')">+ Add</button>
+                        <button class="btn btn-sm btn-outline" title="Mark as no image available for {{ stype.replace('_',' ') }}"
+                                style="opacity:0.7;"
+                                onclick="markNoImage({{ s.id }}, '{{ stype }}', this)">&#8856;</button>
+                    </span>
+                    {% endif %}
+                    {% endfor %}
+                    {# For existing structures: show add if multi-type project and not all present #}
+                    {% if structure_types | length > 1 and (visible_structs | length) < (structure_types | length) and existing_types %}
+                    <button class="btn btn-sm btn-outline" title="Add another structure"
+                            onclick="openAddStructure({{ s.id }}, '{{ s.species_name|e }}')">+ Add</button>
+                    {% endif %}
                 </td>
                 <td>
                     {% for d in s.dna_sequences %}
-                    <span style="font-size:0.75rem;">{{ d.marker }}</span>
+                    <span class="chip dna">{{ d.marker }}</span>
                     {% endfor %}
                     <a href="{{ url_for('project.edit_dna', specimen_id=s.id) }}" class="btn btn-sm btn-outline">edit</a>
                 </td>
                 <td style="white-space:nowrap;">
-                    {% for st in s.structures %}
-                    <a href="{{ url_for('landmarks.landmark_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">landmarks</a>
+                    <a href="{{ url_for('project.specimen_detail', specimen_id=s.id) }}" class="btn btn-sm btn-primary">View</a>
+                    {% for st in s.structures if st.structure_type in structure_types %}
+                    {% if not st.no_image %}
+                    <a href="{{ url_for('landmarks.landmark_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline"
+                       title="{{ st.structure_type.replace('_',' ') }} landmarks">LM</a>
                     {% if st.landmarks_json %}
-                    <a href="{{ url_for('boundaries.boundary_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline">boundaries</a>
+                    <a href="{{ url_for('boundaries.boundary_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline"
+                       title="{{ st.structure_type.replace('_',' ') }} boundaries">BND</a>
                     {% endif %}
                     <button class="btn btn-sm btn-outline"
                             onclick="openCsvUpload({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')"
                             title="{{ 'Replace' if st.landmarks_json else 'Upload' }} landmarks CSV">
-                        csv{% if st.landmarks_json %}&#10003;{% endif %}
+                        CSV{% if st.landmarks_json %}&#10003;{% endif %}
                     </button>
+                    {% endif %}
+                    <button class="btn btn-sm btn-outline{% if st.no_image %} btn-warning{% endif %}"
+                            onclick="toggleNoImage({{ st.id }}, this)"
+                            title="{% if st.no_image %}Clear 'no image' flag{% else %}Mark as no image available{% endif %}">
+                        {% if st.no_image %}&#8856; No img{% else %}IMG{% if st.image_path %}&#10003;{% endif %}{% endif %}
+                    </button>
+                    {% if not st.no_image %}
                     <button class="btn btn-sm btn-outline"
                             onclick="openImgUpload({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')"
                             title="{{ 'Replace' if st.image_path else 'Upload' }} image">
-                        img{% if st.image_path %}&#10003;{% endif %}
+                        &#8682; img
                     </button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')" title="Delete structure">&times;</button>
+                    {% endif %}
                     {% endfor %}
                     <button class="btn btn-sm btn-danger" onclick="deleteSpecimen({{ project.id }}, {{ s.id }}, '{{ s.species_name|e }}')" title="Delete specimen">Delete</button>
                 </td>
@@ -248,6 +340,18 @@
     </div>
 </div>
 
+<!-- Image lightbox -->
+<div id="imgLightbox" style="display:none; position:fixed; inset:0; z-index:9999;
+     background:rgba(0,0,0,0.82); align-items:center; justify-content:center; flex-direction:column;"
+     onclick="this.style.display='none'">
+    <p id="lightboxCaption" style="color:#eee; font-style:italic; font-size:0.85rem;
+       margin-bottom:0.6rem; max-width:90vw; text-align:center;"></p>
+    <img id="lightboxImg" src="" alt=""
+         style="max-width:90vw; max-height:85vh; object-fit:contain; border-radius:6px;
+                box-shadow:0 4px 32px rgba(0,0,0,0.6);">
+    <p style="color:#aaa; font-size:0.75rem; margin-top:0.5rem;">click anywhere to close</p>
+</div>
+
 <!-- Add structure modal -->
 <div id="addStructureModal" class="gyro-modal" style="display:none;">
     <div class="gyro-modal-box" style="min-width:360px; max-width:500px;">
@@ -256,7 +360,7 @@
             <div class="modal-field">
                 <label>Structure type</label>
                 <select name="structure_type" required style="width:100%;">
-                    {% for st in ['hook','anchor','superficial_bar','deep_bar','mco'] %}
+                    {% for st in structure_types %}
                     <option value="{{ st }}">{{ st.replace('_',' ').title() }}</option>
                     {% endfor %}
                 </select>
@@ -305,6 +409,68 @@
                 <button type="submit" class="btn btn-primary">Upload</button>
             </div>
         </form>
+    </div>
+</div>
+
+<!-- ── Import from Another Project modal ──────────────────────────────────── -->
+<div id="importFromProjectModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:500px; max-width:95vw; max-height:88vh; overflow-y:auto;">
+        <h3 style="margin:0 0 0.5rem;">Import Landmarks / Images from Another Project</h3>
+        <p style="font-size:0.85rem; color:var(--gray-600); margin-bottom:1rem;">
+            Copies data where the <strong>species name</strong> matches exactly.
+            Only fills missing slots by default; check Overwrite to replace existing data.
+        </p>
+
+        <div class="modal-field">
+            <label>Source project</label>
+            <select id="ifpSrcSelect" class="form-control" onchange="ifpPreview()">
+                <option value="">— select a project —</option>
+            </select>
+        </div>
+
+        <div class="modal-field">
+            <label>What to import</label>
+            <div style="display:flex; gap:1rem; flex-wrap:wrap;">
+                <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;">
+                    <input type="checkbox" id="ifpLm" checked onchange="ifpPreview()"> Landmarks (CSV)
+                </label>
+                <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;">
+                    <input type="checkbox" id="ifpBnd" checked onchange="ifpPreview()"> Boundaries
+                </label>
+                <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;">
+                    <input type="checkbox" id="ifpImg" checked onchange="ifpPreview()"> Images
+                </label>
+            </div>
+        </div>
+
+        <div class="modal-field">
+            <label>Structure types</label>
+            <div style="display:flex; flex-wrap:wrap; gap:0.75rem;">
+                {% for st in structure_types %}
+                <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.83rem; cursor:pointer;">
+                    <input type="checkbox" class="ifp-stype" value="{{ st }}" checked onchange="ifpPreview()">
+                    {{ st.replace('_',' ').title() }}
+                </label>
+                {% endfor %}
+            </div>
+        </div>
+
+        <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; margin-bottom:0.75rem; cursor:pointer;">
+            <input type="checkbox" id="ifpOverwrite" onchange="ifpPreview()">
+            Overwrite existing data
+        </label>
+
+        <div id="ifpPreviewBox" style="display:none; background:var(--gray-100,#f3f4f6);
+             border-radius:6px; padding:0.8rem; font-size:0.82rem; margin-bottom:0.75rem; line-height:1.8;">
+            <div id="ifpPreviewText"></div>
+        </div>
+
+        <div id="ifpMsg" style="font-size:0.83rem; margin-bottom:0.5rem;"></div>
+
+        <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.75rem;">
+            <button class="btn btn-outline" onclick="closeModal('importFromProjectModal')">Cancel</button>
+            <button class="btn btn-primary" id="ifpRunBtn" onclick="ifpRun()" disabled>Import</button>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -598,11 +764,146 @@ function openCsvUpload(structureId, structureType, speciesName) {
 }
 
 // ── Image upload ──
+let _imgUploadStructId = null, _imgUploadSpecies = '', _imgUploadType = '';
 function openImgUpload(structureId, structureType, speciesName) {
+    _imgUploadStructId = structureId;
+    _imgUploadSpecies  = speciesName;
+    _imgUploadType     = structureType.replace(/_/g,' ');
     document.getElementById('imgModalTitle').textContent =
-        'Upload image — ' + structureType.replace(/_/g,' ') + ' (' + speciesName + ')';
+        'Upload image — ' + _imgUploadType + ' (' + speciesName + ')';
     document.getElementById('imgUploadForm').action = '/api/structure/' + structureId + '/upload_image';
     openModal('imgModal');
+}
+
+// AJAX-submit image upload so the page does NOT reload / jump to top.
+// Updates the structure thumbnail in place, keeping scroll position.
+document.addEventListener('DOMContentLoaded', () => {
+    const form = document.getElementById('imgUploadForm');
+    if (!form) return;
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const fd = new FormData(form);
+        try {
+            const resp = await fetch(form.action, {
+                method: 'POST',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: fd
+            });
+            const data = await resp.json();
+            if (!resp.ok || data.error || data.status !== 'ok') {
+                alert((data && data.error) || 'Upload failed'); return;
+            }
+            const thumb = document.getElementById('chip-thumb-' + _imgUploadStructId);
+            if (thumb) {
+                const url = data.image_url + (data.image_url.includes('?') ? '&' : '?') + 'v=' + Date.now();
+                const cap = (_imgUploadSpecies + ' — ' + _imgUploadType).replace(/'/g, "\\'");
+                thumb.innerHTML =
+                    '<img src="' + url + '" alt="' + _imgUploadSpecies + ' ' + _imgUploadType + '"' +
+                    ' style="max-height:90px; max-width:130px; object-fit:contain; border-radius:3px;' +
+                    ' border:1px solid var(--gray-200,#e5e5e5); background:#fafafa; cursor:zoom-in;"' +
+                    " onclick=\"openImageLightbox('" + url + "','" + cap + "')\">";
+            }
+            form.reset();
+            closeModal('imgModal');
+        } catch (err) {
+            alert('Network error: ' + err.message);
+        }
+    });
+});
+
+// ── Image lightbox ──
+function openImageLightbox(src, caption) {
+    const lb = document.getElementById('imgLightbox');
+    document.getElementById('lightboxImg').src = src;
+    document.getElementById('lightboxCaption').textContent = caption || '';
+    lb.style.display = 'flex';
+}
+
+// ── Synonym helpers ──
+const PROJECT_ID_FOR_SYN = {{ project.id }};
+
+function showSynInput(specimenId, btn) {
+    btn.style.display = 'none';
+    const inp = document.getElementById('syn-input-' + specimenId);
+    inp.style.display = 'inline-flex';
+    document.getElementById('syn-text-' + specimenId).focus();
+}
+
+function hideSynInput(specimenId) {
+    document.getElementById('syn-input-' + specimenId).style.display = 'none';
+    const block = document.getElementById('syn-block-' + specimenId);
+    block.querySelector('.syn-add-btn').style.display = '';
+}
+
+async function addSynonym(specimenId) {
+    const inp = document.getElementById('syn-text-' + specimenId);
+    const syn = inp.value.trim();
+    if (!syn) return;
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID_FOR_SYN}/specimen/${specimenId}/synonyms`,
+            {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({synonym:syn})}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert(data.error || 'Error'); return; }
+        _rebuildSynChips(specimenId, data.synonyms);
+        inp.value = '';
+        hideSynInput(specimenId);
+    } catch(e) { alert('Network error: ' + e.message); }
+}
+
+async function removeSynonym(specimenId, syn, btn) {
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID_FOR_SYN}/specimen/${specimenId}/synonyms/remove`,
+            {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({synonym:syn})}
+        );
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert(data.error || 'Error'); return; }
+        _rebuildSynChips(specimenId, data.synonyms);
+    } catch(e) { alert('Network error: ' + e.message); }
+}
+
+function _rebuildSynChips(specimenId, synonyms) {
+    const block = document.getElementById('syn-block-' + specimenId);
+    // Remove existing chips (not the add-btn / input span)
+    block.querySelectorAll('.syn-chip').forEach(el => el.remove());
+    const addBtn = block.querySelector('.syn-add-btn');
+    synonyms.forEach(syn => {
+        const chip = document.createElement('span');
+        chip.className = 'syn-chip';
+        chip.style.cssText = 'display:inline-flex;align-items:center;gap:0.15rem;' +
+            'background:var(--gray-100,#f0f0f0);border:1px solid var(--gray-300,#ccc);' +
+            'border-radius:3px;padding:0.05rem 0.35rem;font-size:0.72rem;color:var(--gray-600,#555);font-style:italic;';
+        chip.innerHTML = `${syn} <button type="button" title="Remove" onclick="removeSynonym(${specimenId},${JSON.stringify(syn)},this)"
+            style="background:none;border:none;cursor:pointer;color:inherit;opacity:0.6;font-size:0.7rem;padding:0;line-height:1;"
+            onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.6'">&#10005;</button>`;
+        block.insertBefore(chip, addBtn);
+    });
+}
+
+// ── No-image helpers ──
+async function toggleNoImage(structureId, btn) {
+    const row = btn.closest('tr');
+    try {
+        const resp = await fetch(`/api/structure/${structureId}/toggle_no_image`, {method: 'POST'});
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert(data.error || 'Error'); return; }
+        location.reload();
+    } catch(e) { alert('Network error: ' + e.message); }
+}
+
+async function markNoImage(specimenId, structureType, btn) {
+    try {
+        const resp = await fetch(`/api/specimen/${specimenId}/mark_no_image`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({structure_type: structureType})
+        });
+        const data = await resp.json();
+        if (!resp.ok || data.error) { alert(data.error || 'Error'); return; }
+        location.reload();
+    } catch(e) { alert('Network error: ' + e.message); }
 }
 
 // ── Delete helpers ──
@@ -624,6 +925,122 @@ function deleteStructure(structureId, structureType, speciesName) {
             if (data.status === 'ok') location.reload();
             else alert(data.error || 'Error deleting structure');
         });
+}
+
+// ── Import from Another Project ───────────────────────────────────────────────
+let _ifpTimer = null;
+
+async function openImportFromProject() {
+    openModal('importFromProjectModal');
+    document.getElementById('ifpMsg').textContent = '';
+    document.getElementById('ifpPreviewBox').style.display = 'none';
+    document.getElementById('ifpRunBtn').disabled = true;
+
+    const sel = document.getElementById('ifpSrcSelect');
+    if (sel.options.length <= 1) {
+        sel.innerHTML = '<option value="">Loading…</option>';
+        try {
+            const r = await fetch(`/api/project/{{ project.id }}/import_from_project/projects`);
+            const projects = await r.json();
+            sel.innerHTML = '<option value="">— select a project —</option>' +
+                projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+        } catch {
+            sel.innerHTML = '<option value="">— error loading projects —</option>';
+        }
+    }
+}
+
+function _ifpParams() {
+    const srcId = document.getElementById('ifpSrcSelect').value;
+    const what  = [
+        document.getElementById('ifpLm').checked  ? 'landmarks'  : null,
+        document.getElementById('ifpBnd').checked ? 'boundaries' : null,
+        document.getElementById('ifpImg').checked ? 'images'     : null,
+    ].filter(Boolean);
+    const stypes = [...document.querySelectorAll('.ifp-stype:checked')].map(cb => cb.value);
+    const overwrite = document.getElementById('ifpOverwrite').checked;
+    return {srcId, what, stypes, overwrite};
+}
+
+async function ifpPreview() {
+    clearTimeout(_ifpTimer);
+    const {srcId, what, stypes, overwrite} = _ifpParams();
+    const box    = document.getElementById('ifpPreviewBox');
+    const runBtn = document.getElementById('ifpRunBtn');
+    if (!srcId || !what.length) {
+        box.style.display = 'none';
+        runBtn.disabled = true;
+        return;
+    }
+    _ifpTimer = setTimeout(async () => {
+        box.style.display = 'block';
+        document.getElementById('ifpPreviewText').textContent = 'Loading preview…';
+        runBtn.disabled = true;
+        try {
+            const qs = new URLSearchParams({
+                source_project_id: srcId,
+                what: what.join(','),
+                structure_types: stypes.join(','),
+                overwrite: overwrite ? '1' : '0',
+            });
+            const r = await fetch(`/api/project/{{ project.id }}/import_from_project/preview?${qs}`);
+            const d = await r.json();
+            if (d.error) {
+                document.getElementById('ifpPreviewText').innerHTML =
+                    `<span style="color:red;">${d.error}</span>`;
+                return;
+            }
+            const spText = d.matched_species.join(', ') +
+                (d.n_more_species ? ` … +${d.n_more_species} more` : '');
+            const parts = [];
+            if (d.n_landmarks)   parts.push(`<strong>${d.n_landmarks}</strong> landmark set(s)`);
+            if (d.n_boundaries)  parts.push(`<strong>${d.n_boundaries}</strong> boundary set(s)`);
+            if (d.n_images)      parts.push(`<strong>${d.n_images}</strong> image(s)`);
+            document.getElementById('ifpPreviewText').innerHTML =
+                `<strong>Source:</strong> ${d.source_project}<br>` +
+                `<strong>Matched species (${d.n_matched_specimens}):</strong> ${spText || '—'}<br>` +
+                `<strong style="color:var(--primary,#1a6bad);">Will import: ${parts.join(' + ') || '—'}</strong>`;
+            runBtn.disabled = d.n_total === 0;
+        } catch (err) {
+            document.getElementById('ifpPreviewText').innerHTML =
+                `<span style="color:red;">Preview failed: ${err}</span>`;
+        }
+    }, 300);
+}
+
+async function ifpRun() {
+    const {srcId, what, stypes, overwrite} = _ifpParams();
+    const runBtn = document.getElementById('ifpRunBtn');
+    const msgEl  = document.getElementById('ifpMsg');
+    if (!srcId) return;
+    runBtn.disabled = true;
+    msgEl.textContent = 'Importing…';
+    try {
+        const r = await fetch(`/api/project/{{ project.id }}/import_from_project`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                source_project_id: parseInt(srcId),
+                what,
+                structure_types: stypes,
+                overwrite,
+            }),
+        });
+        const d = await r.json();
+        if (d.error) {
+            msgEl.style.color = 'red';
+            msgEl.textContent = d.error;
+            runBtn.disabled = false;
+        } else {
+            msgEl.style.color = 'green';
+            msgEl.textContent = d.message;
+            setTimeout(() => { closeModal('importFromProjectModal'); location.reload(); }, 1200);
+        }
+    } catch (err) {
+        msgEl.style.color = 'red';
+        msgEl.textContent = 'Import failed: ' + err;
+        runBtn.disabled = false;
+    }
 }
 </script>
 <style>

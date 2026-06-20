@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Login - GyroMorpho{% endblock %}
+{% block title %}Login — GyroMorpho{% endblock %}
+{% block back_button %}{% endblock %}
 {% block content %}
-<div style="max-width:400px; margin: 3rem auto;">
+<div class="auth-wrap">
     <div class="card">
-        <h2>Login</h2>
+        <h2>Sign in</h2>
         <form method="POST">
             <div class="form-group">
                 <label>Username</label>
@@ -13,9 +14,9 @@
                 <label>Password</label>
                 <input type="password" name="password" required>
             </div>
-            <button type="submit" class="btn btn-primary">Login</button>
+            <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.25rem;">Sign in</button>
         </form>
-        <p style="margin-top:1rem; font-size:0.9rem;">
+        <p style="margin-top:1rem; font-size:0.875rem; text-align:center;">
             No account? <a href="{{ url_for('auth.register') }}">Register</a>
         </p>
     </div>

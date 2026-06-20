@@ -144,17 +144,77 @@ def compute_geometric_value(operation: str, parts_coords: dict,
         return part_len / total_len if total_len > 1e-10 else 0.0
 
     elif operation == 'sinuosity_with_direction' and len(part_names) >= 1:
-        # Returns signed sinuosity: positive = curves outward, negative = inward
+        # Signed sinuosity of the SuperficialRoot.
+        #   value = sinuosity × sign
+        #   sign: +1 = bows inward  (away from Point, toward anchor body)
+        #         −1 = bows outward (toward Point, away from anchor body)
+        #
+        # The boundary is a closed loop traversing both sides of the root.
+        # We split it at the tip (landmark farthest from the fork) to obtain
+        # a single profile, then compute arc/chord on that profile only.
         coords = parts_coords[part_names[0]]
-        s = sinuosity(coords)
-        # Determine direction using cross product of chord with midpoint offset
-        if len(coords) >= 3:
-            chord = coords[-1] - coords[0]
-            mid = coords[len(coords) // 2]
-            chord_mid = mid - coords[0]
-            cross = chord[0] * chord_mid[1] - chord[1] * chord_mid[0]
-            return s * np.sign(cross) if abs(cross) > 1e-10 else s
-        return s
+        if len(coords) < 3:
+            return 1.0
+
+        # --- Point centroid (defines "outward" direction) ---
+        pt_centroid = None
+        if boundary is not None:
+            pt_idx = [i for i in boundary.get('Point', [])
+                      if 0 <= i < len(all_landmarks)]
+            if pt_idx:
+                pt_centroid = all_landmarks[pt_idx].mean(axis=0)
+
+        # --- Split at tip to obtain a single-sided profile ---
+        fork_pt = coords[0]
+        dists   = np.linalg.norm(coords - fork_pt, axis=1)
+        tip_i   = int(np.argmax(dists))
+        n       = len(coords)
+
+        if 1 < tip_i < n - 1:
+            # Closed/double-sided loop: split at tip, pick inner half (closer to Point)
+            half_a = coords[:tip_i + 1]   # fork → tip via side A
+            half_b = coords[tip_i:]        # tip → end  via side B
+            if pt_centroid is not None and len(half_a) >= 2 and len(half_b) >= 2:
+                d_a = float(np.mean(np.linalg.norm(half_a - pt_centroid, axis=1)))
+                d_b = float(np.mean(np.linalg.norm(half_b - pt_centroid, axis=1)))
+                # inner side = closer to Point (Point is on inner side of anchor)
+                profile = half_a if d_a < d_b else half_b
+            else:
+                profile = half_a
+            # Orient fork → tip
+            if len(profile) > 1 and (np.linalg.norm(profile[-1] - fork_pt) <
+                                      np.linalg.norm(profile[0]  - fork_pt)):
+                profile = profile[::-1]
+        else:
+            profile = coords   # already an open single-sided path
+
+        if len(profile) < 3:
+            profile = coords
+
+        # --- Sinuosity of the single profile ---
+        s = sinuosity(profile)
+        if s > 2.0:
+            return None  # implausible value — bad split or bad landmark tracing
+
+        # --- Sign: cross product of chord with midpoint offset ---
+        chord_vec = profile[-1] - profile[0]
+        mid_arc   = profile[len(profile) // 2]
+        chord_mid = (profile[0] + profile[-1]) / 2.0
+        offset    = mid_arc - chord_mid
+        cross_arc = float(chord_vec[0] * offset[1] - chord_vec[1] * offset[0])
+
+        if abs(cross_arc) < 1e-10:
+            return s   # straight
+
+        if pt_centroid is not None:
+            to_pt    = pt_centroid - profile[0]
+            cross_pt = float(chord_vec[0] * to_pt[1] - chord_vec[1] * to_pt[0])
+            # Inward = midpoint bows toward Point (same side as Point)
+            sign = 1.0 if (np.sign(cross_arc) == np.sign(cross_pt)) else -1.0
+        else:
+            sign = float(np.sign(cross_arc))
+
+        return s * sign
 
     elif operation == 'angle_between_parts' and len(part_names) >= 2:
         # Use fork_angle (half-segment midlines) when boundary available
@@ -289,6 +349,9 @@ def assign_character(structure, character_def, project_id,
         character_def.formula, boundary=boundary
     )
 
+    if raw_value is None:
+        return {'raw_value': None, 'state': '?', 'confidence': 0.0, 'auto_assigned': False}
+
     states = character_def.states_json or []
     state, confidence = map_value_to_state(raw_value, states)
 
@@ -408,6 +471,8 @@ def compute_batch_with_procrustes(project_id, structure_type=None,
         # Group by landmark count (GPA requires same number of landmarks)
         by_count = {}
         for st in structures:
+            if not st.landmarks_json:
+                continue
             n = len(st.landmarks_json)
             by_count.setdefault(n, []).append(st)
 
@@ -637,11 +702,18 @@ def _anchor_characters():
             'structure_type': 'anchor', 'computation_type': 'geometric',
             'parts_involved': ['Point', 'Shaft'],
             'geometric_operation': 'point_curvature',
-            'formula': 'deviation angle between middle shaft midline and point midline (0°=straight, 90°=right-angle, >90°=recurved)',
+            'formula': ('acute exterior angle between middle-third shaft midline and point midline '
+                        '(base midpoint to tip); 0°=straight, 90°=right-angle bend'),
             'states_json': [
-                {'code': '0', 'name': 'slightly curved', 'description': 'Point departs only slightly from shaft axis; junction nearly straight (<45°)', 'threshold_min': None, 'threshold_max': 45},
-                {'code': '1', 'name': 'moderately curved', 'description': 'Distinct bend at point–shaft junction; typical hook shape (45°–90°)', 'threshold_min': 45, 'threshold_max': 90},
-                {'code': '2', 'name': 'strongly curved', 'description': 'Sharp bend, point approaches or recurves past perpendicular (>90°)', 'threshold_min': 90, 'threshold_max': None},
+                {'code': '0', 'name': 'slightly curved',
+                 'description': 'Point departs only slightly from shaft axis; acute exterior angle < 30°',
+                 'threshold_min': None, 'threshold_max': 30},
+                {'code': '1', 'name': 'moderately curved',
+                 'description': 'Distinct bend at point–shaft junction; typical hook shape (30°–60°)',
+                 'threshold_min': 30, 'threshold_max': 60},
+                {'code': '2', 'name': 'strongly curved',
+                 'description': 'Sharp bend approaching a right angle; acute exterior angle > 60°',
+                 'threshold_min': 60, 'threshold_max': None},
             ],
             'dependencies_json': [],
         },
@@ -688,11 +760,19 @@ def _anchor_characters():
             'structure_type': 'anchor', 'computation_type': 'geometric',
             'parts_involved': ['SuperficialRoot'],
             'geometric_operation': 'sinuosity_with_direction',
-            'formula': 'sinuosity with inward/outward direction of SuperficialRoot',
+            'formula': ('arc_length / chord_length × sign; '
+                        'sign = +1 when midpoint bows toward Point (inward), '
+                        '−1 when bowing away from Point (outward)'),
             'states_json': [
-                {'code': '0', 'name': 'straight', 'description': 'Root outline straight', 'threshold_min': -1.03, 'threshold_max': 1.03},
-                {'code': '1', 'name': 'curved inward', 'description': 'Root curves medially', 'threshold_min': None, 'threshold_max': -1.03},
-                {'code': '2', 'name': 'curved outward', 'description': 'Root curves laterally', 'threshold_min': 1.03, 'threshold_max': None},
+                {'code': '0', 'name': 'straight',
+                 'description': 'Inner edge nearly follows basal direction; no clear bow',
+                 'threshold_min': -1.03, 'threshold_max': 1.03},
+                {'code': '1', 'name': 'curved outward',
+                 'description': 'Inner edge bows away from the Point (lateral/outward)',
+                 'threshold_min': None, 'threshold_max': -1.03},
+                {'code': '2', 'name': 'curved inward',
+                 'description': 'Inner edge bows toward the Point (medial/inward)',
+                 'threshold_min': 1.03, 'threshold_max': None},
             ],
             'dependencies_json': [],
         },

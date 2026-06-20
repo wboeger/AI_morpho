@@ -1,0 +1,448 @@
+{% extends "base.html" %}
+{% block title %}Coverage Report — {{ project.name }}{% endblock %}
+{% block content %}
+
+<div class="page-header">
+    <div>
+        <h1>Coverage Report</h1>
+        <p style="margin-top:0.1rem; font-size:0.875rem; color:var(--gray-500);">{{ project.name }}</p>
+    </div>
+    <div style="display:flex; gap:0.5rem; align-items:center;">
+        <a href="{{ url_for('project.coverage_export', project_id=project.id) }}" class="btn btn-outline btn-sm">↓ Export CSV</a>
+        <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="btn btn-outline btn-sm">← Back to Specimens</a>
+    </div>
+</div>
+
+<!-- Legend -->
+<div style="display:flex; gap:1.5rem; align-items:center; flex-wrap:wrap; margin-bottom:1rem; font-size:0.82rem; color:var(--gray-600);">
+    <span style="font-weight:600;">Legend:</span>
+    <span><span class="cov-dot cov-ok">●</span> Present / Confirmed</span>
+    <span><span class="cov-dot cov-warn">◑</span> Present, unconfirmed</span>
+    <span><span class="cov-dot cov-miss">○</span> Missing</span>
+    <span><span class="cov-dot cov-na">—</span> No structure</span>
+</div>
+
+<!-- Summary strip (injected by JS) -->
+<div id="summaryStrip" class="stats-row" style="margin-bottom:1rem;"></div>
+
+<!-- Filter bar -->
+<div class="card" style="padding:0.75rem 1rem; margin-bottom:0.75rem;">
+    <div style="display:flex; gap:1rem; flex-wrap:wrap; align-items:center; font-size:0.83rem;">
+        <span style="font-weight:600; color:var(--gray-600);">Show only:</span>
+        <label class="cov-filter-label"><input type="checkbox" class="filter-check" data-filter="missing_img"> Missing specimen image</label>
+        <label class="cov-filter-label"><input type="checkbox" class="filter-check" data-filter="missing_lm"> Missing landmarks</label>
+        <label class="cov-filter-label"><input type="checkbox" class="filter-check" data-filter="unconfirmed_lm"> Unconfirmed landmarks</label>
+        <label class="cov-filter-label"><input type="checkbox" class="filter-check" data-filter="missing_bnd"> Missing boundaries</label>
+        <label class="cov-filter-label"><input type="checkbox" class="filter-check" data-filter="unconfirmed_bnd"> Unconfirmed boundaries</label>
+        <label class="cov-filter-label"><input type="checkbox" class="filter-check" data-filter="missing_dna"> No DNA</label>
+        <span style="margin-left:auto; color:var(--gray-400); font-size:0.8rem;" id="rowCount"></span>
+    </div>
+</div>
+
+<!-- Structure-type column toggles -->
+<div style="display:flex; gap:0.4rem; flex-wrap:wrap; margin-bottom:0.5rem; font-size:0.8rem;" id="structureToggles"></div>
+
+<!-- Coverage table -->
+<div class="card" style="padding:0; overflow:hidden;">
+    <div style="overflow:auto; max-height:72vh;">
+        <table id="coverageTable" class="cov-table">
+            <thead id="coverageHead"></thead>
+            <tbody id="coverageBody"></tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+/* ── Coverage page styles ─────────────────────────────── */
+.cov-dot {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-right: 0.25rem;
+}
+.cov-ok   { color: var(--success); }
+.cov-warn { color: var(--warning); }
+.cov-miss { color: var(--danger); }
+.cov-na   { color: var(--gray-400); }
+
+.cov-filter-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--radius-sm);
+    transition: background var(--ease);
+}
+.cov-filter-label:hover { background: var(--gray-100); }
+.cov-filter-label input { cursor: pointer; }
+
+/* Table */
+.cov-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.82rem;
+}
+.cov-table th {
+    background: var(--gray-50);
+    color: var(--gray-600);
+    font-weight: 600;
+    font-size: 0.75rem;
+    letter-spacing: 0.03em;
+    padding: 0.45rem 0.55rem;
+    border-bottom: 2px solid var(--border);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    text-transform: uppercase;
+}
+.cov-table th.st-group-header {
+    background: var(--primary-xlight);
+    color: var(--primary);
+    border-bottom: 1px solid var(--border);
+    text-align: center;
+    font-size: 0.72rem;
+    letter-spacing: 0.05em;
+    border-left: 2px solid #c7dff0;
+}
+.cov-table th.st-sub {
+    background: var(--gray-50);
+    font-size: 0.7rem;
+    color: var(--gray-500);
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    border-left: 1px solid var(--border);
+}
+.cov-table th.st-sub:first-of-type { border-left: 2px solid #c7dff0; }
+.cov-table td {
+    padding: 0.35rem 0.55rem;
+    border-bottom: 1px solid var(--gray-100);
+    vertical-align: middle;
+    white-space: nowrap;
+}
+.cov-table td.species-col {
+    font-style: italic;
+    font-weight: 500;
+    color: var(--gray-800);
+    position: sticky;
+    left: 0;
+    background: var(--surface);
+    z-index: 5;
+    min-width: 200px;
+    border-right: 1px solid var(--border);
+}
+.cov-table td.label-col {
+    color: var(--gray-500);
+    font-size: 0.8rem;
+}
+.cov-table tbody tr:hover td { background: var(--gray-50); }
+.cov-table tbody tr:hover td.species-col { background: var(--gray-50); }
+.cov-table tbody tr.hidden-row { display: none; }
+
+/* Individual coverage cells */
+.cov-cell {
+    text-align: center;
+    border-left: 1px solid var(--border);
+    width: 40px;
+    font-size: 0.95rem;
+}
+.cov-cell.st-first { border-left: 2px solid #c7dff0; }
+.cov-cell a { text-decoration: none; }
+.cov-cell a:hover { opacity: 0.7; }
+
+/* Structure column toggle buttons */
+.st-toggle {
+    padding: 0.22rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.77rem;
+    font-weight: 600;
+    border: 1.5px solid var(--border);
+    background: var(--surface);
+    color: var(--gray-600);
+    cursor: pointer;
+    transition: all var(--ease);
+}
+.st-toggle.active {
+    background: var(--primary-xlight);
+    border-color: var(--primary-light);
+    color: var(--primary);
+}
+.st-toggle:hover { border-color: var(--primary-light); }
+
+/* DNA marker cell */
+.dna-present { color: var(--success); font-weight: 700; font-size: 0.78rem; }
+.dna-missing { color: var(--gray-300); font-size: 0.78rem; }
+</style>
+
+<script>
+const PROJECT_ID = {{ project.id }};
+const STRUCT_LABELS = {
+    hook: 'Hook', anchor: 'Anchor',
+    superficial_bar: 'Sup. Bar', deep_bar: 'Deep Bar', mco: 'MCO'
+};
+const SUB_COLS = [
+    { key: 'image',        label: 'Img',  title: 'Structure image' },
+    { key: 'lm',           label: 'LM',   title: 'Landmarks' },
+    { key: 'bnd',          label: 'Bnd',  title: 'Boundaries' },
+];
+
+let _data = null;
+let _visibleStructures = new Set();
+let _activeFilters = new Set();
+
+// ── Boot ────────────────────────────────────────────────
+fetch(`/api/project/${PROJECT_ID}/coverage`)
+    .then(r => r.json())
+    .then(data => {
+        _data = data;
+        _visibleStructures = new Set(data.structure_types);
+        buildSummary(data);
+        buildToggles(data.structure_types);
+        buildTable(data);
+        updateRowCount();
+    });
+
+// ── Summary strip ───────────────────────────────────────
+function buildSummary(data) {
+    const strip = document.getElementById('summaryStrip');
+    const total = data.summary.total;
+    if (!total) { strip.innerHTML = '<p style="color:var(--gray-500);">No specimens found.</p>'; return; }
+
+    const pct = (n) => total ? Math.round(n / total * 100) : 0;
+
+    let cards = `
+        <div class="stat-card">
+            <div class="value">${total}</div>
+            <div class="label">Specimens</div>
+        </div>
+        <div class="stat-card">
+            <div class="value">${pct(data.summary.specimen_image)}%</div>
+            <div class="label">Spec. Images</div>
+        </div>`;
+
+    for (const m of data.markers) {
+        cards += `<div class="stat-card">
+            <div class="value">${pct(data.summary.dna[m])}%</div>
+            <div class="label">DNA ${m}</div>
+        </div>`;
+    }
+
+    for (const st of data.structure_types) {
+        const s = data.summary.structures[st];
+        const lmPct = s.exists ? Math.round(s.lm_confirmed / s.exists * 100) : 0;
+        cards += `<div class="stat-card" style="border-top-color:var(--accent)">
+            <div class="value" style="color:var(--accent)">${lmPct}%</div>
+            <div class="label">${STRUCT_LABELS[st]} LM</div>
+        </div>`;
+    }
+
+    strip.innerHTML = cards;
+}
+
+// ── Structure toggles ───────────────────────────────────
+function buildToggles(types) {
+    const el = document.getElementById('structureToggles');
+    el.innerHTML = '<span style="color:var(--gray-500); font-size:0.8rem; align-self:center; margin-right:0.25rem;">Columns:</span>';
+    for (const st of types) {
+        const btn = document.createElement('button');
+        btn.className = 'st-toggle active';
+        btn.textContent = STRUCT_LABELS[st];
+        btn.dataset.st = st;
+        btn.onclick = () => {
+            if (_visibleStructures.has(st)) {
+                _visibleStructures.delete(st);
+                btn.classList.remove('active');
+            } else {
+                _visibleStructures.add(st);
+                btn.classList.add('active');
+            }
+            updateColumnVisibility();
+        };
+        el.appendChild(btn);
+    }
+}
+
+// ── Table construction ──────────────────────────────────
+function buildTable(data) {
+    const thead = document.getElementById('coverageHead');
+    const tbody = document.getElementById('coverageBody');
+
+    // === Header row 1: group headers ===
+    let r1 = '<tr>';
+    r1 += '<th rowspan="2" style="position:sticky;left:0;z-index:20;background:var(--gray-50);">Species</th>';
+    r1 += '<th rowspan="2">ID</th>';
+    r1 += '<th rowspan="2" title="Specimen-level image">Spec.<br>Img</th>';
+    for (const m of data.markers) {
+        r1 += `<th rowspan="2" title="DNA marker ${m}">${m}</th>`;
+    }
+    for (const st of data.structure_types) {
+        r1 += `<th colspan="3" class="st-group-header" data-st="${st}">${STRUCT_LABELS[st]}</th>`;
+    }
+    r1 += '</tr>';
+
+    // === Header row 2: sub-column labels ===
+    let r2 = '<tr>';
+    for (const st of data.structure_types) {
+        for (let i = 0; i < SUB_COLS.length; i++) {
+            const sc = SUB_COLS[i];
+            const cls = i === 0 ? 'st-sub st-first' : 'st-sub';
+            r2 += `<th class="${cls}" data-st="${st}" title="${sc.title}">${sc.label}</th>`;
+        }
+    }
+    r2 += '</tr>';
+    thead.innerHTML = r1 + r2;
+
+    // === Body ===
+    let html = '';
+    for (const row of data.rows) {
+        const missingImg  = !row.specimen_image;
+        const noDna       = data.markers.length > 0 && Object.keys(row.dna).length === 0;
+        let   missingLm   = false, unconfLm = false, missingBnd = false, unconfBnd = false;
+
+        for (const st of data.structure_types) {
+            const s = row.structures[st];
+            if (!s) continue;
+            if (!s.landmarks)    missingLm  = true;
+            if (s.landmarks && !s.lm_confirmed)  unconfLm  = true;
+            if (!s.boundaries)   missingBnd = true;
+            if (s.boundaries && !s.bnd_confirmed) unconfBnd = true;
+        }
+
+        html += `<tr data-spec="${row.specimen_id}"
+                     data-missing-img="${missingImg}"
+                     data-missing-lm="${missingLm}"
+                     data-unconf-lm="${unconfLm}"
+                     data-missing-bnd="${missingBnd}"
+                     data-unconf-bnd="${unconfBnd}"
+                     data-no-dna="${noDna}">`;
+
+        html += `<td class="species-col">${escHtml(row.species)}</td>`;
+        html += `<td class="label-col">${escHtml(row.label)}</td>`;
+
+        // Specimen image
+        html += `<td class="cov-cell" style="text-align:center;">${row.specimen_image
+            ? '<span class="cov-ok" title="Image present">●</span>'
+            : '<span class="cov-miss" title="No specimen image">○</span>'}</td>`;
+
+        // DNA markers
+        for (const m of data.markers) {
+            const val = row.dna[m];
+            html += `<td class="cov-cell" style="text-align:center;">`;
+            if (val) {
+                html += `<span class="dna-present" title="${escHtml(val)}">${escHtml(val)}</span>`;
+            } else {
+                html += `<span class="dna-missing" title="No ${m} sequence">—</span>`;
+            }
+            html += `</td>`;
+        }
+
+        // Structures
+        for (const st of data.structure_types) {
+            const s = row.structures[st];
+            if (!s) {
+                // structure doesn't exist
+                for (let i = 0; i < SUB_COLS.length; i++) {
+                    html += `<td class="cov-cell${i===0?' st-first':''}" data-st="${st}" style="text-align:center; color:var(--gray-300);">—</td>`;
+                }
+            } else {
+                // image
+                html += `<td class="cov-cell st-first" data-st="${st}" style="text-align:center;">`;
+                if (s.image) {
+                    html += `<span class="cov-ok" title="Image present">●</span>`;
+                } else {
+                    html += `<a href="/structure/${s.structure_id}/landmarks" title="No image — go to landmark editor">
+                                <span class="cov-miss">○</span></a>`;
+                }
+                html += `</td>`;
+
+                // landmarks
+                html += `<td class="cov-cell" data-st="${st}" style="text-align:center;">`;
+                if (!s.landmarks) {
+                    html += `<a href="/structure/${s.structure_id}/landmarks" title="No landmarks">
+                                <span class="cov-miss">○</span></a>`;
+                } else if (!s.lm_confirmed) {
+                    html += `<a href="/structure/${s.structure_id}/landmarks" title="Landmarks present but not confirmed">
+                                <span class="cov-warn">◑</span></a>`;
+                } else {
+                    html += `<span class="cov-ok" title="Landmarks confirmed">●</span>`;
+                }
+                html += `</td>`;
+
+                // boundaries
+                html += `<td class="cov-cell" data-st="${st}" style="text-align:center;">`;
+                if (!s.boundaries) {
+                    html += `<a href="/structure/${s.structure_id}/boundaries" title="No boundaries assigned">
+                                <span class="cov-miss">○</span></a>`;
+                } else if (!s.bnd_confirmed) {
+                    html += `<a href="/structure/${s.structure_id}/boundaries" title="Boundaries present but not confirmed">
+                                <span class="cov-warn">◑</span></a>`;
+                } else {
+                    html += `<span class="cov-ok" title="Boundaries confirmed">●</span>`;
+                }
+                html += `</td>`;
+            }
+        }
+
+        html += `</tr>`;
+    }
+    tbody.innerHTML = html;
+}
+
+// ── Filters ─────────────────────────────────────────────
+document.querySelectorAll('.filter-check').forEach(cb => {
+    cb.addEventListener('change', () => {
+        if (cb.checked) _activeFilters.add(cb.dataset.filter);
+        else            _activeFilters.delete(cb.dataset.filter);
+        applyFilters();
+    });
+});
+
+function applyFilters() {
+    if (!_data) return;
+    const rows = document.querySelectorAll('#coverageBody tr');
+    let visible = 0;
+    rows.forEach(tr => {
+        let show = true;
+        if (_activeFilters.has('missing_img')    && tr.dataset.missingImg    !== 'true') show = false;
+        if (_activeFilters.has('missing_lm')     && tr.dataset.missingLm     !== 'true') show = false;
+        if (_activeFilters.has('unconfirmed_lm') && tr.dataset.unconfLm      !== 'true') show = false;
+        if (_activeFilters.has('missing_bnd')    && tr.dataset.missingBnd    !== 'true') show = false;
+        if (_activeFilters.has('unconfirmed_bnd')&& tr.dataset.unconfBnd     !== 'true') show = false;
+        if (_activeFilters.has('missing_dna')    && tr.dataset.noDna         !== 'true') show = false;
+        tr.classList.toggle('hidden-row', !show);
+        if (show) visible++;
+    });
+    updateRowCount(visible);
+}
+
+function updateRowCount(n) {
+    const total = _data ? _data.rows.length : 0;
+    const shown = n !== undefined ? n : total;
+    const el = document.getElementById('rowCount');
+    if (el) el.textContent = shown === total
+        ? `${total} specimens`
+        : `${shown} of ${total} shown`;
+}
+
+// ── Column visibility ────────────────────────────────────
+function updateColumnVisibility() {
+    if (!_data) return;
+    for (const st of _data.structure_types) {
+        const show = _visibleStructures.has(st);
+        document.querySelectorAll(`[data-st="${st}"]`).forEach(el => {
+            el.style.display = show ? '' : 'none';
+        });
+    }
+}
+
+function escHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+</script>
+{% endblock %}

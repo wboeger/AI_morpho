@@ -56,6 +56,7 @@ class Specimen(db.Model):
     specimen_id_label = db.Column(db.String(200))
     image_path = db.Column(db.String(500))
     notes = db.Column(db.Text)
+    synonyms = db.Column(db.JSON, default=list)  # list of synonym strings
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
@@ -79,6 +80,7 @@ class Structure(db.Model):
     specimen_id = db.Column(db.Integer, db.ForeignKey('specimens.id'), nullable=False)
     structure_type = db.Column(db.String(30), nullable=False)  # hook, anchor, superficial_bar, deep_bar, mco
     image_path = db.Column(db.String(500))
+    no_image = db.Column(db.Boolean, default=False)  # explicitly marked as no image available
     landmarks_json = db.Column(db.JSON)       # [[x,y], [x,y], ...]
     landmarks_confirmed = db.Column(db.Boolean, default=False)
     boundary_json = db.Column(db.JSON)        # {"Part": [indices], ...}
@@ -204,12 +206,15 @@ class PhylogenyJob(db.Model):
     completed_at = db.Column(db.DateTime)
     last_checked = db.Column(db.DateTime)
 
-    # CIPRES credentials stored for polling
+    # Galaxy (usegalaxy.eu) credential
+    galaxy_api_key = db.Column(db.String(500))
+
+    # Legacy CIPRES fields — kept so old job records render without errors
     cipres_user = db.Column(db.String(100))
     cipres_password_enc = db.Column(db.String(500))
     cipres_app_key = db.Column(db.String(200))
 
-    # CIPRES job tracking
+    # Job tracking (Galaxy: job_handle = Galaxy job ID, job_url = Galaxy history ID)
     job_url = db.Column(db.String(500))
     job_handle = db.Column(db.String(200))
     results_url = db.Column(db.String(500))
@@ -251,6 +256,13 @@ class PhylogenyJob(db.Model):
     raw_fasta_path = db.Column(db.String(500))
     aligned_fasta_path = db.Column(db.String(500))
     trimmed_fasta_path = db.Column(db.String(500))
+
+    # 'raxml' (default) or 'mrbayes'
+    phylo_method = db.Column(db.String(20), default='raxml')
+
+    # Model selection (ModelTest-NG)
+    best_fit_model = db.Column(db.String(100))   # e.g. "GTR+I+G4"
+    mrbayes_lset   = db.Column(db.String(300))   # e.g. "lset nst=6 rates=invgamma"
 
     project = db.relationship('Project', backref='phylogeny_jobs')
     submitter = db.relationship('User', foreign_keys=[submitted_by])

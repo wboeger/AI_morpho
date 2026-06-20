@@ -6,6 +6,82 @@ import json
 import glob
 import shutil
 import numpy as np
+
+# ---------------------------------------------------------------------------
+# Upload-folder helpers
+# ---------------------------------------------------------------------------
+_PROJ_LABEL = {1: '18S', 2: 'ITS'}
+
+def _upload_subdir(project_id: int, species_name: str) -> str:
+    """Return '18S', 'ITS', or 'Common' for a specimen based on whether the
+    species appears in more than one project."""
+    from app.models import Specimen as _Sp
+    count = (db.session.query(_Sp.project_id)
+             .filter(_Sp.species_name == species_name)
+             .distinct()
+             .count())
+    if count > 1:
+        return 'Common'
+    return _PROJ_LABEL.get(project_id, str(project_id))
+
+
+def _structure_subdir(structure_type: str) -> str:
+    """Map a structure type to its consolidated image subdirectory."""
+    if structure_type == 'mco':
+        return 'MCO'
+    if structure_type == 'hook':
+        return 'hook'
+    if structure_type == 'anchor':
+        return 'haptor'
+    if structure_type in ('superficial_bar', 'deep_bar'):
+        return 'bar'
+    return '_unsorted'
+
+
+def _store_structure_bytes(raw: bytes, filename: str, structure_type: str) -> str:
+    """Save image bytes into data/uploads/structures/<type>/, deduplicated by
+    content. If an identical image already exists anywhere under structures/,
+    reuse it instead of writing a second copy. Returns the path relative to
+    UPLOAD_FOLDER."""
+    import os as _os
+    import re as _re
+    import hashlib as _hashlib
+    from werkzeug.utils import secure_filename as _secure
+
+    root = current_app.config['UPLOAD_FOLDER']
+    base = _os.path.join(root, 'structures')
+    digest = _hashlib.md5(raw).hexdigest()
+
+    # Dedup: reuse an existing file with identical content.
+    for r, _dirs, files in _os.walk(base):
+        for fn in files:
+            fp = _os.path.join(r, fn)
+            try:
+                with open(fp, 'rb') as fh:
+                    if _hashlib.md5(fh.read()).hexdigest() == digest:
+                        return _os.path.relpath(fp, root)
+            except OSError:
+                continue
+
+    sub = _structure_subdir(structure_type)
+    dest_dir = _os.path.join(base, sub)
+    _os.makedirs(dest_dir, exist_ok=True)
+    name = _re.sub(r'^\d+_', '', _secure(filename) or 'image.png')
+    stem, ext = _os.path.splitext(name)
+    cand, n = name, 1
+    while _os.path.exists(_os.path.join(dest_dir, cand)):
+        n += 1
+        cand = f'{stem}_{n}{ext}'
+    with open(_os.path.join(dest_dir, cand), 'wb') as out:
+        out.write(raw)
+    return _os.path.relpath(_os.path.join(dest_dir, cand), root)
+
+
+def _save_structure_image(file_storage, structure_type: str) -> str:
+    """Persist an uploaded structure image (FileStorage) under the consolidated
+    scheme with content deduplication."""
+    return _store_structure_bytes(file_storage.read(), file_storage.filename,
+                                  structure_type)
 from flask import Blueprint, render_template, redirect, url_for, flash, request, current_app, jsonify
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
@@ -95,9 +171,13 @@ def view_project(project_id):
         'boundaries_done': boundaries_done,
     }
 
+    all_structure_types = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+    structure_types = ['mco'] if 'MCO' in project.name.upper() else all_structure_types
+
     return render_template('project/view_project.html',
                            project=project, specimens=specimens,
-                           members=members, stats=stats, dna_only=dna_only)
+                           members=members, stats=stats, dna_only=dna_only,
+                           structure_types=structure_types)
 
 
 @project_bp.route('/project/<int:project_id>/specimen/new', methods=['GET', 'POST'])
@@ -120,7 +200,7 @@ def add_specimen(project_id):
                 if f.filename:
                     filename = secure_filename(f.filename)
                     upload_dir = os.path.join(current_app.config['UPLOAD_FOLDER'],
-                                              str(project_id))
+                                              'structures', '_specimen')
                     os.makedirs(upload_dir, exist_ok=True)
                     filepath = os.path.join(upload_dir, filename)
                     f.save(filepath)
@@ -150,6 +230,38 @@ def add_specimen(project_id):
             return redirect(url_for('project.view_project', project_id=project_id))
 
     return render_template('project/add_specimen.html', project=project)
+
+
+@project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/synonyms', methods=['POST'])
+@login_required
+def add_synonym(project_id, specimen_id):
+    """Add a synonym to a specimen."""
+    _get_project_or_404(project_id)
+    specimen = Specimen.query.get_or_404(specimen_id)
+    syn = ((request.get_json() or {}).get('synonym') or '').strip()
+    if not syn:
+        return jsonify({'error': 'Synonym required'}), 400
+    syns = list(specimen.synonyms or [])
+    if syn in syns:
+        return jsonify({'error': 'Already exists'}), 400
+    syns.append(syn)
+    specimen.synonyms = syns
+    db.session.commit()
+    return jsonify({'status': 'ok', 'synonyms': syns})
+
+
+@project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/synonyms/remove',
+                  methods=['POST'])
+@login_required
+def remove_synonym(project_id, specimen_id):
+    """Remove a synonym from a specimen."""
+    _get_project_or_404(project_id)
+    specimen = Specimen.query.get_or_404(specimen_id)
+    syn = ((request.get_json() or {}).get('synonym') or '').strip()
+    syns = [s for s in (specimen.synonyms or []) if s != syn]
+    specimen.synonyms = syns
+    db.session.commit()
+    return jsonify({'status': 'ok', 'synonyms': syns})
 
 
 @project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/delete', methods=['DELETE'])
@@ -260,6 +372,47 @@ def delete_structure(structure_id):
     return jsonify({'status': 'ok', 'structure_type': stype})
 
 
+@project_bp.route('/api/structure/<int:structure_id>/toggle_no_image', methods=['POST'])
+@login_required
+def toggle_no_image(structure_id):
+    """Toggle the 'no image available' flag on a structure."""
+    structure = Structure.query.get_or_404(structure_id)
+    specimen = Specimen.query.get_or_404(structure.specimen_id)
+    _get_project_or_404(specimen.project_id)
+    structure.no_image = not bool(structure.no_image)
+    state = 'marked' if structure.no_image else 'cleared'
+    _log(specimen.project_id,
+         f'{state} no-image for {structure.structure_type} of {specimen.species_name}')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'no_image': structure.no_image})
+
+
+@project_bp.route('/api/specimen/<int:specimen_id>/mark_no_image', methods=['POST'])
+@login_required
+def mark_no_image_new(specimen_id):
+    """Create a minimal structure record marked as no-image-available.
+
+    Used when no structure record exists yet for this type.
+    """
+    specimen = Specimen.query.get_or_404(specimen_id)
+    project = _get_project_or_404(specimen.project_id)
+    structure_type = (request.get_json() or {}).get('structure_type', '')
+    valid = ('hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco')
+    if structure_type not in valid:
+        return jsonify({'error': 'Invalid structure type'}), 400
+    existing = Structure.query.filter_by(
+        specimen_id=specimen_id, structure_type=structure_type).first()
+    if existing:
+        existing.no_image = True
+        st = existing
+    else:
+        st = Structure(specimen_id=specimen_id, structure_type=structure_type, no_image=True)
+        db.session.add(st)
+    _log(project.id, f'Marked no-image for {structure_type} of {specimen.species_name}')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'structure_id': st.id, 'no_image': True})
+
+
 @project_bp.route('/specimen/<int:specimen_id>/structure/new', methods=['GET', 'POST'])
 @login_required
 def add_structure(specimen_id):
@@ -276,13 +429,7 @@ def add_structure(specimen_id):
             if 'image' in request.files:
                 f = request.files['image']
                 if f.filename:
-                    filename = secure_filename(f.filename)
-                    upload_dir = os.path.join(current_app.config['UPLOAD_FOLDER'],
-                                              str(specimen.project_id), 'structures')
-                    os.makedirs(upload_dir, exist_ok=True)
-                    filepath = os.path.join(upload_dir, filename)
-                    f.save(filepath)
-                    image_path = os.path.relpath(filepath, current_app.config['UPLOAD_FOLDER'])
+                    image_path = _save_structure_image(f, structure_type)
 
             from config import Config
             import numpy as np
@@ -319,8 +466,21 @@ def add_structure(specimen_id):
             db.session.add(structure)
             _log(specimen.project_id, f'Added {structure_type} for {specimen.species_name}')
             db.session.commit()
+
+            if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+                lm_msg = f' with {landmark_count} landmarks' if landmarks_json else ''
+                return jsonify({
+                    'status': 'ok',
+                    'message': f'{structure_type.replace("_", " ").title()} added{lm_msg}.',
+                    'structure_id': structure.id,
+                    'landmark_count': landmark_count if landmarks_json else 0,
+                })
+
             lm_msg = f' with {landmark_count} landmarks' if landmarks_json else ''
             flash(f'{structure_type.replace("_", " ").title()} added{lm_msg}.', 'success')
+            redirect_to = request.form.get('redirect_to', '').strip()
+            if redirect_to and redirect_to.startswith('/'):
+                return redirect(redirect_to)
             return redirect(url_for('project.view_project', project_id=specimen.project_id))
 
     return render_template('project/add_structure.html', specimen=specimen, project=project)
@@ -338,16 +498,17 @@ def upload_structure_image(structure_id):
         return redirect(url_for('project.view_project', project_id=specimen.project_id))
 
     f = request.files['image']
-    filename = secure_filename(f.filename)
-    upload_dir = os.path.join(current_app.config['UPLOAD_FOLDER'],
-                              str(specimen.project_id), 'structures')
-    os.makedirs(upload_dir, exist_ok=True)
-    filepath = os.path.join(upload_dir, filename)
-    f.save(filepath)
-    structure.image_path = os.path.relpath(filepath, current_app.config['UPLOAD_FOLDER'])
+    structure.image_path = _save_structure_image(f, structure.structure_type)
     _log(specimen.project_id, f'Uploaded image for {specimen.species_name} {structure.structure_type}')
     db.session.commit()
+
+    if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+        return jsonify({'status': 'ok', 'image_url': '/uploads/' + structure.image_path})
+
     flash(f'Image uploaded for {structure.structure_type.replace("_", " ")}.', 'success')
+    redirect_to = request.form.get('redirect_to', '').strip()
+    if redirect_to and redirect_to.startswith('/'):
+        return redirect(redirect_to)
     return redirect(url_for('project.view_project', project_id=specimen.project_id))
 
 
@@ -829,6 +990,23 @@ def scan_json(project_id):
     })
 
 
+def _specimen_epithet_map(project_id):
+    """Return {epithet_key: Specimen} for all specimens in the project."""
+    result = {}
+    for s in Specimen.query.filter_by(project_id=project_id).all():
+        k = _epithet_key(s.species_name)
+        if k and k not in result:
+            result[k] = s
+    return result
+
+
+def _species_from_stem(stem):
+    """Parse a human-readable species name from a file stem using _parse_species_from_filename,
+    falling back to _epithet_key on the raw stem."""
+    parsed, _ = _parse_species_from_filename(stem)
+    return parsed or stem.replace('_', ' ').strip()
+
+
 @project_bp.route('/project/<int:project_id>/import_images', methods=['POST'])
 @login_required
 def import_images(project_id):
@@ -841,50 +1019,64 @@ def import_images(project_id):
         flash('Invalid folder path.', 'danger')
         return redirect(url_for('project.import_folders', project_id=project_id))
 
-    upload_dir = current_app.config['UPLOAD_FOLDER']
-    os.makedirs(upload_dir, exist_ok=True)
+    upload_root = current_app.config['UPLOAD_FOLDER']
 
     IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff'}
     imported = 0
     skipped = 0
 
-    with db.session.no_autoflush:
-        for fname in os.listdir(folder_path):
-            ext = os.path.splitext(fname)[1].lower()
-            if ext not in IMAGE_EXTS:
-                continue
+    epithet_map = _specimen_epithet_map(project_id)
 
-            species_name = os.path.splitext(fname)[0].replace('_', ' ').strip()
+    # ── Pass 1: read-only — identify (specimen, existing_structure, src_path, fname) ──
+    pending = []
+    for fname in sorted(os.listdir(folder_path)):
+        if os.path.splitext(fname)[1].lower() not in IMAGE_EXTS:
+            continue
+        parsed = _species_from_stem(os.path.splitext(fname)[0])
+        specimen = epithet_map.get(_epithet_key(parsed))
+        if not specimen:
+            skipped += 1
+            continue
+        structure = Structure.query.filter_by(
+            specimen_id=specimen.id, structure_type=structure_type
+        ).first()
+        pending.append((specimen, structure, os.path.join(folder_path, fname), fname))
 
-            # Find matching specimen
-            specimen = Specimen.query.filter_by(
-                project_id=project_id, species_name=species_name
-            ).first()
-            if not specimen:
-                skipped += 1
-                continue
+    # ── Pass 2: create any missing structures in one short commit to get IDs ──
+    new_structs = {}   # specimen_id → new Structure
+    for specimen, structure, _src, _fname in pending:
+        if structure is None and specimen.id not in new_structs:
+            st = Structure(specimen_id=specimen.id, structure_type=structure_type)
+            db.session.add(st)
+            new_structs[specimen.id] = st
+    if new_structs:
+        db.session.commit()   # short write — releases the lock immediately
 
-            # Find or create structure of this type
-            structure = Structure.query.filter_by(
-                specimen_id=specimen.id, structure_type=structure_type
-            ).first()
-            if not structure:
-                structure = Structure(
-                    specimen_id=specimen.id,
-                    structure_type=structure_type,
-                )
-                db.session.add(structure)
-                db.session.flush()
+    # ── Pass 3: copy files (pure I/O, no DB transaction held) ──
+    file_results = []   # [(structure, rel_path)]
+    for specimen, structure, src_abs, fname in pending:
+        if structure is None:
+            structure = new_structs.get(specimen.id)
+        if structure is None:
+            skipped += 1
+            continue
+        try:
+            with open(src_abs, 'rb') as _fh:
+                rel_path = _store_structure_bytes(_fh.read(), fname,
+                                                  structure.structure_type)
+            file_results.append((structure, rel_path))
+        except OSError:
+            skipped += 1
 
-            # Copy image to uploads
-            dest_name = f'{structure.id}_{secure_filename(fname)}'
-            dest_path = os.path.join(upload_dir, dest_name)
-            shutil.copy2(os.path.join(folder_path, fname), dest_path)
-            structure.image_path = dest_name
-            imported += 1
+    # ── Pass 4: update image_path for all copied files in one short commit ──
+    for structure, rel_path in file_results:
+        structure.image_path = rel_path
+        imported += 1
+    if file_results:
+        db.session.commit()
 
-    db.session.commit()
     _log(project_id, f'Imported {imported} images from {folder_path}')
+    db.session.commit()
     flash(f'Imported {imported} images ({skipped} unmatched).', 'success')
     return redirect(url_for('project.view_project', project_id=project_id))
 
@@ -901,18 +1093,19 @@ def scan_images(project_id):
         return jsonify({'error': 'Folder not found'})
 
     IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tif', '.tiff'}
+    epithet_map = _specimen_epithet_map(project_id)
+
     files = []
     for fname in sorted(os.listdir(folder_path)):
         ext = os.path.splitext(fname)[1].lower()
         if ext not in IMAGE_EXTS:
             continue
-        species_name = os.path.splitext(fname)[0].replace('_', ' ').strip()
-        matched = Specimen.query.filter_by(
-            project_id=project_id, species_name=species_name
-        ).first() is not None
+        stem = os.path.splitext(fname)[0]
+        parsed = _species_from_stem(stem)
+        matched = _epithet_key(parsed) in epithet_map
         files.append({
             'filename': fname,
-            'species': species_name,
+            'species': parsed,   # show the parsed name, not the raw stem
             'matched': matched,
         })
 
@@ -1076,6 +1269,514 @@ def download_macro(project_id, structure_type):
     out.seek(0)
     filename = f'{project.name.replace(" ", "_")}_{structure_type}_landmark.ijm'
     return send_file(out, mimetype='text/plain', as_attachment=True, download_name=filename)
+
+
+@project_bp.route('/api/specimen/<int:specimen_id>', methods=['PATCH'])
+@login_required
+def update_specimen(specimen_id):
+    specimen = Specimen.query.get_or_404(specimen_id)
+    _get_project_or_404(specimen.project_id)
+    data = request.get_json(force=True)
+    name = (data.get('species_name') or '').strip()
+    if not name:
+        return jsonify(error='Species name is required'), 400
+    specimen.species_name      = name
+    specimen.specimen_id_label = (data.get('specimen_id_label') or '').strip() or None
+    specimen.notes             = (data.get('notes') or '').strip() or None
+    db.session.commit()
+    return jsonify(status='ok', species_name=specimen.species_name,
+                   specimen_id_label=specimen.specimen_id_label,
+                   notes=specimen.notes)
+
+
+@project_bp.route('/specimen/<int:specimen_id>/detail')
+@login_required
+def specimen_detail(specimen_id):
+    specimen = Specimen.query.get_or_404(specimen_id)
+    project  = _get_project_or_404(specimen.project_id)
+    from config import Config
+
+    _all_types = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+    STRUCTURE_TYPES = ['mco'] if 'MCO' in project.name.upper() else _all_types
+
+    # Build a dict: type → best structure (or None)
+    all_structs = Structure.query.filter_by(specimen_id=specimen_id).all()
+
+    def _score(s):
+        return (bool(s.landmarks_json) * 4 +
+                bool(s.landmarks_confirmed) * 2 +
+                bool(s.boundary_json) * 2 +
+                bool(s.image_path))
+
+    best = {}
+    for st in all_structs:
+        t = st.structure_type
+        if t not in best or _score(st) > _score(best[t]):
+            best[t] = st
+
+    structures = {t: best.get(t) for t in STRUCTURE_TYPES}
+
+    # Previous / next specimen in alphabetical order
+    ordered = (Specimen.query
+               .filter_by(project_id=specimen.project_id)
+               .order_by(Specimen.species_name, Specimen.id)
+               .all())
+    ids = [s.id for s in ordered]
+    idx = ids.index(specimen_id) if specimen_id in ids else -1
+    prev_id = ids[idx - 1] if idx > 0 else None
+    next_id = ids[idx + 1] if idx >= 0 and idx < len(ids) - 1 else None
+
+    return render_template(
+        'project/specimen_detail.html',
+        project=project,
+        specimen=specimen,
+        structures=structures,
+        structure_types=STRUCTURE_TYPES,
+        structure_parts=Config.STRUCTURE_PARTS,
+        prev_specimen_id=prev_id,
+        next_specimen_id=next_id,
+        specimen_index=idx + 1,
+        specimen_total=len(ids),
+    )
+
+
+@project_bp.route('/project/<int:project_id>/coverage')
+@login_required
+def coverage(project_id):
+    project = _get_project_or_404(project_id)
+    return render_template('project/coverage.html', project=project)
+
+
+@project_bp.route('/api/project/<int:project_id>/coverage')
+@login_required
+def coverage_api(project_id):
+    """Return per-specimen coverage of images, landmarks, boundaries and DNA."""
+    project = _get_project_or_404(project_id)
+
+    STRUCTURE_TYPES = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+
+    specimens = (Specimen.query
+                 .filter_by(project_id=project_id)
+                 .order_by(Specimen.species_name)
+                 .all())
+
+    all_dna = (DNASequence.query
+               .filter(DNASequence.specimen_id.in_([s.id for s in specimens]))
+               .all())
+    markers = sorted({d.marker for d in all_dna})
+
+    summary = {
+        'total': len(specimens),
+        'specimen_image': 0,
+        'dna': {m: 0 for m in markers},
+        'structures': {st: {
+            'exists': 0, 'image': 0,
+            'landmarks': 0, 'lm_confirmed': 0,
+            'boundaries': 0, 'bnd_confirmed': 0,
+        } for st in STRUCTURE_TYPES},
+    }
+
+    rows = []
+    for sp in specimens:
+        dna_map = {}
+        for d in sp.dna_sequences:
+            if d.available:
+                dna_map[d.marker] = d.accession or 'yes'
+        for m in markers:
+            if m in dna_map:
+                summary['dna'][m] += 1
+
+        has_spec_img = bool(sp.image_path)
+        if has_spec_img:
+            summary['specimen_image'] += 1
+
+        struct_map = {st: None for st in STRUCTURE_TYPES}
+        for st_obj in sp.structures:
+            st = st_obj.structure_type
+            if st not in struct_map:
+                continue
+            has_lm  = bool(st_obj.landmarks_json)
+            has_bnd = bool(st_obj.boundary_json)
+            struct_map[st] = {
+                'structure_id': st_obj.id,
+                'image':        bool(st_obj.image_path),
+                'landmarks':    has_lm,
+                'lm_confirmed': bool(st_obj.landmarks_confirmed),
+                'boundaries':   has_bnd,
+                'bnd_confirmed': bool(st_obj.boundary_confirmed),
+            }
+            s = summary['structures'][st]
+            s['exists'] += 1
+            if st_obj.image_path:            s['image']       += 1
+            if has_lm:                        s['landmarks']    += 1
+            if st_obj.landmarks_confirmed:    s['lm_confirmed'] += 1
+            if has_bnd:                       s['boundaries']   += 1
+            if st_obj.boundary_confirmed:     s['bnd_confirmed'] += 1
+
+        rows.append({
+            'specimen_id': sp.id,
+            'species':     sp.species_name,
+            'label':       sp.specimen_id_label or '',
+            'specimen_image': has_spec_img,
+            'dna':         dna_map,
+            'structures':  struct_map,
+        })
+
+    return jsonify({
+        'structure_types': STRUCTURE_TYPES,
+        'markers':         markers,
+        'summary':         summary,
+        'rows':            rows,
+        'project_id':      project_id,
+    })
+
+
+@project_bp.route('/api/project/<int:project_id>/coverage/export')
+@login_required
+def coverage_export(project_id):
+    """Download the coverage report as a CSV file."""
+    from flask import send_file
+    project = _get_project_or_404(project_id)
+
+    STRUCTURE_TYPES = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+
+    specimens = (Specimen.query
+                 .filter_by(project_id=project_id)
+                 .order_by(Specimen.species_name)
+                 .all())
+    all_dna = (DNASequence.query
+               .filter(DNASequence.specimen_id.in_([s.id for s in specimens]))
+               .all())
+    markers = sorted({d.marker for d in all_dna})
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Header
+    header = ['Species', 'Specimen ID', 'Specimen Image']
+    for m in markers:
+        header.append(f'DNA:{m}')
+    for st in STRUCTURE_TYPES:
+        lbl = st.replace('_', ' ').title()
+        header += [f'{lbl}: Exists', f'{lbl}: Image', f'{lbl}: Landmarks',
+                   f'{lbl}: LM Confirmed', f'{lbl}: Boundaries', f'{lbl}: BND Confirmed']
+    writer.writerow(header)
+
+    for sp in specimens:
+        dna_map = {d.marker: (d.accession or 'yes') for d in sp.dna_sequences if d.available}
+        struct_map = {st_obj.structure_type: st_obj for st_obj in sp.structures
+                      if st_obj.structure_type in STRUCTURE_TYPES}
+
+        row = [sp.species_name, sp.specimen_id_label or '', 'yes' if sp.image_path else 'no']
+        for m in markers:
+            row.append(dna_map.get(m, ''))
+        for st in STRUCTURE_TYPES:
+            obj = struct_map.get(st)
+            if obj is None:
+                row += ['no', '', '', '', '', '']
+            else:
+                row += [
+                    'yes',
+                    'yes' if obj.image_path else 'no',
+                    'yes' if obj.landmarks_json else 'no',
+                    'yes' if obj.landmarks_confirmed else 'no',
+                    'yes' if obj.boundary_json else 'no',
+                    'yes' if obj.boundary_confirmed else 'no',
+                ]
+        writer.writerow(row)
+
+    output.seek(0)
+    filename = f'{project.name.replace(" ", "_")}_coverage.csv'
+    buf = io.BytesIO(output.getvalue().encode('utf-8'))
+    return send_file(buf, mimetype='text/csv', as_attachment=True, download_name=filename)
+
+
+@project_bp.route('/api/project/<int:project_id>/import_from_project/projects')
+@login_required
+def import_from_project_list(project_id):
+    """Return projects the current user can read from (excludes current project)."""
+    owned = Project.query.filter_by(created_by=current_user.id).all()
+    member_ids = [m.project_id for m in
+                  ProjectMembership.query.filter_by(user_id=current_user.id).all()]
+    member_projects = Project.query.filter(Project.id.in_(member_ids)).all() if member_ids else []
+    all_projects = list({p.id: p for p in owned + member_projects}.values())
+    return jsonify([
+        {'id': p.id, 'name': p.name}
+        for p in sorted(all_projects, key=lambda p: p.name)
+        if p.id != project_id
+    ])
+
+
+def _epithet_key(name: str) -> str:
+    """Normalise a species name to lowercase 'genus epithet' for fuzzy matching.
+
+    Handles:
+    - Pipe format          'KX981461.1|Gyrodactylus_salaris'  → 'gyrodactylus salaris'
+    - Semicolon/colon      'Gyrodactylusanguillae:1-1253'     → 'gyrodactylus anguillae'
+    - Leading accession    'AB063294Gyrodactylusanguillae'    → 'gyrodactylus anguillae'
+    - Trailing accession   'Gyrodactylus salaris KX123456'    → 'gyrodactylus salaris'
+    - Underscore separator 'Gyrodactylus_salaris'             → 'gyrodactylus salaris'
+    - Concatenated name    'Gyrodactylusanguillae'            → 'gyrodactylus anguillae'
+    - Extra labels         'Gyrodactylus salaris isolate 3'   → 'gyrodactylus salaris'
+    """
+    name = name.strip()
+
+    # Pipe format: take everything after the last pipe
+    if '|' in name:
+        name = name.split('|')[-1].strip()
+
+    # Truncate at first ; or :
+    name = re.split(r'[;:]', name)[0].strip()
+
+    # Underscores → spaces
+    name = name.replace('_', ' ')
+
+    # Strip a leading accession number (1–3 letters + 5–8 digits, optional .N)
+    name = re.sub(r'^[A-Za-z]{1,3}\d{5,8}(?:\.\d+)?\s*', '', name)
+
+    # Split into tokens; stop at first token that starts with a digit or looks
+    # like an accession (letters immediately followed by digits, e.g. KX123, AB06)
+    _acc_re = re.compile(r'^[A-Za-z]{1,3}\d', re.IGNORECASE)
+    clean = []
+    for tok in name.split():
+        if tok[0].isdigit() or _acc_re.match(tok):
+            break
+        clean.append(tok)
+
+    if not clean:
+        return ''
+
+    # If only one token remains it may be a concatenated 'GenusSpecies' string.
+    # Try to split it using the known Gyrodactylidae genera (longest first).
+    if len(clean) == 1:
+        word = clean[0]
+        _KNOWN_GENERA = [
+            'Acanthoplacatus', 'Afrogyrodactylus', 'Archigyrodactylus',
+            'Citharodactylus', 'Diechodactylus', 'Diplogyrodactylus',
+            'Fundulotrema', 'Gyrdicotylus', 'Gyrocerviceanseris',
+            'Gyrodactyloides', 'Gyrodactylus', 'Ieredactylus',
+            'Lamniscus', 'Macrogyrodactylus', 'Mormyrogyrodactylus',
+            'Paragyrodactylus', 'Polyclithrum', 'Rysavyius',
+            'Scleroductus', 'Swingleus', 'Tresuncinidactylus',
+        ]
+        for genus in sorted(_KNOWN_GENERA, key=len, reverse=True):
+            if word.lower().startswith(genus.lower()) and len(word) > len(genus):
+                return f'{genus.lower()} {word[len(genus):].lower()}'
+        # Generic CamelCase fallback: UpperLower → 'upper lower'
+        m = re.match(r'^([A-Z][a-z]{2,})([a-z]+)$', word)
+        if m:
+            return f'{m.group(1).lower()} {m.group(2).lower()}'
+        return word.lower()
+
+    genus   = clean[0].lower()
+    epithet = clean[1].lower()
+    # Strip structure-type suffixes and anything after the first hyphen
+    # e.g. 'martini-hooks' → 'martini', 'salaris-2' → 'salaris'
+    epithet = re.sub(r'-(anchors?|hooks?|bars?|mco|\d+)$', '', epithet, flags=re.IGNORECASE)
+    epithet = epithet.split('-')[0]
+    return f'{genus} {epithet}'
+
+
+def _import_from_project_match(project_id, source_project_id, structure_types, what, overwrite):
+    """
+    Core matching logic shared by preview and import.
+    Matches specimens by genus+epithet (first two words) so that names with
+    extra tokens (accession numbers, isolate labels, etc.) still pair up.
+    Returns a list of match records:
+      { tgt_specimen, src_specimen, structure_type,
+        src_struct, tgt_struct (may be None),
+        will_copy_lm, will_copy_bnd, will_copy_img }
+    """
+    # Build epithet-key → specimen maps (first specimen wins on collision)
+    tgt_by_epithet: dict = {}
+    for s in Specimen.query.filter_by(project_id=project_id).all():
+        k = _epithet_key(s.species_name)
+        if k and k not in tgt_by_epithet:
+            tgt_by_epithet[k] = s
+
+    src_by_epithet: dict = {}
+    for s in Specimen.query.filter_by(project_id=source_project_id).all():
+        k = _epithet_key(s.species_name)
+        if k and k not in src_by_epithet:
+            src_by_epithet[k] = s
+
+    matched_norms = sorted(set(tgt_by_epithet) & set(src_by_epithet))
+
+    copy_lm  = 'landmarks'  in what
+    copy_bnd = 'boundaries' in what
+    copy_img = 'images'     in what
+
+    matched_src_sp_ids = [src_by_epithet[n].id for n in matched_norms]
+    matched_tgt_sp_ids = [tgt_by_epithet[n].id for n in matched_norms]
+
+    src_structs_all = Structure.query.filter(
+        Structure.specimen_id.in_(matched_src_sp_ids)).all() if matched_src_sp_ids else []
+    tgt_structs_all = Structure.query.filter(
+        Structure.specimen_id.in_(matched_tgt_sp_ids)).all() if matched_tgt_sp_ids else []
+
+    src_struct_map = {}
+    for st in src_structs_all:
+        if not structure_types or st.structure_type in structure_types:
+            src_struct_map[(st.specimen_id, st.structure_type)] = st
+    tgt_struct_map = {}
+    for st in tgt_structs_all:
+        tgt_struct_map[(st.specimen_id, st.structure_type)] = st
+
+    matches = []
+    stypes = structure_types or ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+    for norm in matched_norms:
+        src_sp = src_by_epithet[norm]
+        tgt_sp = tgt_by_epithet[norm]
+        for stype in stypes:
+            src_st = src_struct_map.get((src_sp.id, stype))
+            if not src_st:
+                continue
+            tgt_st = tgt_struct_map.get((tgt_sp.id, stype))
+
+            will_copy_lm = (copy_lm and bool(src_st.landmarks_json) and
+                            (overwrite or not (tgt_st and tgt_st.landmarks_json)))
+            will_copy_bnd = (copy_bnd and bool(src_st.boundary_json) and
+                             (overwrite or not (tgt_st and tgt_st.boundary_json)))
+            will_copy_img = (copy_img and bool(src_st.image_path) and
+                             (overwrite or not (tgt_st and tgt_st.image_path)))
+
+            if not will_copy_lm and not will_copy_bnd and not will_copy_img:
+                continue
+
+            matches.append({
+                'tgt_specimen': tgt_sp,
+                'src_struct': src_st,
+                'tgt_struct': tgt_st,
+                'structure_type': stype,
+                'will_copy_lm': will_copy_lm,
+                'will_copy_bnd': will_copy_bnd,
+                'will_copy_img': will_copy_img,
+            })
+    return matches
+
+
+@project_bp.route('/api/project/<int:project_id>/import_from_project/preview')
+@login_required
+def import_from_project_preview(project_id):
+    source_project_id = request.args.get('source_project_id', type=int)
+    what = [x.strip() for x in request.args.get('what', 'landmarks,images').split(',')]
+    structure_types = [x.strip() for x in request.args.get('structure_types', '').split(',') if x.strip()]
+    overwrite = request.args.get('overwrite', '0') == '1'
+
+    if not source_project_id:
+        return jsonify({'error': 'source_project_id required'}), 400
+    if source_project_id == project_id:
+        return jsonify({'error': 'Source and target must be different projects'}), 400
+
+    source_project = Project.query.get_or_404(source_project_id)
+    is_member = (source_project.created_by == current_user.id or
+                 ProjectMembership.query.filter_by(
+                     user_id=current_user.id, project_id=source_project_id).first())
+    if not is_member:
+        return jsonify({'error': 'No access to source project'}), 403
+
+    matches = _import_from_project_match(
+        project_id, source_project_id, structure_types, what, overwrite)
+
+    n_lm  = sum(1 for m in matches if m['will_copy_lm'])
+    n_bnd = sum(1 for m in matches if m['will_copy_bnd'])
+    n_img = sum(1 for m in matches if m['will_copy_img'])
+
+    species_touched = sorted({m['tgt_specimen'].species_name for m in matches})
+    return jsonify({
+        'source_project': source_project.name,
+        'n_matched_specimens': len(species_touched),
+        'matched_species': species_touched[:15],
+        'n_more_species': max(0, len(species_touched) - 15),
+        'n_landmarks': n_lm,
+        'n_boundaries': n_bnd,
+        'n_images': n_img,
+        'n_total': n_lm + n_bnd + n_img,
+    })
+
+
+@project_bp.route('/api/project/<int:project_id>/import_from_project', methods=['POST'])
+@login_required
+def import_from_project(project_id):
+    """Copy landmarks and/or images from another project where species names match."""
+    data = request.get_json() or {}
+    source_project_id = data.get('source_project_id')
+    what = data.get('what', ['landmarks', 'images'])  # list
+    structure_types = data.get('structure_types', [])  # [] = all
+    overwrite = data.get('overwrite', False)
+
+    if not source_project_id:
+        return jsonify({'error': 'source_project_id required'}), 400
+    if source_project_id == project_id:
+        return jsonify({'error': 'Source and target must be different projects'}), 400
+
+    source_project = Project.query.get_or_404(source_project_id)
+    is_member = (source_project.created_by == current_user.id or
+                 ProjectMembership.query.filter_by(
+                     user_id=current_user.id, project_id=source_project_id).first())
+    if not is_member:
+        return jsonify({'error': 'No access to source project'}), 403
+
+    matches = _import_from_project_match(
+        project_id, source_project_id, structure_types, what, overwrite)
+
+    upload_folder = current_app.config['UPLOAD_FOLDER']
+    imported_lm = 0
+    imported_bnd = 0
+    imported_img = 0
+
+    for m in matches:
+        tgt_sp = m['tgt_specimen']
+        src_st = m['src_struct']
+        tgt_st = m['tgt_struct']
+
+        if tgt_st is None:
+            tgt_st = Structure(
+                specimen_id=tgt_sp.id,
+                structure_type=m['structure_type'],
+            )
+            db.session.add(tgt_st)
+            db.session.flush()
+            m['tgt_struct'] = tgt_st
+
+        if m['will_copy_lm']:
+            tgt_st.landmarks_json = src_st.landmarks_json
+            tgt_st.landmark_count = src_st.landmark_count
+            tgt_st.landmarks_confirmed = False
+            imported_lm += 1
+
+        if m['will_copy_bnd']:
+            tgt_st.boundary_json = src_st.boundary_json
+            tgt_st.boundary_confirmed = False
+            imported_bnd += 1
+
+        if m['will_copy_img'] and src_st.image_path:
+            src_abs = os.path.join(upload_folder, src_st.image_path)
+            if os.path.exists(src_abs):
+                # Images are consolidated + deduplicated under structures/;
+                # share the single copy rather than duplicating it.
+                tgt_st.image_path = src_st.image_path
+                imported_img += 1
+
+    db.session.commit()
+    _log(project_id,
+         f'Imported from project {source_project.name}: '
+         f'{imported_lm} landmark set(s), {imported_bnd} boundary set(s), {imported_img} image(s)')
+
+    parts = []
+    if imported_lm:
+        parts.append(f'{imported_lm} landmark set(s)')
+    if imported_bnd:
+        parts.append(f'{imported_bnd} boundary set(s)')
+    if imported_img:
+        parts.append(f'{imported_img} image(s)')
+    return jsonify({
+        'status': 'ok',
+        'imported_lm': imported_lm,
+        'imported_bnd': imported_bnd,
+        'imported_img': imported_img,
+        'message': 'Imported ' + ', '.join(parts) + '.' if parts else 'Nothing to import.',
+    })
 
 
 def _get_project_or_404(project_id):

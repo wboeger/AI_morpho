@@ -1,13 +1,16 @@
 {% extends "base.html" %}
 {% block title %}Matrix - {{ project.name }}{% endblock %}
 {% block content %}
-<h1>Character Matrix</h1>
+<div class="page-h">
+    <h1>Character Matrix</h1>
+    <span class="sub">{{ matrix_data|length }} taxa · {{ characters|length }} characters{% if structure_filter %} · {{ structure_filter.replace('_',' ') }}{% endif %}</span>
+</div>
 
 <div class="filters">
     <span class="filter-label">Structure:</span>
     <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}"
        class="btn btn-sm {% if not structure_filter %}btn-primary{% else %}btn-outline{% endif %}">All</a>
-    {% for st in ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco'] %}
+    {% for st in structure_types %}
     <a href="{{ url_for('matrix.matrix_view', project_id=project.id, structure_type=st) }}"
        class="btn btn-sm {% if structure_filter == st %}btn-primary{% else %}btn-outline{% endif %}">
         {{ st.replace('_', ' ').title() }}
@@ -25,19 +28,58 @@
         <button type="button" class="btn btn-sm btn-outline" onclick="uploadTree()">Upload Tree</button>
         <span id="treeUploadMsg" style="font-size:0.75rem; color:var(--gray-500);"></span>
         {% if has_tree %}
-        <select id="outgroupSelect" style="font-size:0.8rem; padding:0.2rem 0.4rem; border:1px solid var(--gray-300); border-radius:4px; max-width:180px;"
-                title="Select outgroup to re-root the tree">
-            <option value="">— Set outgroup —</option>
-            {% for row in matrix_data %}
-            <option value="{{ row.specimen.species_name }}">{{ row.specimen.species_name }}</option>
-            {% endfor %}
-        </select>
-        <button type="button" class="btn btn-sm btn-outline" onclick="setOutgroupFromSelect()" title="Re-root tree at selected outgroup">Root</button>
+        <input type="text" id="outgroupInput"
+            placeholder="Outgroup 1, Outgroup 2…"
+            style="font-size:0.8rem; padding:0.2rem 0.5rem; border:1px solid var(--gray-300); border-radius:4px; width:210px;"
+            title="Enter one or more outgroup genus/species names (comma-separated). Tree will be rooted at their MRCA."
+            onkeydown="if(event.key==='Enter') setOutgroupFromInput()">
+        <button type="button" class="btn btn-sm btn-outline" onclick="setOutgroupFromInput()" title="Re-root tree at the MRCA of the specified outgroups">Root</button>
         <span id="outgroupMsg" style="font-size:0.75rem; color:var(--gray-500);"></span>
         {% endif %}
         <a href="{{ url_for('matrix.aliases_page', project_id=project.id) }}"
            class="btn btn-sm btn-outline" title="Manage tree–specimen name mappings">Name Mappings</a>
+        <button type="button" class="btn btn-sm btn-outline" onclick="openImportStates()"
+                title="Copy character states from another project where character codes and species names match">
+            Import States
+        </button>
     </form>
+</div>
+
+<!-- ── Import States Modal ────────────────────────────────────────────────── -->
+<div id="importStatesModal" style="display:none; position:fixed; inset:0;
+     background:rgba(0,0,0,0.5); z-index:9000; align-items:center; justify-content:center;">
+    <div class="card" style="width:560px; max-width:95vw; max-height:88vh; overflow-y:auto; padding:1.5rem;">
+        <h3 style="margin-top:0;">Import States from Another Project</h3>
+        <p style="font-size:0.85rem; color:var(--gray-600); margin-bottom:1rem;">
+            Copies character states where <strong>character code</strong> and
+            <strong>species name</strong> match exactly.
+            Only fills empty / unknown (<code>?</code>) cells unless you check Overwrite.
+        </p>
+
+        <label style="font-size:0.85rem; font-weight:600; display:block; margin-bottom:0.3rem;">Source project</label>
+        <select id="importSrcSelect" class="form-control"
+                style="margin-bottom:0.75rem;" onchange="previewImport()">
+            <option value="">— select a project —</option>
+        </select>
+
+        <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; margin-bottom:0.75rem; cursor:pointer;">
+            <input type="checkbox" id="importOverwrite" onchange="previewImport()">
+            Overwrite existing states (re-import even if already coded)
+        </label>
+
+        <div id="importPreview" style="display:none; background:var(--gray-100,#f3f4f6);
+             border-radius:6px; padding:0.8rem; font-size:0.82rem; margin-bottom:0.75rem; line-height:1.7;">
+            <div id="importPreviewText"></div>
+        </div>
+
+        <div id="importMsg" style="font-size:0.83rem; margin-bottom:0.5rem;"></div>
+
+        <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:0.75rem;">
+            <button class="btn btn-outline" onclick="closeImportStates()">Cancel</button>
+            <button class="btn btn-primary" id="importRunBtn"
+                    onclick="runImportStates()" disabled>Import</button>
+        </div>
+    </div>
 </div>
 
 <div class="tree-matrix-container" id="treeMatrixContainer">
@@ -65,7 +107,7 @@
             <tbody>
                 {% for row in matrix_data %}
                 <tr id="sp-row-{{ row.specimen.id }}">
-                    <td class="species-name" style="white-space:nowrap;">
+                    <td class="species-name" style="white-space:nowrap;" data-species="{{ row.specimen.species_name }}">
                         <span class="sp-label" id="sp-label-{{ row.specimen.id }}">{{ row.specimen.species_name }}</span>
                         <span class="sp-actions" style="display:none; margin-left:0.3rem;">
                             <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
@@ -80,16 +122,21 @@
                     {% set val = row.cells[c.code] %}
                     <td class="matrix-cell
                         {% if val %}
-                            {% if val.state == '-' %}cell-na
-                            {% elif val.state == '?' %}cell-unset
-                            {% elif val.confidence and val.confidence >= 0.85 %}cell-high
-                            {% elif val.confidence and val.confidence >= 0.60 %}cell-med
-                            {% elif val.confidence and val.confidence < 0.60 %}cell-low
+                            {% if val.get('state') == '-' %}cell-na
+                            {% elif val.get('state') == '?' or val.get('state') is none %}cell-unset
+                            {% elif val.get('confidence') and val.get('confidence') >= 0.85 %}cell-high
+                            {% elif val.get('confidence') and val.get('confidence') >= 0.60 %}cell-med
+                            {% elif val.get('confidence') and val.get('confidence') < 0.60 %}cell-low
                             {% else %}cell-high{% endif %}
                         {% else %}cell-unset{% endif %}"
-                        {% if val %}onclick="showDetail({{ val.id }})"{% endif %}
+                        {% if val and val.get('id') %}
+                            onclick="showDetail({{ val.id }})"
+                        {% elif val and val.get('struct_id') %}
+                            onclick="showStructImage({{ val.struct_id }}, {{ c.id }}, {{ val.struct_image | tojson }})"
+                        {% endif %}
+                        style="{% if val and val.get('struct_image') %}cursor:pointer;{% endif %}"
                         title="{{ c.name }}">
-                        {{ val.state if val and val.state is not none else '?' }}
+                        {{ val.get('state') if val and val.get('state') is not none else '?' }}
                     </td>
                     {% endfor %}
                 </tr>
@@ -121,9 +168,19 @@
 
 <!-- Cell detail modal -->
 <div class="modal-overlay" id="detailModal">
-    <div class="modal">
-        <h3 id="detailTitle">Cell Detail</h3>
-        <div id="detailContent"></div>
+    <div class="modal" style="max-width:700px; width:95vw;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.75rem;">
+            <h3 id="detailTitle" style="margin:0;">Cell Detail</h3>
+            <button class="btn btn-sm btn-outline"
+                    onclick="document.getElementById('detailModal').classList.remove('active')">&#10005;</button>
+        </div>
+        <!-- Image (shown prominently when available) -->
+        <div id="detailImageWrap" style="display:none; text-align:center; margin-bottom:0.75rem;
+             background:var(--gray-100,#f5f5f5); border-radius:6px; padding:0.5rem;">
+            <img id="detailImage" src="" alt="specimen figure"
+                 style="max-width:100%; max-height:55vh; object-fit:contain; border-radius:4px;">
+        </div>
+        <div id="detailContent" style="font-size:0.88rem; color:var(--ink-2,#333);"></div>
         <div id="detailOverride" style="margin-top:1rem; display:none;">
             <label style="font-weight:600;">Override State:</label>
             <div class="state-buttons" id="overrideButtons"></div>
@@ -133,9 +190,11 @@
             </div>
             <button class="btn btn-primary btn-sm" onclick="submitOverride()">Save Override</button>
         </div>
-        <div class="modal-actions">
-            <button class="btn btn-outline" onclick="document.getElementById('detailModal').classList.remove('active')">Close</button>
-            <button class="btn btn-warning" onclick="document.getElementById('detailOverride').style.display='block'">Override</button>
+        <div class="modal-actions" id="detailActions">
+            <button class="btn btn-outline"
+                    onclick="document.getElementById('detailModal').classList.remove('active')">Close</button>
+            <button class="btn btn-warning" id="overrideBtn"
+                    onclick="document.getElementById('detailOverride').style.display='block'">Override</button>
         </div>
     </div>
 </div>
@@ -149,43 +208,92 @@ let currentValueId = null;
 // Species names in matrix order (server-side order = tree leaf order when tree present)
 const matrixSpecies = {{ matrix_data | map(attribute='specimen.species_name') | list | tojson }};
 
+function _renderCellDetail(data, hasValue) {
+    document.getElementById('detailTitle').textContent =
+        data.code ? `${data.code}: ${data.character}` : data.character || 'Figure';
+
+    // Image — shown prominently above text
+    const imgWrap = document.getElementById('detailImageWrap');
+    const imgEl   = document.getElementById('detailImage');
+    if (data.image_url) {
+        imgEl.src = data.image_url;
+        imgWrap.style.display = 'block';
+    } else {
+        imgWrap.style.display = 'none';
+        imgEl.src = '';
+    }
+
+    let html = `<p style="margin:0.25rem 0;"><strong>Species:</strong> <em>${data.species}</em></p>`;
+    if (hasValue && data.state !== null) {
+        html += `<p style="margin:0.25rem 0;"><strong>State:</strong> ${data.state}</p>`;
+        if (data.raw_value !== null && data.raw_value !== undefined)
+            html += `<p style="margin:0.25rem 0;"><strong>Raw value:</strong> ${data.raw_value.toFixed(4)}</p>`;
+        if (data.confidence !== null && data.confidence !== undefined)
+            html += `<p style="margin:0.25rem 0;"><strong>Confidence:</strong> ${(data.confidence * 100).toFixed(0)}%</p>`;
+        html += `<p style="margin:0.25rem 0;"><strong>Type:</strong> ${data.computation_type}</p>`;
+        if (data.override_reason)
+            html += `<p style="margin:0.25rem 0;"><strong>Override reason:</strong> ${data.override_reason}</p>`;
+    } else {
+        html += `<p style="margin:0.25rem 0; color:var(--gray-500);">No value coded yet for this character.</p>`;
+    }
+    if (!data.image_url)
+        html += `<p style="margin:0.4rem 0; color:var(--gray-400); font-size:0.8rem;">No image available for this specimen.</p>`;
+
+    document.getElementById('detailContent').innerHTML = html;
+
+    // Override buttons (only for coded cells)
+    const btns    = document.getElementById('overrideButtons');
+    const overBtn = document.getElementById('overrideBtn');
+    btns.innerHTML = '';
+    if (hasValue) {
+        overBtn.style.display = '';
+        (data.states || []).forEach(s => {
+            const btn = document.createElement('button');
+            btn.className = `state-btn ${s.code === data.state ? 'active' : ''}`;
+            btn.textContent = `${s.code}: ${s.name}`;
+            btn.onclick = () => {
+                btns.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                btn.dataset.state = s.code;
+            };
+            btn.dataset.state = s.code;
+            btns.appendChild(btn);
+        });
+    } else {
+        overBtn.style.display = 'none';
+    }
+
+    document.getElementById('detailOverride').style.display = 'none';
+    document.getElementById('detailModal').classList.add('active');
+}
+
 function showDetail(valueId) {
     currentValueId = valueId;
     fetch(`/api/project/${projectId}/matrix/cell_detail?value_id=${valueId}`)
-        .then(r => r.json()).then(data => {
-            document.getElementById('detailTitle').textContent = `${data.code}: ${data.character}`;
+        .then(r => r.json())
+        .then(data => _renderCellDetail(data, true));
+}
 
-            let html = `<p><strong>Species:</strong> <em>${data.species}</em></p>`;
-            html += `<p><strong>State:</strong> ${data.state}</p>`;
-            if (data.raw_value !== null) html += `<p><strong>Raw value:</strong> ${data.raw_value.toFixed(4)}</p>`;
-            html += `<p><strong>Confidence:</strong> ${(data.confidence * 100).toFixed(0)}%</p>`;
-            html += `<p><strong>Type:</strong> ${data.computation_type}</p>`;
-            if (data.override_reason) html += `<p><strong>Override reason:</strong> ${data.override_reason}</p>`;
+function showStructImage(structId, charId, imageUrl) {
+    currentValueId = null;
+    // Quick render using the known imageUrl, then fetch full detail for species name etc.
+    const imgWrap = document.getElementById('detailImageWrap');
+    const imgEl   = document.getElementById('detailImage');
+    if (imageUrl) {
+        imgEl.src = imageUrl;
+        imgWrap.style.display = 'block';
+    } else {
+        imgWrap.style.display = 'none';
+    }
+    document.getElementById('detailTitle').textContent = 'Figure';
+    document.getElementById('detailContent').innerHTML = '<em style="color:var(--gray-400);">Loading…</em>';
+    document.getElementById('detailOverride').style.display = 'none';
+    document.getElementById('overrideBtn').style.display = 'none';
+    document.getElementById('detailModal').classList.add('active');
 
-            if (data.image_url) {
-                html += `<img src="${data.image_url}" style="max-width:100%; max-height:200px; margin-top:0.5rem;">`;
-            }
-            document.getElementById('detailContent').innerHTML = html;
-
-            // Override buttons
-            const btns = document.getElementById('overrideButtons');
-            btns.innerHTML = '';
-            (data.states || []).forEach(s => {
-                const btn = document.createElement('button');
-                btn.className = `state-btn ${s.code === data.state ? 'active' : ''}`;
-                btn.textContent = `${s.code}: ${s.name}`;
-                btn.onclick = () => {
-                    btns.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
-                    btn.classList.add('active');
-                    btn.dataset.state = s.code;
-                };
-                btn.dataset.state = s.code;
-                btns.appendChild(btn);
-            });
-
-            document.getElementById('detailOverride').style.display = 'none';
-            document.getElementById('detailModal').classList.add('active');
-        });
+    fetch(`/api/project/${projectId}/matrix/cell_detail?struct_id=${structId}&char_id=${charId}`)
+        .then(r => r.json())
+        .then(data => _renderCellDetail(data, false));
 }
 
 function submitOverride() {
@@ -322,19 +430,52 @@ function pruneTree(node, _seen) {
     return node;
 }
 
+// ── Reorder matrix tbody rows to match tree leaf order ─────────────────────
+// Returns the new ordered rows array (DOM reorder done in place).
+function reorderRowsByTree(leaves, rows) {
+    const tbody = document.querySelector('#matrixTable tbody');
+    if (!tbody) return rows;
+
+    // Build map: normName → row element
+    const nameToRow = new Map();
+    rows.forEach(tr => {
+        const speciesCell = tr.querySelector('td[data-species]');
+        const name = speciesCell ? speciesCell.dataset.species : null;
+        if (name) nameToRow.set(normName(name), tr);
+    });
+
+    // Ordered rows: tree leaves first (only those in matrix), then unmatched
+    const placed = new Set();
+    const orderedRows = [];
+    for (const leaf of leaves) {
+        const norm = normName(leaf.name);
+        const tr = nameToRow.get(norm);
+        if (tr && !placed.has(tr)) {
+            orderedRows.push(tr);
+            placed.add(tr);
+        }
+    }
+    // Append rows not in the tree at the bottom
+    rows.forEach(tr => { if (!placed.has(tr)) orderedRows.push(tr); });
+
+    // Reorder DOM (appendChild moves existing nodes)
+    orderedRows.forEach(tr => tbody.appendChild(tr));
+    return orderedRows;
+}
+
 // ── Main tree renderer ─────────────────────────────────────────────────────
 function renderNewickTree(newick) {
     const rawTree = parseNewick(newick);
     if (!rawTree) return;
 
-    // Ladderize the FULL tree before pruning so client order matches server order
     ladderize(rawTree);
     const tree = pruneTree(JSON.parse(JSON.stringify(rawTree)));
     if (!tree) return;
-    // Do NOT re-ladderize after pruning
 
     const leaves = getLeaves(tree);
-    const rows = Array.from(document.querySelectorAll('#matrixTable tbody tr'));
+    // Reorder matrix rows to match tree leaf order — eliminates crossing branches
+    let rows = Array.from(document.querySelectorAll('#matrixTable tbody tr'));
+    rows = reorderRowsByTree(leaves, rows);
     if (!rows.length) return;
 
     const svgEl = document.getElementById('treeSvg');
@@ -348,20 +489,23 @@ function renderNewickTree(newick) {
     assignDepths(tree, 0);
     const maxDepth = Math.max(...leaves.map(l => l.x)) || 1;
 
-    // Assign y to each leaf from its corresponding matrix row.
-    // Primary: look up by normalized name. Fallback: positional index i
-    // (valid because deduplication ensures leaves are in the same order as matrixSpecies).
+    // Build row lookup from the newly reordered DOM rows
+    const reorderedNormIndex = new Map();
+    rows.forEach((tr, idx) => {
+        const speciesCell = tr.querySelector('td[data-species]');
+        if (speciesCell) reorderedNormIndex.set(normName(speciesCell.dataset.species), idx);
+    });
+
+    // Assign y to each leaf from its row position in the reordered matrix
     leaves.forEach((leaf, i) => {
         const normLeaf = normName(leaf.name);
-        const nameIdx = matrixNormIndex.get(normLeaf);
-        const ri = (nameIdx !== undefined) ? nameIdx : i;
+        const ri = reorderedNormIndex.has(normLeaf) ? reorderedNormIndex.get(normLeaf) : i;
         if (ri < rows.length) {
             const r = rows[ri].getBoundingClientRect();
             leaf.leafY = (r.top + r.bottom) / 2 - svgRect.top;
         } else {
             leaf.leafY = i * 28 + 14;
         }
-        leaf._matrixIdx = ri;  // keep for diagnostics
     });
 
     // Propagate y upward to internal nodes (mean of children)
@@ -444,19 +588,26 @@ function confirmOutgroup(speciesName) {
     _rerootTree(speciesName);
 }
 
-function setOutgroupFromSelect() {
-    const sel = document.getElementById('outgroupSelect');
-    if (!sel || !sel.value) { alert('Please select an outgroup species first.'); return; }
-    confirmOutgroup(sel.value);
+function setOutgroupFromInput() {
+    const input = document.getElementById('outgroupInput');
+    const msg   = document.getElementById('outgroupMsg');
+    const raw   = (input ? input.value : '').trim();
+    if (!raw) { alert('Enter at least one outgroup genus or species name.'); return; }
+    const outgroups = raw.split(',').map(s => s.trim()).filter(Boolean);
+    const label = outgroups.length === 1 ? `"${outgroups[0]}"` : `${outgroups.length} outgroups (rooted at their MRCA)`;
+    if (!confirm(`Re-root tree with outgroup: ${label}\n\nThis will save the re-rooted tree and reload the page.`)) return;
+    _rerootTree(outgroups);
 }
 
-function _rerootTree(speciesName) {
+function _rerootTree(outgroups) {
+    // outgroups: string (single name) or array of strings
+    const names = Array.isArray(outgroups) ? outgroups : [outgroups];
     const msg = document.getElementById('outgroupMsg');
     if (msg) { msg.textContent = 'Rerooting…'; msg.style.color = ''; }
     fetch(`/api/project/${projectId}/tree/reroot`, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({outgroup: speciesName})
+        body: JSON.stringify({outgroups: names})
     })
     .then(r => r.json())
     .then(data => {
@@ -572,6 +723,120 @@ document.getElementById('spModalInput').addEventListener('keydown', e => {
 });
 document.getElementById('spModal').addEventListener('click', function(e) {
     if (e.target === this) closeSpModal();
+});
+
+// ── Import States ─────────────────────────────────────────────────────────────
+let _importPreviewTimer = null;
+
+async function openImportStates() {
+    const modal = document.getElementById('importStatesModal');
+    modal.style.display = 'flex';
+    document.getElementById('importMsg').textContent = '';
+    document.getElementById('importPreview').style.display = 'none';
+    document.getElementById('importRunBtn').disabled = true;
+
+    // Load project list
+    const sel = document.getElementById('importSrcSelect');
+    if (sel.options.length <= 1) {
+        sel.innerHTML = '<option value="">Loading…</option>';
+        try {
+            const r = await fetch(`/api/project/{{ project.id }}/matrix/import_states/projects`);
+            const projects = await r.json();
+            sel.innerHTML = '<option value="">— select a project —</option>' +
+                projects.map(p => `<option value="${p.id}">${p.name}</option>`).join('');
+        } catch {
+            sel.innerHTML = '<option value="">— error loading projects —</option>';
+        }
+    }
+}
+
+function closeImportStates() {
+    document.getElementById('importStatesModal').style.display = 'none';
+}
+
+async function previewImport() {
+    clearTimeout(_importPreviewTimer);
+    const srcId = document.getElementById('importSrcSelect').value;
+    const preview = document.getElementById('importPreview');
+    const runBtn  = document.getElementById('importRunBtn');
+    if (!srcId) {
+        preview.style.display = 'none';
+        runBtn.disabled = true;
+        return;
+    }
+    _importPreviewTimer = setTimeout(async () => {
+        const overwrite = document.getElementById('importOverwrite').checked ? '1' : '0';
+        preview.style.display = 'block';
+        document.getElementById('importPreviewText').innerHTML = 'Loading preview…';
+        runBtn.disabled = true;
+        try {
+            const r = await fetch(
+                `/api/project/{{ project.id }}/matrix/import_states/preview?source_project_id=${srcId}&overwrite=${overwrite}`
+            );
+            const d = await r.json();
+            if (d.error) {
+                document.getElementById('importPreviewText').innerHTML =
+                    `<span style="color:red;">${d.error}</span>`;
+                return;
+            }
+            const charList = d.matched_chars.map(c => `<code>${c.code}</code> ${c.name}`).join(', ') || '—';
+            const spList   = d.matched_species.slice(0, 10).join(', ') +
+                             (d.matched_species.length > 10 ? ` … +${d.matched_species.length - 10} more` : '');
+            document.getElementById('importPreviewText').innerHTML =
+                `<strong>Source:</strong> ${d.source_project}<br>` +
+                `<strong>Matched characters (${d.n_matched_chars}):</strong> ${charList}<br>` +
+                `<strong>Matched species (${d.n_matched_species}):</strong> ${spList || '—'}<br>` +
+                `<strong style="color:var(--primary,#1a6bad);">Will import: ${d.n_will_import} state(s)</strong>` +
+                (d.n_skipped_exists ? ` &nbsp;·&nbsp; ${d.n_skipped_exists} already set (skipped)` : '') +
+                (d.n_skipped_no_src ? ` &nbsp;·&nbsp; ${d.n_skipped_no_src} no source value` : '') +
+                (d.n_skipped_type_mismatch ? ` &nbsp;·&nbsp; ${d.n_skipped_type_mismatch} structure-type mismatch` : '');
+            runBtn.disabled = d.n_will_import === 0;
+        } catch (err) {
+            document.getElementById('importPreviewText').innerHTML =
+                `<span style="color:red;">Preview failed: ${err}</span>`;
+        }
+    }, 300);
+}
+
+async function runImportStates() {
+    const srcId     = document.getElementById('importSrcSelect').value;
+    const overwrite = document.getElementById('importOverwrite').checked;
+    const runBtn    = document.getElementById('importRunBtn');
+    const msgEl     = document.getElementById('importMsg');
+    if (!srcId) return;
+    runBtn.disabled = true;
+    msgEl.textContent = 'Importing…';
+    try {
+        const r = await fetch(`/api/project/{{ project.id }}/matrix/import_states`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source_project_id: parseInt(srcId), overwrite}),
+        });
+        const d = await r.json();
+        if (d.error) {
+            msgEl.style.color = 'red';
+            msgEl.textContent = d.error;
+            runBtn.disabled = false;
+        } else {
+            msgEl.style.color = 'green';
+            msgEl.textContent = d.message;
+            setTimeout(() => { closeImportStates(); location.reload(); }, 1200);
+        }
+    } catch (err) {
+        msgEl.style.color = 'red';
+        msgEl.textContent = 'Import failed: ' + err;
+        runBtn.disabled = false;
+    }
+}
+
+document.getElementById('importStatesModal').addEventListener('click', function(e) {
+    if (e.target === this) closeImportStates();
+});
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' &&
+        document.getElementById('importStatesModal').style.display !== 'none') {
+        closeImportStates();
+    }
 });
 </script>
 {% endblock %}

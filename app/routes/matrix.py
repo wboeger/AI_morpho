@@ -56,16 +56,19 @@ def matrix_view(project_id):
                 val = CharacterValue.query.filter_by(
                     structure_id=struct.id, character_id=char.id
                 ).first()
+                cell = {
+                    'struct_id':    struct.id,
+                    'struct_image': f'/uploads/{struct.image_path}' if struct.image_path else None,
+                }
                 if val:
-                    row['cells'][char.code] = {
-                        'id': val.id,
-                        'state': val.state,
-                        'raw_value': val.raw_value,
-                        'confidence': val.confidence,
+                    cell.update({
+                        'id':          val.id,
+                        'state':       val.state,
+                        'raw_value':   val.raw_value,
+                        'confidence':  val.confidence,
                         'auto_assigned': val.auto_assigned,
-                    }
-                else:
-                    row['cells'][char.code] = None
+                    })
+                row['cells'][char.code] = cell
             else:
                 row['cells'][char.code] = None
 
@@ -111,13 +114,17 @@ def matrix_view(project_id):
                 ordered.append(row)
         matrix_data = ordered
 
+    all_structure_types = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
+    structure_types = ['mco'] if 'MCO' in project.name.upper() else all_structure_types
+
     return render_template('matrix/matrix_view.html',
                            project=project, characters=characters,
                            matrix_data=matrix_data,
                            structure_filter=structure_filter,
                            dna_only=dna_only, unconfirmed_only=unconfirmed_only,
                            has_tree=bool(ordering_newick),
-                           tree_newick=ordering_newick or '')
+                           tree_newick=ordering_newick or '',
+                           structure_types=structure_types)
 
 
 @matrix_bp.route('/project/<int:project_id>/matrix/gallery/<int:char_id>')
@@ -136,63 +143,59 @@ def gallery_view(project_id, char_id):
 
     entries = []
 
-    if structures:
-        # Normal case: entries built from structures of the character's type
-        for struct in structures:
-            specimen = Specimen.query.get(struct.specimen_id)
-            val = CharacterValue.query.filter_by(
-                structure_id=struct.id, character_id=char.id
-            ).first()
+    def _completeness(s):
+        """Score a structure by data completeness (higher = more complete)."""
+        return (bool(s.landmarks_json) * 2 +
+                bool(s.landmarks_confirmed) * 2 +
+                bool(s.boundary_json) +
+                bool(s.image_path))
 
-            alt_structures = {}
-            for st in Structure.query.filter_by(specimen_id=specimen.id).all():
-                alt_structures[st.structure_type] = {
-                    'image_url': f'/uploads/{st.image_path}' if st.image_path else None,
-                    'landmarks': st.landmarks_json,
-                    'boundaries': st.boundary_json,
-                }
+    def _best_alt_structures(specimen):
+        """Build alt_structures dict keeping the most-complete structure per type."""
+        best = {}
+        for st in Structure.query.filter_by(specimen_id=specimen.id).all():
+            t = st.structure_type
+            if t not in best or _completeness(st) > _completeness(best[t]):
+                best[t] = st
+        return {
+            t: {
+                'image_url': f'/uploads/{s.image_path}' if s.image_path else None,
+                'landmarks': s.landmarks_json,
+                'boundaries': s.boundary_json,
+            }
+            for t, s in best.items()
+        }
 
-            entries.append({
-                'structure': struct,
-                'specimen': specimen,
-                'value': val,
-                'image_url': f'/uploads/{struct.image_path}' if struct.image_path else None,
-                'landmarks': struct.landmarks_json,
-                'boundaries': struct.boundary_json,
-                'alt_structures': alt_structures,
-            })
-    else:
-        # No structures of this type exist — show all specimens with
-        # images/shapes from other structure types for reference while coding
-        specimens = Specimen.query.filter_by(project_id=project_id).order_by(Specimen.species_name).all()
-        for specimen in specimens:
-            all_structs = Structure.query.filter_by(specimen_id=specimen.id).all()
-            if not all_structs:
-                continue
+    # Always show all specimens — some may lack images for this structure type
+    # but can still be coded manually using images from other structure types.
+    all_specimens = Specimen.query.filter_by(project_id=project_id).order_by(Specimen.species_name).all()
+    for specimen in all_specimens:
+        all_structs = Structure.query.filter_by(specimen_id=specimen.id).all()
 
-            alt_structures = {}
-            for st in all_structs:
-                alt_structures[st.structure_type] = {
-                    'image_url': f'/uploads/{st.image_path}' if st.image_path else None,
-                    'landmarks': st.landmarks_json,
-                    'boundaries': st.boundary_json,
-                }
+        # Structures of the character's own type are used for value lookup/assignment.
+        # Any other structure serves as a display proxy when the target type is absent.
+        type_structs = [s for s in all_structs if s.structure_type == char.structure_type]
+        if type_structs:
+            primary = max(type_structs, key=_completeness)
+        elif all_structs:
+            primary = max(all_structs, key=_completeness)
+        else:
+            continue  # no imagery of any kind — skip
 
-            # Use the first available structure as a stand-in for state assignment
-            primary = all_structs[0]
-            val = CharacterValue.query.filter_by(
-                structure_id=primary.id, character_id=char.id
-            ).first()
+        val = CharacterValue.query.filter_by(
+            structure_id=primary.id, character_id=char.id
+        ).first()
 
-            entries.append({
-                'structure': primary,
-                'specimen': specimen,
-                'value': val,
-                'image_url': f'/uploads/{primary.image_path}' if primary.image_path else None,
-                'landmarks': primary.landmarks_json,
-                'boundaries': primary.boundary_json,
-                'alt_structures': alt_structures,
-            })
+        entries.append({
+            'structure': primary,
+            'specimen': specimen,
+            'value': val,
+            'image_url': f'/uploads/{primary.image_path}' if primary.image_path else None,
+            'landmarks': primary.landmarks_json,
+            'boundaries': primary.boundary_json,
+            'alt_structures': _best_alt_structures(specimen),
+            'has_target_structure': bool(type_structs),
+        })
 
     # Sort by raw_value for geometric, by state for manual
     if char.computation_type == 'geometric':
@@ -350,28 +353,57 @@ def assign_manual_value(project_id):
 @matrix_bp.route('/api/project/<int:project_id>/matrix/cell_detail', methods=['GET'])
 @login_required
 def cell_detail(project_id):
-    """Get detailed info for a matrix cell popup."""
-    value_id = request.args.get('value_id', type=int)
-    val = CharacterValue.query.get_or_404(value_id)
-    char = CharacterDefinition.query.get(val.character_id)
-    structure = Structure.query.get(val.structure_id)
-    specimen = Specimen.query.get(structure.specimen_id)
+    """Get detailed info for a matrix cell popup.
 
-    return jsonify({
-        'species': specimen.species_name,
-        'character': char.name,
-        'code': char.code,
-        'state': val.state,
-        'raw_value': val.raw_value,
-        'confidence': val.confidence,
-        'auto_assigned': val.auto_assigned,
-        'override_reason': val.override_reason,
-        'states': char.states_json,
-        'computation_type': char.computation_type,
-        'image_url': f'/uploads/{structure.image_path}' if structure.image_path else None,
-        'landmarks': structure.landmarks_json,
-        'boundaries': structure.boundary_json,
-    })
+    Accepts either value_id (coded cell) or struct_id+char_id (uncoded cell with image).
+    """
+    value_id  = request.args.get('value_id',  type=int)
+    struct_id = request.args.get('struct_id', type=int)
+    char_id   = request.args.get('char_id',   type=int)
+
+    if value_id:
+        val       = CharacterValue.query.get_or_404(value_id)
+        char      = CharacterDefinition.query.get(val.character_id)
+        structure = Structure.query.get(val.structure_id)
+        specimen  = Specimen.query.get(structure.specimen_id)
+        return jsonify({
+            'species':          specimen.species_name,
+            'character':        char.name,
+            'code':             char.code,
+            'state':            val.state,
+            'raw_value':        val.raw_value,
+            'confidence':       val.confidence,
+            'auto_assigned':    val.auto_assigned,
+            'override_reason':  val.override_reason,
+            'states':           char.states_json,
+            'computation_type': char.computation_type,
+            'image_url':        f'/uploads/{structure.image_path}' if structure.image_path else None,
+            'landmarks':        structure.landmarks_json,
+            'boundaries':       structure.boundary_json,
+        })
+
+    if struct_id and char_id:
+        structure = Structure.query.get_or_404(struct_id)
+        char      = CharacterDefinition.query.get_or_404(char_id)
+        specimen  = Specimen.query.get(structure.specimen_id)
+        return jsonify({
+            'species':          specimen.species_name,
+            'character':        char.name,
+            'code':             char.code,
+            'state':            None,
+            'raw_value':        None,
+            'confidence':       None,
+            'auto_assigned':    None,
+            'override_reason':  None,
+            'states':           char.states_json,
+            'computation_type': char.computation_type,
+            'image_url':        f'/uploads/{structure.image_path}' if structure.image_path else None,
+            'landmarks':        structure.landmarks_json,
+            'boundaries':       structure.boundary_json,
+        })
+
+    from flask import abort
+    abort(400)
 
 
 def _build_tree(newick: str) -> dict | None:
@@ -644,12 +676,25 @@ def _clean_newick_labels(newick: str, project_id: int) -> str:
 @matrix_bp.route('/api/project/<int:project_id>/tree/reroot', methods=['POST'])
 @login_required
 def reroot_tree(project_id):
-    """Re-root the project tree at the given outgroup species."""
+    """Re-root the project tree at the given outgroup(s).
+
+    Accepts JSON with either:
+      {outgroup: "Name"}           — single outgroup (legacy)
+      {outgroups: ["Name1", ...]}  — one or more outgroups; roots at their MRCA
+    """
     project = Project.query.get_or_404(project_id)
     data = request.get_json() or {}
-    outgroup_name = data.get('outgroup', '').strip()
-    if not outgroup_name:
-        return jsonify({'error': 'outgroup required'}), 400
+
+    # Accept both single and multiple outgroup formats
+    if 'outgroups' in data:
+        outgroup_names = [s.strip() for s in data['outgroups'] if s.strip()]
+    elif data.get('outgroup', '').strip():
+        outgroup_names = [data['outgroup'].strip()]
+    else:
+        outgroup_names = []
+
+    if not outgroup_names:
+        return jsonify({'error': 'At least one outgroup name is required.'}), 400
 
     # Determine which newick to re-root
     newick = project.tree_newick
@@ -667,33 +712,35 @@ def reroot_tree(project_id):
 
     alias_map = _load_alias_map(project_id)
 
-    # Find the actual Newick leaf label that matches the requested species name
-    tree_struct = _build_tree(newick)
-    if tree_struct is None:
-        return jsonify({'error': 'Failed to parse tree'}), 500
-
-    all_leaves = _get_leaf_names(tree_struct)
-    outgroup_leaf = next(
-        (lbl for lbl in all_leaves if _match_leaf(lbl, outgroup_name, alias_map)),
-        None
-    )
-    if outgroup_leaf is None:
-        return jsonify({'error': f'"{outgroup_name}" not found in tree leaves'}), 404
-
     # Re-root using BioPython
     try:
         from Bio import Phylo
         from io import StringIO
 
         bio_tree = Phylo.read(StringIO(newick), 'newick')
-        # Find matching terminal in BioPython tree
-        outgroup_clade = next(
-            (t for t in bio_tree.get_terminals()
-             if t.name and (t.name == outgroup_leaf or _match_leaf(t.name, outgroup_name, alias_map))),
-            None
-        )
-        if outgroup_clade is None:
-            return jsonify({'error': 'Could not locate outgroup terminal in tree'}), 404
+        terminals = bio_tree.get_terminals()
+
+        # Find terminals matching each outgroup name
+        matched = []
+        not_found = []
+        for name in outgroup_names:
+            t = next(
+                (t for t in terminals
+                 if t.name and _match_leaf(t.name, name, alias_map)),
+                None
+            )
+            if t:
+                matched.append(t)
+            else:
+                not_found.append(name)
+
+        if not matched:
+            return jsonify({'error': f'No outgroup names found in tree: {not_found}'}), 404
+
+        if len(matched) == 1:
+            outgroup_clade = matched[0]
+        else:
+            outgroup_clade = bio_tree.common_ancestor(matched)
 
         bio_tree.root_with_outgroup(outgroup_clade)
 
@@ -703,7 +750,11 @@ def reroot_tree(project_id):
 
         project.tree_newick = new_newick
         db.session.commit()
-        return jsonify({'status': 'ok', 'outgroup': outgroup_name})
+
+        result = {'status': 'ok', 'outgroups': outgroup_names}
+        if not_found:
+            result['warning'] = f'Not found in tree: {not_found}'
+        return jsonify(result)
 
     except Exception as exc:
         db.session.rollback()
@@ -916,6 +967,231 @@ def ignore_tree_label(project_id):
         db.session.add(alias)
     db.session.commit()
     return jsonify({'status': 'ok', 'id': alias.id, 'tree_label': norm})
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/import_states/projects')
+@login_required
+def import_states_projects(project_id):
+    """Return projects the current user can read from (for the import-states source selector)."""
+    from app.models import ProjectMembership
+    owned = Project.query.filter_by(created_by=current_user.id).all()
+    member_ids = [m.project_id for m in
+                  ProjectMembership.query.filter_by(user_id=current_user.id).all()]
+    member_projects = Project.query.filter(Project.id.in_(member_ids)).all() if member_ids else []
+    all_projects = list({p.id: p for p in owned + member_projects}.values())
+    return jsonify([
+        {'id': p.id, 'name': p.name}
+        for p in sorted(all_projects, key=lambda p: p.name)
+        if p.id != project_id
+    ])
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/import_states/preview')
+@login_required
+def import_states_preview(project_id):
+    """Dry-run: show what would be imported from source_project_id."""
+    from app.models import ProjectMembership
+    source_project_id = request.args.get('source_project_id', type=int)
+    overwrite = request.args.get('overwrite', '0') == '1'
+    if not source_project_id:
+        return jsonify({'error': 'source_project_id required'}), 400
+    if source_project_id == project_id:
+        return jsonify({'error': 'Source and target must be different projects'}), 400
+
+    source_project = Project.query.get_or_404(source_project_id)
+    is_member = (source_project.created_by == current_user.id or
+                 ProjectMembership.query.filter_by(
+                     user_id=current_user.id, project_id=source_project_id).first())
+    if not is_member:
+        return jsonify({'error': 'No access to source project'}), 403
+
+    tgt_chars = {c.code.upper(): c for c in
+                 CharacterDefinition.query.filter_by(project_id=project_id, active=True).all()}
+    src_chars = {c.code.upper(): c for c in
+                 CharacterDefinition.query.filter_by(project_id=source_project_id, active=True).all()}
+    matched_codes = sorted(set(tgt_chars) & set(src_chars))
+
+    tgt_specimens = {s.species_name.strip().lower(): s for s in
+                     Specimen.query.filter_by(project_id=project_id).all()}
+    src_specimens = {s.species_name.strip().lower(): s for s in
+                     Specimen.query.filter_by(project_id=source_project_id).all()}
+    matched_species_norm = sorted(set(tgt_specimens) & set(src_specimens))
+
+    # Pre-fetch all source structures and values in bulk
+    src_sp_ids = [src_specimens[n].id for n in matched_species_norm]
+    src_structs = Structure.query.filter(Structure.specimen_id.in_(src_sp_ids)).all()
+    src_struct_map = {}   # (specimen_id, structure_type) → Structure
+    for st in src_structs:
+        src_struct_map[(st.specimen_id, st.structure_type)] = st
+
+    src_char_ids = [src_chars[c].id for c in matched_codes]
+    src_struct_ids = [st.id for st in src_structs]
+    src_vals = CharacterValue.query.filter(
+        CharacterValue.structure_id.in_(src_struct_ids),
+        CharacterValue.character_id.in_(src_char_ids)
+    ).all() if src_struct_ids and src_char_ids else []
+    src_val_map = {(v.structure_id, v.character_id): v for v in src_vals}
+
+    # Pre-fetch target structures and values
+    tgt_sp_ids = [tgt_specimens[n].id for n in matched_species_norm]
+    tgt_structs = Structure.query.filter(Structure.specimen_id.in_(tgt_sp_ids)).all()
+    tgt_struct_map = {}
+    for st in tgt_structs:
+        tgt_struct_map[(st.specimen_id, st.structure_type)] = st
+    tgt_char_ids = [tgt_chars[c].id for c in matched_codes]
+    tgt_struct_ids = [st.id for st in tgt_structs]
+    tgt_vals = CharacterValue.query.filter(
+        CharacterValue.structure_id.in_(tgt_struct_ids),
+        CharacterValue.character_id.in_(tgt_char_ids)
+    ).all() if tgt_struct_ids and tgt_char_ids else []
+    tgt_val_map = {(v.structure_id, v.character_id): v for v in tgt_vals}
+
+    n_will_import = 0
+    n_skipped_no_src = 0
+    n_skipped_exists = 0
+    n_skipped_type_mismatch = 0
+
+    for norm in matched_species_norm:
+        src_sp = src_specimens[norm]
+        tgt_sp = tgt_specimens[norm]
+        for code in matched_codes:
+            sc = src_chars[code]
+            tc = tgt_chars[code]
+            if sc.structure_type != tc.structure_type:
+                n_skipped_type_mismatch += 1
+                continue
+            stype = sc.structure_type
+            src_st = src_struct_map.get((src_sp.id, stype))
+            if not src_st:
+                n_skipped_no_src += 1
+                continue
+            sv = src_val_map.get((src_st.id, sc.id))
+            if not sv or not sv.state or sv.state == '?':
+                n_skipped_no_src += 1
+                continue
+            tgt_st = tgt_struct_map.get((tgt_sp.id, stype))
+            tv = tgt_val_map.get((tgt_st.id, tc.id)) if tgt_st else None
+            already_set = tv and tv.state and tv.state not in ('?',)
+            if already_set and not overwrite:
+                n_skipped_exists += 1
+            else:
+                n_will_import += 1
+
+    return jsonify({
+        'source_project': source_project.name,
+        'n_matched_chars': len(matched_codes),
+        'matched_chars': [{'code': c, 'name': tgt_chars[c].name} for c in matched_codes],
+        'n_matched_species': len(matched_species_norm),
+        'matched_species': [tgt_specimens[n].species_name for n in matched_species_norm],
+        'n_will_import': n_will_import,
+        'n_skipped_no_src': n_skipped_no_src,
+        'n_skipped_exists': n_skipped_exists,
+        'n_skipped_type_mismatch': n_skipped_type_mismatch,
+    })
+
+
+@matrix_bp.route('/api/project/<int:project_id>/matrix/import_states', methods=['POST'])
+@login_required
+def import_states(project_id):
+    """Copy CharacterValues from source_project where code and species_name match."""
+    from app.models import ProjectMembership
+    data = request.get_json() or {}
+    source_project_id = data.get('source_project_id')
+    overwrite = data.get('overwrite', False)
+
+    if not source_project_id:
+        return jsonify({'error': 'source_project_id required'}), 400
+    if source_project_id == project_id:
+        return jsonify({'error': 'Source and target must be different projects'}), 400
+
+    source_project = Project.query.get_or_404(source_project_id)
+    is_member = (source_project.created_by == current_user.id or
+                 ProjectMembership.query.filter_by(
+                     user_id=current_user.id, project_id=source_project_id).first())
+    if not is_member:
+        return jsonify({'error': 'No access to source project'}), 403
+
+    tgt_chars = {c.code.upper(): c for c in
+                 CharacterDefinition.query.filter_by(project_id=project_id, active=True).all()}
+    src_chars = {c.code.upper(): c for c in
+                 CharacterDefinition.query.filter_by(project_id=source_project_id, active=True).all()}
+    matched_codes = list(set(tgt_chars) & set(src_chars))
+
+    tgt_specimens = {s.species_name.strip().lower(): s for s in
+                     Specimen.query.filter_by(project_id=project_id).all()}
+    src_specimens = {s.species_name.strip().lower(): s for s in
+                     Specimen.query.filter_by(project_id=source_project_id).all()}
+    matched_species_norm = list(set(tgt_specimens) & set(src_specimens))
+
+    imported = 0
+    skipped = 0
+
+    for norm in matched_species_norm:
+        src_sp = src_specimens[norm]
+        tgt_sp = tgt_specimens[norm]
+
+        for code in matched_codes:
+            sc = src_chars[code]
+            tc = tgt_chars[code]
+            if sc.structure_type != tc.structure_type:
+                skipped += 1
+                continue
+            stype = sc.structure_type
+
+            src_st = Structure.query.filter_by(
+                specimen_id=src_sp.id, structure_type=stype).first()
+            if not src_st:
+                skipped += 1
+                continue
+            sv = CharacterValue.query.filter_by(
+                structure_id=src_st.id, character_id=sc.id).first()
+            if not sv or not sv.state or sv.state == '?':
+                skipped += 1
+                continue
+
+            # Find or lazily create target structure
+            tgt_st = Structure.query.filter_by(
+                specimen_id=tgt_sp.id, structure_type=stype).first()
+            if not tgt_st:
+                tgt_st = Structure(specimen_id=tgt_sp.id, structure_type=stype)
+                db.session.add(tgt_st)
+                db.session.flush()
+
+            tv = CharacterValue.query.filter_by(
+                structure_id=tgt_st.id, character_id=tc.id).first()
+            already_set = tv and tv.state and tv.state not in ('?',)
+            if already_set and not overwrite:
+                skipped += 1
+                continue
+
+            if tv:
+                tv.state = sv.state
+                tv.raw_value = sv.raw_value
+                tv.confidence = sv.confidence
+                tv.auto_assigned = False
+                tv.override_by = current_user.id
+                tv.override_at = datetime.now(timezone.utc)
+            else:
+                tv = CharacterValue(
+                    structure_id=tgt_st.id,
+                    character_id=tc.id,
+                    state=sv.state,
+                    raw_value=sv.raw_value,
+                    confidence=sv.confidence,
+                    auto_assigned=False,
+                    override_by=current_user.id,
+                    override_at=datetime.now(timezone.utc),
+                )
+                db.session.add(tv)
+            imported += 1
+
+    db.session.commit()
+    return jsonify({
+        'status': 'ok',
+        'imported': imported,
+        'skipped': skipped,
+        'message': f'Imported {imported} state(s). {skipped} skipped (no match or already set).',
+    })
 
 
 @matrix_bp.route('/api/project/<int:project_id>/matrix/add_specimen_from_tree', methods=['POST'])

@@ -8,7 +8,19 @@ build/
 
 # Data (user-generated)
 data/db.sqlite
+data/db.sqlite-shm
+data/db.sqlite-wal
+data/db.sqlite.*
 data/uploads/
+data/exports/
+data/{uploads}
+gyro.db
+
+# Logs
+*.log
+
+# Phylogeny run outputs (large, regenerated)
+phylogeny/Results/
 
 # Local results
 results saved by WB/

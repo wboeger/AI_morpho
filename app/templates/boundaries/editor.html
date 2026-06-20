@@ -31,7 +31,10 @@
     #bTooltip { position:absolute; background:rgba(0,0,0,0.8); color:white; padding:3px 8px; border-radius:4px; font-size:0.75rem; pointer-events:none; display:none; z-index:50; }
 </style>
 
-<h1 style="font-size:1.1rem; margin-bottom:0.5rem;">Boundary Editor: <em>{{ specimen.species_name }}</em> &mdash; {{ structure.structure_type.replace('_', ' ') }}</h1>
+<div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:0.5rem;">
+    <a href="{{ url_for('project.specimen_detail', specimen_id=specimen.id) }}" class="btn btn-sm btn-outline">&larr; Back</a>
+    <h1 style="font-size:1.1rem; margin:0;">Boundary Editor: <em>{{ specimen.species_name }}</em> &mdash; {{ structure.structure_type.replace('_', ' ') }}</h1>
+</div>
 
 <div class="boundary-layout">
     <!-- Canvas -->

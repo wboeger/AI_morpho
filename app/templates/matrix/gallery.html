@@ -42,16 +42,17 @@
     <div class="gallery-item" data-idx="{{ loop.index0 }}" data-structure-id="{{ e.structure.id }}">
         <div class="visual-container" id="visual_{{ loop.index0 }}" onclick="openLightbox({{ loop.index0 }})" style="cursor:zoom-in;">
         </div>
-        <div class="species">{{ e.specimen.species_name }}</div>
+        <div class="species">{{ e.specimen.species_name }}{% if not e.has_target_structure %} <span title="No {{ char.structure_type.replace('_',' ') }} image; showing proxy" style="font-size:0.65rem; color:var(--gray-400); font-style:normal;">*</span>{% endif %}</div>
 
         <!-- State badge -->
         <div>
+            {% set matched = (char.states_json or []) | selectattr('code', 'equalto', e.value.state) | list %}
             <span class="state-badge" style="background:
                 {% if e.value and e.value.state == '-' %}var(--gray-300)
                 {% elif not e.value or e.value.state == '?' %}white; border:1px solid var(--gray-300)
                 {% else %}var(--primary){% endif %}; color:
                 {% if not e.value or e.value.state == '?' %}var(--gray-700){% else %}white{% endif %};">
-                {{ e.value.state if e.value and e.value.state is not none else '?' }}
+                {{ e.value.state if e.value and e.value.state is not none else '?' }}{% if matched %}: {{ matched[0].name }}{% endif %}
             </span>
             {% if e.value and e.value.raw_value is not none %}
             <span style="font-size:0.75rem; color:var(--gray-500);">{{ '%.3f'|format(e.value.raw_value) }}</span>
@@ -59,11 +60,11 @@
         </div>
 
         <!-- State buttons — always shown -->
-        <div class="state-buttons" style="justify-content:center; margin-top:0.3rem;">
+        <div class="state-buttons" style="justify-content:center; margin-top:0.3rem; flex-wrap:wrap; gap:0.2rem;">
             {% for s in (char.states_json or []) %}
             <button class="state-btn btn-sm {% if e.value and e.value.state == s.code %}active{% endif %}"
                 onclick="assignState({{ e.structure.id }}, {{ char.id }}, '{{ s.code }}', this)"
-                title="{{ s.name }}">{{ s.code }}</button>
+                title="{{ s.name }}" style="font-size:0.7rem;">{{ s.code }}: {{ s.name }}</button>
             {% endfor %}
         </div>
     </div>
@@ -74,9 +75,14 @@
 <div class="modal-overlay" id="lightboxModal" onclick="closeLightbox(event)">
     <div class="lightbox-content">
         <button class="lightbox-close" onclick="document.getElementById('lightboxModal').classList.remove('active')">&times;</button>
+        <div id="lightboxCounter" style="text-align:center; font-size:0.75rem; color:var(--gray-400); margin-bottom:0.4rem;"></div>
         <div id="lightboxBody"></div>
         <div id="lightboxSpecies" style="text-align:center; margin-top:0.5rem; font-style:italic;"></div>
         <div id="lightboxStates" style="text-align:center; margin-top:0.5rem;"></div>
+        <div style="display:flex; justify-content:center; gap:1rem; margin-top:0.75rem;">
+            <button class="btn btn-sm btn-outline" id="lbPrev" onclick="navigateLightbox(-1)">&#8592; Prev</button>
+            <button class="btn btn-sm btn-outline" id="lbNext" onclick="navigateLightbox(1)">Next &#8594;</button>
+        </div>
     </div>
 </div>
 {% endblock %}
@@ -98,7 +104,8 @@ const entryData = [
     structureId: {{ e.structure.id }},
     species: {{ e.specimen.species_name | tojson }},
     state: {{ (e.value.state if e.value and e.value.state is not none else '?') | tojson }},
-    alt: {{ e.alt_structures | tojson }}
+    alt: {{ e.alt_structures | tojson }},
+    hasTarget: {{ 'true' if e.has_target_structure else 'false' }}
 },
 {% endfor %}
 ];
@@ -215,7 +222,10 @@ function openLightbox(idx) {
     const species = document.getElementById('lightboxSpecies');
     const statesDiv = document.getElementById('lightboxStates');
 
-    species.textContent = entry.species;
+    species.textContent = entry.species + (entry.hasTarget ? '' : ' *');
+    document.getElementById('lightboxCounter').textContent = `${idx + 1} / ${entryData.length}`;
+    document.getElementById('lbPrev').disabled = idx === 0;
+    document.getElementById('lbNext').disabled = idx === entryData.length - 1;
 
     // Lightbox always prefers image when in image mode
     if (viewMode === 'images' && altData && altData.image_url) {
@@ -242,6 +252,12 @@ function openLightbox(idx) {
     statesDiv.innerHTML = `<div class="state-buttons" style="justify-content:center; flex-wrap:wrap;">${btnsHtml}</div>`;
 
     document.getElementById('lightboxModal').classList.add('active');
+}
+
+function navigateLightbox(delta) {
+    const next = lightboxIdx + delta;
+    if (next < 0 || next >= entryData.length) return;
+    openLightbox(next);
 }
 
 function closeLightbox(event) {
@@ -326,9 +342,12 @@ function assignState(structureId, characterId, state, btn) {
     });
 }
 
-// Keyboard: Escape closes lightbox
 document.addEventListener('keydown', e => {
-    if (e.key === 'Escape') document.getElementById('lightboxModal').classList.remove('active');
+    const open = document.getElementById('lightboxModal').classList.contains('active');
+    if (e.key === 'Escape') { document.getElementById('lightboxModal').classList.remove('active'); return; }
+    if (!open) return;
+    if (e.key === 'ArrowLeft')  { e.preventDefault(); navigateLightbox(-1); }
+    if (e.key === 'ArrowRight') { e.preventDefault(); navigateLightbox(1); }
 });
 </script>
 
@@ -341,6 +360,7 @@ document.addEventListener('keydown', e => {
     display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 3px; vertical-align: middle;
 }
 .visual-container:hover { opacity: 0.85; }
+#lbPrev:disabled, #lbNext:disabled { opacity: 0.3; cursor: default; }
 .lightbox-content {
     background: white; border-radius: 8px; padding: 1.5rem; max-width: 700px; width: 90%;
     max-height: 90vh; overflow-y: auto; position: relative;

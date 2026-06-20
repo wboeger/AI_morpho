@@ -13,28 +13,48 @@
     <button class="btn btn-sm btn-outline" onclick="importNjTreeById({{ job.id }})">Import NJ &#8594; Matrix</button>
     {% endif %}
     {% if job.status in ('trimmed',) %}
-    <button class="btn btn-sm btn-primary" onclick="submitCipres({{ job.id }})">Submit to CIPRES</button>
+    <button class="btn btn-sm btn-primary" onclick="openCipresModal({{ job.id }})">Submit to Galaxy</button>
     {% endif %}
     {% if job.status in ('submitted', 'running', 'fetching', 'aligning', 'trimming', 'created') %}
     <button class="btn btn-sm btn-outline" onclick="checkStatus({{ job.id }})">Refresh</button>
     {% endif %}
     {% if job.status == 'completed' %}
     <button class="btn btn-sm btn-warning" onclick="downloadAndRoot({{ job.id }})">Download &amp; Root</button>
+    <button class="btn btn-sm btn-outline" onclick="openNjModalRevise({{ job.id }})" title="Review sequences and resubmit to Galaxy">Revise &amp; Resubmit</button>
     {% endif %}
     {% if job.status == 'tree_ready' %}
     <button class="btn btn-sm btn-success" onclick="importTree({{ job.id }})">Import into Project</button>
     <button class="btn btn-sm btn-outline" onclick="viewTree({{ job.id }})">View Tree</button>
+    <button class="btn btn-sm btn-outline" onclick="openNjModalRevise({{ job.id }})" title="Review sequences and resubmit to Galaxy">Revise &amp; Resubmit</button>
+    {% endif %}
+    {# Download dropdown — visible once there are any files #}
+    {% set has_files = job.raw_fasta_path or job.aligned_fasta_path or job.trimmed_fasta_path or job.nj_newick or job.tree_newick %}
+    {% if has_files %}
+    <div class="dl-dropdown">
+        <button class="btn btn-sm btn-outline dl-toggle">&#8595; Files</button>
+        <div class="dl-menu">
+            {% if job.raw_fasta_path %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/raw">Raw FASTA</a>{% endif %}
+            {% if job.aligned_fasta_path %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/aligned">Aligned FASTA</a>{% endif %}
+            {% if job.trimmed_fasta_path %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/trimmed">Trimmed Alignment</a>{% endif %}
+            {% if job.nj_newick %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/nj_tree">NJ Tree (.nwk)</a>{% endif %}
+            {% if job.tree_newick %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/ml_tree">{{ 'Bayesian' if job.phylo_method == 'mrbayes' else 'ML' }} Tree (.nwk)</a>{% endif %}
+        </div>
+    </div>
     {% endif %}
     <button class="btn btn-sm btn-danger" style="margin-left:0.25rem;" onclick="deleteJob({{ job.id }})">Delete</button>
 {% endmacro %}
 
 {% block content %}
-<h1>Phylogenetic Analysis</h1>
+<div class="page-h">
+    <h1>Phylogenetic Analysis</h1>
+    <span class="sub">{{ project.name }}</span>
+</div>
 
 <!-- Mode tabs -->
 <div style="display:flex; gap:0.5rem; margin-bottom:1rem;">
-    <button class="btn btn-primary btn-sm" id="tab-ncbi" onclick="switchTab('ncbi')">NCBI Pipeline</button>
-    <button class="btn btn-outline btn-sm" id="tab-upload" onclick="switchTab('upload')">Upload FASTA</button>
+    <button class="btn btn-primary btn-sm" id="tab-ncbi"    onclick="switchTab('ncbi')">NCBI Pipeline</button>
+    <button class="btn btn-outline btn-sm" id="tab-upload"  onclick="switchTab('upload')">Upload FASTA</button>
+    <button class="btn btn-outline btn-sm" id="tab-treeupl" onclick="switchTab('treeupl')">Upload Tree</button>
 </div>
 
 <!-- ── NCBI Pipeline Form ─────────────────────────────────────────────────── -->
@@ -56,10 +76,23 @@
                                placeholder="e.g. Gyrodactylidae">
                         <small style="color:var(--gray-500);">Searched as <em>"Taxon"[Organism]</em></small>
                     </div>
-                    <div class="form-group">
+                    <!-- Single-marker query (hidden when concatenated) -->
+                    <div class="form-group" id="div-gene-query">
                         <label>Gene / Marker Query <span style="color:var(--danger);">*</span></label>
                         <textarea name="gene_query" rows="3">{{ defaults.gene_query }}</textarea>
                         <small style="color:var(--gray-500);">NCBI search terms combined with AND</small>
+                    </div>
+                    <!-- Concatenated-mode queries -->
+                    <div id="div-concat-queries" style="display:none;">
+                        <div class="form-group">
+                            <label>18S Query <span style="color:var(--danger);">*</span></label>
+                            <textarea name="gene_query_18s" rows="2">(small subunit ribosomal RNA[All Fields] OR 18S[All Fields]) NOT (internal transcribed spacer[All Fields])</textarea>
+                        </div>
+                        <div class="form-group">
+                            <label>ITS Query <span style="color:var(--danger);">*</span></label>
+                            <textarea name="gene_query_its" rows="2">(internal transcribed spacer[All Fields] OR ITS[All Fields]) NOT (18S[All Fields] OR 28S[All Fields])</textarea>
+                        </div>
+                        <small style="color:var(--gray-500);">Each marker fetched, aligned, and trimmed separately; taxa missing one marker get gap columns in the concatenated alignment.</small>
                     </div>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
                         <div class="form-group">
@@ -102,9 +135,10 @@
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
                         <div class="form-group">
                             <label>Marker</label>
-                            <select name="marker">
+                            <select name="marker" id="ncbi-marker-select" onchange="toggleConcatQueries(this.value)">
                                 <option value="18S">18S rRNA</option>
                                 <option value="ITS">ITS</option>
+                                <option value="concatenated">18S + ITS (concatenated)</option>
                                 <option value="COI">COI</option>
                                 <option value="other">Other</option>
                             </select>
@@ -115,18 +149,18 @@
                         </div>
                     </div>
                     <fieldset style="border:1px solid var(--gray-300); border-radius:4px; padding:0.75rem;">
-                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">CIPRES Credentials</legend>
-                        <div class="form-group" style="margin-bottom:0.4rem;">
-                            <label>Username</label>
-                            <input type="text" name="cipres_user" value="{{ defaults.cipres_user }}">
-                        </div>
-                        <div class="form-group" style="margin-bottom:0.4rem;">
-                            <label>Password</label>
-                            <input type="password" name="cipres_password">
-                        </div>
+                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">Galaxy Credentials</legend>
                         <div class="form-group" style="margin-bottom:0;">
-                            <label>Application Key</label>
-                            <input type="text" name="cipres_app_key" value="{{ defaults.cipres_app_key }}">
+                            <label>API Key
+                                <a href="https://usegalaxy.eu/user/api_key" target="_blank"
+                                   style="font-weight:normal; font-size:0.78rem; margin-left:0.4rem; color:var(--primary);">
+                                    Get key ↗
+                                </a>
+                            </label>
+                            <input type="password" name="galaxy_api_key"
+                                   value="{{ defaults.galaxy_api_key }}"
+                                   placeholder="usegalaxy.eu API key">
+                            <small style="color:var(--gray-500);">Used only at submission time. Stored encrypted with the job record.</small>
                         </div>
                     </fieldset>
                 </div>
@@ -183,18 +217,17 @@
                         <textarea name="outgroup_genera" rows="8">{{ defaults.outgroup_genera }}</textarea>
                     </div>
                     <fieldset style="border:1px solid var(--gray-300); border-radius:4px; padding:0.75rem;">
-                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">CIPRES Credentials</legend>
-                        <div class="form-group" style="margin-bottom:0.4rem;">
-                            <label>Username</label>
-                            <input type="text" name="cipres_user" value="{{ defaults.cipres_user }}">
-                        </div>
-                        <div class="form-group" style="margin-bottom:0.4rem;">
-                            <label>Password</label>
-                            <input type="password" name="cipres_password">
-                        </div>
+                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">Galaxy Credentials</legend>
                         <div class="form-group" style="margin-bottom:0;">
-                            <label>Application Key</label>
-                            <input type="text" name="cipres_app_key" value="{{ defaults.cipres_app_key }}">
+                            <label>API Key
+                                <a href="https://usegalaxy.eu/user/api_key" target="_blank"
+                                   style="font-weight:normal; font-size:0.78rem; margin-left:0.4rem; color:var(--primary);">
+                                    Get key ↗
+                                </a>
+                            </label>
+                            <input type="password" name="galaxy_api_key"
+                                   value="{{ defaults.galaxy_api_key }}"
+                                   placeholder="usegalaxy.eu API key">
                         </div>
                     </fieldset>
                 </div>
@@ -204,6 +237,54 @@
                     Upload &amp; Continue
                 </button>
                 <span id="submit-msg-upload" style="font-size:0.9rem; color:var(--gray-500);"></span>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ── Upload Tree Form ───────────────────────────────────────────────────── -->
+<div class="card" id="form-treeupl" style="display:none;">
+    <div style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;" onclick="toggleForm('treeupl-body','treeupl-icon')">
+        <h3 style="margin:0;">Upload Existing Tree</h3>
+        <span id="treeupl-icon" style="font-size:1.1rem; color:var(--primary);">&#9660;</span>
+    </div>
+    <div id="treeupl-body" style="margin-top:1rem;">
+        <p style="font-size:0.875rem; color:var(--gray-600); margin-bottom:1rem;">
+            Upload a Newick or NEXUS tree file. It will be recorded as a job and can optionally be set as the project's active phylogeny.
+        </p>
+        <form id="form-treeupl-inner" enctype="multipart/form-data">
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; max-width:640px;">
+                <div>
+                    <div class="form-group">
+                        <label>Tree File <span style="color:var(--danger);">*</span></label>
+                        <input type="file" id="treeupl-file" accept=".nwk,.nex,.nexus,.tre,.tree,.txt,.newick" required>
+                        <small style="color:var(--gray-500);">Newick (.nwk, .tre) or NEXUS (.nex, .nexus)</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Marker / Label</label>
+                        <select id="treeupl-marker">
+                            <option value="18S">18S rRNA</option>
+                            <option value="ITS">ITS</option>
+                            <option value="COI">COI</option>
+                            <option value="ML">ML tree</option>
+                            <option value="Bayesian">Bayesian</option>
+                            <option value="other">Other</option>
+                        </select>
+                    </div>
+                </div>
+                <div>
+                    <div class="form-group">
+                        <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-weight:normal;">
+                            <input type="checkbox" id="treeupl-import" checked style="width:auto;">
+                            Import as project's active phylogeny
+                        </label>
+                        <small style="color:var(--gray-500);">Sets this tree for matrix optimization and descriptions.</small>
+                    </div>
+                </div>
+            </div>
+            <div style="margin-top:1rem; display:flex; align-items:center; gap:1rem;">
+                <button type="button" class="btn btn-primary" onclick="uploadTree()">Upload Tree</button>
+                <span id="treeupl-msg" style="font-size:0.9rem; color:var(--gray-500);"></span>
             </div>
         </form>
     </div>
@@ -222,6 +303,7 @@
                     <th>Target / File</th>
                     <th>Marker</th>
                     <th>Seqs</th>
+                    <th>Model</th>
                     <th>Stage</th>
                     <th>Message</th>
                     <th>Actions</th>
@@ -247,6 +329,15 @@
                         {{ job.n_sequences_raw }} → {{ job.n_sequences_deduped }} → {{ job.n_sequences_final or job.n_sequences }}
                     {% else %}
                         {{ job.n_sequences or '—' }}
+                    {% endif %}
+                </td>
+                <td id="model-{{ job.id }}" style="font-size:0.78rem; font-family:monospace; color:var(--gray-600);"
+                    data-model="{{ job.best_fit_model or '' }}"
+                    data-lset="{{ job.mrbayes_lset or '' }}">
+                    {% if job.best_fit_model %}
+                        <span title="{{ job.mrbayes_lset or '' }}">{{ job.best_fit_model }}</span>
+                    {% else %}
+                        <span style="color:var(--gray-400);">—</span>
                     {% endif %}
                 </td>
                 <td>
@@ -294,7 +385,112 @@
 .stage-tree_ready { background: #e2d9f3; color: #4a235a; }
 .stage-failed     { background: var(--conf-low); color: #721c24; }
 @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.6; } }
+
+/* ── Download dropdown ── */
+.dl-dropdown { position:relative; display:inline-block; }
+.dl-menu {
+    display:none; position:absolute; right:0; top:100%; z-index:100;
+    background:#fff; border:1px solid var(--gray-300); border-radius:6px;
+    box-shadow:0 4px 12px rgba(0,0,0,0.12); min-width:170px; padding:0.25rem 0;
+}
+.dl-dropdown:hover .dl-menu, .dl-dropdown.open .dl-menu { display:block; }
+.dl-item {
+    display:block; padding:0.35rem 0.9rem; font-size:0.8rem;
+    color:var(--gray-700); text-decoration:none; white-space:nowrap;
+}
+.dl-item:hover { background:var(--gray-100); color:var(--primary); }
+
+/* ── Galaxy method modal ── */
+#cipresModal .modal { max-width:460px; }
+#cipresModal label { font-weight:600; font-size:0.85rem; }
+#cipresModal .method-option { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem; cursor:pointer; }
+#cipresModal .mb-params { display:none; margin-top:0.75rem; border-top:1px solid var(--gray-200); padding-top:0.75rem; }
+#cipresModal .form-row { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
 </style>
+
+<!-- ── Galaxy method selection modal ────────────────────────────────────── -->
+<div class="modal-overlay" id="cipresModal">
+    <div class="modal" style="max-width:460px;">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:1rem;">
+            <h3 style="margin:0;">Submit to Galaxy
+                <small style="font-weight:normal; font-size:0.75rem; color:var(--gray-500); margin-left:0.4rem;">usegalaxy.eu</small>
+            </h3>
+            <button class="btn btn-sm btn-outline" onclick="closeCipresModal()">&#10005;</button>
+        </div>
+        <p style="font-size:0.85rem; color:var(--gray-600); margin-bottom:1rem;">
+            Choose the phylogenetic inference method for this job.
+        </p>
+        <div>
+            <label class="method-option">
+                <input type="radio" name="cipres-method" value="raxml" checked onchange="onMethodChange()">
+                <span><strong>RAxML-NG</strong> — Maximum likelihood (fast, recommended)</span>
+            </label>
+            <label class="method-option">
+                <input type="radio" name="cipres-method" value="mrbayes" onchange="onMethodChange()">
+                <span><strong>MrBayes</strong> — Bayesian MCMC (slower, posterior probabilities)</span>
+            </label>
+        </div>
+
+        <!-- RAxML bootstrap field -->
+        <div id="raxml-params" style="margin-top:0.75rem; border-top:1px solid var(--gray-200); padding-top:0.75rem;">
+            <div class="form-group" style="margin-bottom:0;">
+                <label>Bootstrap replicates</label>
+                <input type="number" id="cipres-bootstraps" value="1000" min="100" max="5000" style="width:110px;">
+            </div>
+        </div>
+
+        <!-- MrBayes parameters -->
+        <div id="mrbayes-params" class="mb-params">
+            <!-- Auto-detected model banner -->
+            <div id="mb-model-banner" style="display:none; margin-bottom:0.75rem; padding:0.45rem 0.7rem;
+                 background:#e8f5e9; border-radius:5px; font-size:0.8rem; color:#2e7d32;">
+                <strong>Auto-detected model (BIC):</strong> <span id="mb-model-name"></span>
+                <span style="color:#555; margin-left:0.5rem;" id="mb-model-lset-display"></span>
+            </div>
+            <div id="mb-no-model-note" style="display:none; margin-bottom:0.75rem; padding:0.45rem 0.7rem;
+                 background:#fff3cd; border-radius:5px; font-size:0.8rem; color:#856404;">
+                No substitution model has been determined yet.
+                <button class="btn btn-sm btn-outline" style="margin-left:0.5rem; padding:1px 8px; font-size:0.78rem;"
+                        onclick="runModeltestFromModal()">Run ModelTest-NG</button>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Generations (ngen)</label>
+                    <input type="number" id="mb-ngen" value="1000000" min="100000" step="100000">
+                </div>
+                <div class="form-group">
+                    <label>Runs (nruns)</label>
+                    <input type="number" id="mb-nruns" value="2" min="1" max="8">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Chains (nchains)</label>
+                    <input type="number" id="mb-nchains" value="4" min="1" max="16">
+                </div>
+                <div class="form-group">
+                    <label>Burnin fraction</label>
+                    <input type="number" id="mb-burnin" value="0.25" min="0.1" max="0.5" step="0.05">
+                </div>
+            </div>
+            <div class="form-group" style="margin-bottom:0;">
+                <label style="display:flex; justify-content:space-between;">
+                    <span>MrBayes <code>lset</code> command</span>
+                    <small style="font-weight:normal; color:var(--gray-500);">edit to override</small>
+                </label>
+                <input type="text" id="mb-lset" value="lset nst=6 rates=invgamma"
+                       style="font-family:monospace; font-size:0.82rem;"
+                       placeholder="lset nst=6 rates=invgamma">
+                <small style="color:var(--gray-500);">nst: 1=JC/F81, 2=HKY, 6=GTR · rates: equal, gamma, propinv, invgamma</small>
+            </div>
+        </div>
+
+        <div style="display:flex; gap:0.75rem; justify-content:flex-end; margin-top:1.25rem;">
+            <button class="btn btn-outline" onclick="closeCipresModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="confirmCipresSubmit()">Submit</button>
+        </div>
+    </div>
+</div>
 
 <!-- ── NJ tree review modal ───────────────────────────────────────────────── -->
 <div class="modal-overlay" id="njModal">
@@ -332,11 +528,22 @@
         <!-- Footer -->
         <div style="padding:0.65rem 1rem; border-top:1px solid var(--gray-200); display:flex; align-items:center; gap:0.75rem; flex-shrink:0; flex-wrap:wrap;">
             <button class="btn btn-warning" id="njApplyBtn" onclick="applyNjChanges()" disabled>Apply Changes &amp; Re-run NJ</button>
-            <button class="btn btn-success" onclick="approveForCipres()">Approve &#8594; CIPRES</button>
+            <button class="btn btn-success" onclick="approveForCipres()">Approve &#8594; Galaxy</button>
             <button class="btn btn-outline" onclick="openAddSpeciesModal()">+ Add Species</button>
             <button class="btn btn-outline" onclick="importNjTree()">Import NJ Tree into Matrix</button>
             <button class="btn btn-outline" onclick="closeNjModal()">Cancel</button>
             <span id="njModalMsg" style="font-size:0.83rem; color:var(--gray-500); margin-left:0.25rem;"></span>
+            <!-- Outgroup rooting -->
+            <div style="display:flex; align-items:center; gap:0.4rem; margin-left:auto; flex-shrink:0;">
+                <label style="font-size:0.78rem; color:var(--gray-600); white-space:nowrap;">Root at outgroup:</label>
+                <input type="text" id="njOutgroupInput"
+                    placeholder="Genus1, Genus2…"
+                    style="font-size:0.82rem; padding:0.2rem 0.5rem; border:1px solid var(--gray-300); border-radius:4px; width:200px;"
+                    title="Enter one or more outgroup genus/species names (comma-separated). The tree will be rooted at their MRCA."
+                    onkeydown="if(event.key==='Enter') rerootNjTree()">
+                <button class="btn btn-sm btn-outline" onclick="rerootNjTree()" title="Re-root the NJ tree at the MRCA of the specified outgroups">Root</button>
+                <span id="njRootMsg" style="font-size:0.78rem; color:var(--gray-500);"></span>
+            </div>
         </div>
     </div>
 </div>
@@ -455,10 +662,37 @@ let pollTimers = {};
 let _fetchPreviewJobId = null;
 
 function switchTab(tab) {
-    document.getElementById('form-ncbi').style.display   = (tab === 'ncbi')    ? '' : 'none';
-    document.getElementById('form-upload').style.display = (tab === 'upload')  ? '' : 'none';
-    document.getElementById('tab-ncbi').className   = 'btn btn-sm ' + (tab === 'ncbi'   ? 'btn-primary' : 'btn-outline');
-    document.getElementById('tab-upload').className = 'btn btn-sm ' + (tab === 'upload' ? 'btn-primary' : 'btn-outline');
+    const tabs = ['ncbi', 'upload', 'treeupl'];
+    tabs.forEach(t => {
+        const form = document.getElementById('form-' + t);
+        const btn  = document.getElementById('tab-' + t);
+        if (form) form.style.display = (t === tab) ? '' : 'none';
+        if (btn)  btn.className = 'btn btn-sm ' + (t === tab ? 'btn-primary' : 'btn-outline');
+    });
+}
+
+async function uploadTree() {
+    const fileInput = document.getElementById('treeupl-file');
+    if (!fileInput.files.length) { alert('Please select a tree file.'); return; }
+    const marker  = document.getElementById('treeupl-marker').value;
+    const doImport = document.getElementById('treeupl-import').checked ? '1' : '0';
+    const fd = new FormData();
+    fd.append('tree_file', fileInput.files[0]);
+    fd.append('marker', marker);
+    fd.append('import_to_project', doImport);
+    setMsg('treeupl-msg', 'Uploading…', 'var(--primary)');
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/upload_tree`, {method:'POST', body:fd});
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) {
+            setMsg('treeupl-msg', 'Error: ' + (data.error || resp.statusText), 'var(--danger)');
+            return;
+        }
+        setMsg('treeupl-msg', data.message || 'Uploaded.', 'var(--success, green)');
+        setTimeout(() => location.reload(), 1200);
+    } catch(err) {
+        setMsg('treeupl-msg', 'Network error: ' + err.message, 'var(--danger)');
+    }
 }
 
 function toggleForm(bodyId, iconId) {
@@ -469,18 +703,41 @@ function toggleForm(bodyId, iconId) {
     icon.innerHTML = hidden ? '&#9660;' : '&#9658;';
 }
 
+function toggleConcatQueries(marker) {
+    const single = document.getElementById('div-gene-query');
+    const concat = document.getElementById('div-concat-queries');
+    if (!single || !concat) return;
+    const isCat = marker === 'concatenated';
+    single.style.display = isCat ? 'none' : '';
+    concat.style.display = isCat ? '' : 'none';
+}
+
 function setMsg(id, msg, color) {
     const el = document.getElementById(id);
     if (el) { el.textContent = msg; el.style.color = color || 'var(--gray-500)'; }
 }
 
+async function safeJSON(resp) {
+    const ct = resp.headers.get('content-type') || '';
+    if (ct.includes('application/json')) return resp.json();
+    const text = await resp.text();
+    if (resp.redirected || resp.url.includes('/login')) {
+        throw new Error('Session expired — please reload the page and log in again.');
+    }
+    // Extract first meaningful line from HTML error page for debugging
+    const match = text.match(/<pre[^>]*>([\s\S]{1,300})/);
+    const detail = match ? match[1].trim() : text.slice(0, 200);
+    throw new Error(`Server error ${resp.status}: ${detail}`);
+}
+
 async function createJob(mode) {
     const form = document.getElementById(`form-${mode}-inner`);
+    if (!form) { setMsg(`submit-msg-${mode}`, 'Form not found — please reload the page.', 'var(--danger)'); return; }
     const fd   = new FormData(form);
     setMsg(`submit-msg-${mode}`, mode === 'ncbi' ? 'Starting…' : 'Uploading…', 'var(--primary)');
     try {
         const resp = await fetch(`/project/${PROJECT_ID}/phylogeny/create`, {method:'POST', body:fd});
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             setMsg(`submit-msg-${mode}`, 'Error: ' + (data.error || resp.statusText), 'var(--danger)');
             return;
@@ -488,7 +745,7 @@ async function createJob(mode) {
         setMsg(`submit-msg-${mode}`, data.message, 'var(--success)');
         setTimeout(() => location.reload(), 1200);
     } catch(err) {
-        setMsg(`submit-msg-${mode}`, 'Network error: ' + err.message, 'var(--danger)');
+        setMsg(`submit-msg-${mode}`, err.message, 'var(--danger)');
     }
 }
 
@@ -523,26 +780,119 @@ function buildActions(jobId, status) {
         html += `<button class="btn btn-sm btn-outline" onclick="importNjTreeById(${jobId})">Import NJ &#8594; Matrix</button> `;
     }
     if (status === 'trimmed') {
-        html += `<button class="btn btn-sm btn-primary" onclick="submitCipres(${jobId})">Submit to CIPRES</button> `;
+        html += `<button class="btn btn-sm btn-primary" onclick="openCipresModal(${jobId})">Submit to Galaxy</button> `;
     }
     if (['created','fetching','aligning','trimming','submitted','running'].includes(status)) {
         html += `<button class="btn btn-sm btn-outline" onclick="checkStatus(${jobId})">Refresh</button> `;
     }
     if (status === 'completed') {
         html += `<button class="btn btn-sm btn-warning" onclick="downloadAndRoot(${jobId})">Download &amp; Root</button> `;
+        html += `<button class="btn btn-sm btn-outline" onclick="openNjModalRevise(${jobId})" title="Review sequences and resubmit to Galaxy">Revise &amp; Resubmit</button> `;
     }
     if (status === 'tree_ready') {
         html += `<button class="btn btn-sm btn-success" onclick="importTree(${jobId})">Import into Project</button> `;
         html += `<button class="btn btn-sm btn-outline" onclick="viewTree(${jobId})">View Tree</button> `;
+        html += `<button class="btn btn-sm btn-outline" onclick="openNjModalRevise(${jobId})" title="Review sequences and resubmit to Galaxy">Revise &amp; Resubmit</button> `;
     }
     html += `<button class="btn btn-sm btn-danger" style="margin-left:0.25rem;" onclick="deleteJob(${jobId})">Delete</button>`;
     return html;
 }
 
+// ── CIPRES method modal ───────────────────────────────────────────────────────
+let _cipresJobId = null;
+
+function openCipresModal(jobId) {
+    _cipresJobId = jobId;
+    document.querySelector('input[name="cipres-method"][value="raxml"]').checked = true;
+    onMethodChange();
+    // Populate model info from the row's data attributes
+    const modelCell = document.getElementById('model-' + jobId);
+    const model = modelCell ? modelCell.dataset.model : '';
+    const lset  = modelCell ? modelCell.dataset.lset  : '';
+    _populateMbModel(model, lset);
+    document.getElementById('cipresModal').classList.add('active');
+}
+
+function _populateMbModel(model, lset) {
+    const hasMod = model && model.length > 0;
+    document.getElementById('mb-model-banner').style.display   = hasMod ? '' : 'none';
+    document.getElementById('mb-no-model-note').style.display  = hasMod ? 'none' : '';
+    if (hasMod) {
+        document.getElementById('mb-model-name').textContent         = model;
+        document.getElementById('mb-model-lset-display').textContent = lset ? `(${lset})` : '';
+    }
+    document.getElementById('mb-lset').value = lset || 'lset nst=6 rates=invgamma';
+}
+
+function closeCipresModal() {
+    document.getElementById('cipresModal').classList.remove('active');
+    _cipresJobId = null;
+}
+
+function onMethodChange() {
+    const method = document.querySelector('input[name="cipres-method"]:checked')?.value;
+    document.getElementById('raxml-params').style.display    = method === 'raxml'    ? '' : 'none';
+    document.getElementById('mrbayes-params').style.display  = method === 'mrbayes'  ? '' : 'none';
+}
+
+async function runModeltestFromModal() {
+    if (!_cipresJobId) return;
+    const noteEl = document.getElementById('mb-no-model-note');
+    noteEl.innerHTML = 'Running ModelTest-NG… (this may take several minutes)';
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${_cipresJobId}/run_modeltest`,
+                                 {method: 'POST'});
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) { noteEl.innerHTML = 'Error: ' + data.error; return; }
+        noteEl.innerHTML = 'ModelTest-NG running. Close this modal and re-open once the stage message updates.';
+    } catch(err) {
+        noteEl.innerHTML = 'Network error: ' + err.message;
+    }
+}
+
+async function confirmCipresSubmit() {
+    if (!_cipresJobId) return;
+    const jobId = _cipresJobId;   // capture before closeCipresModal nullifies it
+    const method = document.querySelector('input[name="cipres-method"]:checked')?.value || 'raxml';
+    const body = { method };
+    if (method === 'raxml') {
+        body.n_bootstraps = parseInt(document.getElementById('cipres-bootstraps').value) || 1000;
+    } else {
+        body.ngen       = parseInt(document.getElementById('mb-ngen').value)    || 1000000;
+        body.nruns      = parseInt(document.getElementById('mb-nruns').value)   || 2;
+        body.nchains    = parseInt(document.getElementById('mb-nchains').value) || 4;
+        body.burninfrac = parseFloat(document.getElementById('mb-burnin').value) || 0.25;
+        body.lset_cmd   = document.getElementById('mb-lset').value.trim();
+    }
+    closeCipresModal();
+    await submitCipres(jobId, body);
+}
+
+async function submitCipres(jobId, body) {
+    const badge = document.getElementById('badge-' + jobId);
+    if (badge) { badge.textContent = 'submitting…'; badge.className = 'stage-badge stage-submitted'; }
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/submit_cipres`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body || {}),
+        });
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) {
+            alert('Error: ' + (data.error || resp.statusText));
+            return;
+        }
+        updateRow(jobId, {status: data.status, message: data.message});
+        schedulePoll(jobId);
+    } catch(err) {
+        alert('Network error: ' + err.message);
+    }
+}
+
 async function checkStatus(jobId) {
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/status`);
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         const prevStatus = document.getElementById('badge-' + jobId)?.textContent?.trim();
         updateRow(jobId, data);
         if (activeStages.has(data.status)) {
@@ -566,28 +916,11 @@ function clearPoll(jobId) {
     if (pollTimers[jobId]) { clearTimeout(pollTimers[jobId]); delete pollTimers[jobId]; }
 }
 
-async function submitCipres(jobId) {
-    const badge = document.getElementById('badge-' + jobId);
-    if (badge) { badge.textContent = 'submitting…'; badge.className = 'stage-badge stage-submitted'; }
-    try {
-        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/submit_cipres`, {method:'POST'});
-        const data = await resp.json();
-        if (!resp.ok || data.error) {
-            alert('Error: ' + (data.error || resp.statusText));
-            return;
-        }
-        updateRow(jobId, {status: data.status, message: data.message});
-        schedulePoll(jobId);
-    } catch(err) {
-        alert('Network error: ' + err.message);
-    }
-}
-
 async function downloadAndRoot(jobId) {
     updateRow(jobId, {status: 'running', message: 'Downloading results…'});
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/download`, {method:'POST'});
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
         updateRow(jobId, {status: data.status, message: data.message});
         // Auto-show tree popup when ready
@@ -603,7 +936,7 @@ async function importTree(jobId) {
     if (!confirm('Import this tree into the project? This overwrites any existing tree.')) return;
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/import`, {method:'POST'});
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
         alert(data.message || 'Tree imported.');
         location.reload();
@@ -616,7 +949,7 @@ async function deleteJob(jobId) {
     if (!confirm('Delete this job record?')) return;
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/delete`, {method:'POST'});
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (data.status === 'ok') {
             const row = document.getElementById('row-' + jobId);
             if (row) row.remove();
@@ -674,7 +1007,7 @@ async function searchForSpecies() {
             `/api/project/${PROJECT_ID}/phylogeny/${_asJobId}/search_species` +
             `?q=${encodeURIComponent(q)}&gene_filter=${gene}`
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         btn.disabled = false;
         if (!resp.ok || data.error) { msg.style.color='var(--danger)'; msg.textContent='Error: '+(data.error||resp.statusText); return; }
         msg.style.color='var(--gray-500)';
@@ -759,7 +1092,7 @@ async function commitAddSequences() {
             {method:'POST', headers:{'Content-Type':'application/json'},
              body: JSON.stringify({accessions})}
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             msg.style.color='var(--danger)'; msg.textContent='Error: '+(data.error||resp.statusText);
             btn.disabled = false; return;
@@ -807,7 +1140,7 @@ async function openNjModal(jobId) {
 
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/nj_preview`);
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             document.getElementById('njSeqSummary').textContent = 'Error: ' + (data.error || resp.statusText);
             return;
@@ -815,7 +1148,7 @@ async function openNjModal(jobId) {
         _njSequences = data.sequences || [];
         document.getElementById('njSeqSummary').innerHTML =
             `<strong>${_njSequences.length}</strong> sequences &nbsp;·&nbsp; ` +
-            `Check rows to remove or replace before approving for CIPRES.`;
+            `Check rows to remove or replace before approving for Galaxy.`;
         _renderNjTable();
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
     } catch(err) {
@@ -826,6 +1159,35 @@ async function openNjModal(jobId) {
 function closeNjModal() {
     document.getElementById('njModal').classList.remove('active');
     _njJobId = null;
+}
+
+async function openNjModalRevise(jobId) {
+    _njJobId     = jobId;
+    _njChanges   = {};
+    _altOpenIdx  = null;
+    document.getElementById('njModalMsg').textContent    = '';
+    document.getElementById('njApplyBtn').disabled       = true;
+    document.getElementById('njModal').classList.add('active');
+    document.getElementById('njSeqSummary').textContent  = 'Loading…';
+    document.getElementById('njSeqBody').innerHTML       = '';
+    document.getElementById('njModalTitle').textContent  = 'Revise Sequences & Resubmit';
+
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/nj_preview`);
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) {
+            document.getElementById('njSeqSummary').textContent = 'Error: ' + (data.error || resp.statusText);
+            return;
+        }
+        _njSequences = data.sequences || [];
+        document.getElementById('njSeqSummary').innerHTML =
+            `<strong>${_njSequences.length}</strong> sequences from previous run &nbsp;·&nbsp; ` +
+            `Remove or replace sequences, then <strong>Apply &amp; Re-run NJ</strong> → resubmit to Galaxy.`;
+        _renderNjTable();
+        renderPhylogram(data.newick, document.getElementById('njModalSvg'));
+    } catch(err) {
+        document.getElementById('njSeqSummary').textContent = 'Network error: ' + err.message;
+    }
 }
 
 function _renderNjTable() {
@@ -908,7 +1270,7 @@ async function toggleAlternatives(i) {
             `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/fetch_alternatives` +
             `?species=${encodeURIComponent(species)}`
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             content.innerHTML = `<span style="color:var(--danger);">Error: ${escHtml(data.error || resp.statusText)}</span>`;
             return;
@@ -1004,7 +1366,7 @@ async function applyNjChanges() {
             {method: 'POST', headers: {'Content-Type':'application/json'},
              body: JSON.stringify({replacements, removals})}
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             msg.textContent = 'Error: ' + (data.error || resp.statusText);
             btn.disabled = false;
@@ -1030,7 +1392,7 @@ async function approveForCipres() {
             `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/approve_for_cipres`,
             {method: 'POST'}
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             msg.textContent = 'Error: ' + (data.error || resp.statusText);
             return;
@@ -1049,7 +1411,7 @@ async function importNjTreeById(jobId) {
         const resp = await fetch(
             `/api/project/${PROJECT_ID}/phylogeny/${jobId}/import_nj`, {method: 'POST'}
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
         alert(data.message || 'NJ tree imported.');
         location.reload();
@@ -1058,6 +1420,38 @@ async function importNjTreeById(jobId) {
 
 async function importNjTree() {
     if (_njJobId) await importNjTreeById(_njJobId);
+}
+
+async function rerootNjTree() {
+    if (!_njJobId) return;
+    const input = document.getElementById('njOutgroupInput');
+    const msg   = document.getElementById('njRootMsg');
+    const raw   = (input.value || '').trim();
+    if (!raw) { msg.style.color = '#c0392b'; msg.textContent = 'Enter at least one outgroup name.'; return; }
+
+    const outgroups = raw.split(',').map(s => s.trim()).filter(Boolean);
+    msg.style.color = '';
+    msg.textContent = 'Rerooting…';
+
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/reroot_nj`,
+            {method: 'POST', headers: {'Content-Type': 'application/json'},
+             body: JSON.stringify({outgroups})}
+        );
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) {
+            msg.style.color = '#c0392b';
+            msg.textContent = data.error || resp.statusText;
+            return;
+        }
+        msg.style.color = '#155724';
+        msg.textContent = data.warning ? `Rooted. (${data.warning})` : 'Tree re-rooted.';
+        renderPhylogram(data.newick, document.getElementById('njModalSvg'));
+    } catch(err) {
+        msg.style.color = '#c0392b';
+        msg.textContent = 'Network error: ' + err.message;
+    }
 }
 
 // Close NJ modal on backdrop click
@@ -1080,7 +1474,7 @@ async function openFetchPreview(jobId) {
 
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/fetch_preview`);
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             summary.textContent = 'Error: ' + (data.error || resp.statusText);
             return;
@@ -1120,7 +1514,7 @@ async function approveAndAlign() {
             `/api/project/${PROJECT_ID}/phylogeny/${_fetchPreviewJobId}/approve_and_align`,
             {method: 'POST'}
         );
-        const data = await resp.json();
+        const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
             msg.textContent = 'Error: ' + (data.error || resp.statusText);
             btn.disabled = false;
@@ -1151,7 +1545,7 @@ let _modalJobId = null;
 
 async function viewTree(jobId) {
     const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/newick`);
-    const data = await resp.json();
+    const data = await safeJSON(resp);
     if (!data.newick) { alert('No tree stored for this job.'); return; }
     openTreeModal(jobId, data.newick,
         `${data.taxon || ''} ${data.marker || ''}`.trim());

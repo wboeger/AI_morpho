@@ -124,10 +124,21 @@ def edit_character(project_id, char_id):
 
         if data.get('parts_involved'):
             char.parts_involved = [p.strip() for p in data.get('parts_involved').split(',') if p.strip()]
-        if data.get('geometric_operation'):
-            char.geometric_operation = data.get('geometric_operation')
-        if data.get('formula'):
-            char.formula = data.get('formula')
+
+        new_type = data.get('computation_type')
+        if new_type in ('geometric', 'manual'):
+            old_type = char.computation_type
+            char.computation_type = new_type
+            if new_type == 'manual' and old_type == 'geometric':
+                # Clear auto-computed raw values so manual coding takes over
+                for v in CharacterValue.query.filter_by(character_id=char.id).all():
+                    v.raw_value = None
+
+        if char.computation_type == 'geometric':
+            if data.get('geometric_operation'):
+                char.geometric_operation = data.get('geometric_operation')
+            if data.get('formula'):
+                char.formula = data.get('formula')
 
         # Log modification
         history = char.history_json or []
@@ -139,9 +150,11 @@ def edit_character(project_id, char_id):
         })
         char.history_json = history
 
-        # Recompute geometric characters with new thresholds
+        # Recompute geometric characters with new thresholds; apply dep rules for manual
         if char.computation_type == 'geometric':
             _recompute_character(char, project_id)
+        else:
+            _apply_dependency_inapplicable(char, project_id)
 
         _log(project_id, f'Modified character {char.code}')
         db.session.commit()
@@ -149,31 +162,42 @@ def edit_character(project_id, char_id):
         return redirect(url_for('characters.workshop', project_id=project_id))
 
     # Gather specimen structures for the reference panel
-    structures = (Structure.query
-                  .join(Specimen)
-                  .filter(Specimen.project_id == project_id,
-                          Structure.structure_type == char.structure_type)
-                  .all())
+    from app.characters import check_dependencies as _check_dep
+    structures = [
+        s for s in (Structure.query
+                    .join(Specimen)
+                    .filter(Specimen.project_id == project_id,
+                            Structure.structure_type == char.structure_type,
+                            Structure.landmarks_json.isnot(None))
+                    .all())
+        if s.landmarks_json  # exclude empty [] arrays
+    ]
     entries = []
     for struct in structures:
         specimen = Specimen.query.get(struct.specimen_id)
         val = CharacterValue.query.filter_by(
             structure_id=struct.id, character_id=char.id
         ).first()
-        # Collect all structure types for this specimen
+        # Collect all structure types for this specimen.
+        # For each type, prefer the structure that has landmarks and boundaries.
         alt = {}
         for st in Structure.query.filter_by(specimen_id=specimen.id).all():
-            alt[st.structure_type] = {
-                'image_url': f'/uploads/{st.image_path}' if st.image_path else None,
-                'landmarks': st.landmarks_json,
-                'boundaries': st.boundary_json,
-            }
+            t = st.structure_type
+            existing = alt.get(t)
+            # Keep existing if it already has landmarks; only overwrite if new one is better
+            if existing is None or (not existing['landmarks'] and st.landmarks_json):
+                alt[t] = {
+                    'image_url': f'/uploads/{st.image_path}' if st.image_path else None,
+                    'landmarks': st.landmarks_json,
+                    'boundaries': st.boundary_json,
+                }
         entries.append({
             'structure_id': struct.id,
             'species': specimen.species_name,
             'state': val.state if val else '?',
             'raw_value': val.raw_value if val else None,
             'alt': alt,
+            'is_inapplicable': _check_dep(char, struct, project_id),
         })
     # Sort by raw_value for geometric, state for manual
     if char.computation_type == 'geometric':
@@ -181,11 +205,40 @@ def edit_character(project_id, char_id):
     else:
         entries.sort(key=lambda e: e['state'] or '?')
 
+    # Batch-build char_states for each entry: {char_code: state} for all chars of this structure type.
+    # Used by the JS live dependency preview.
+    struct_ids = [e['structure_id'] for e in entries]
+    cd_same = CharacterDefinition.query.filter_by(
+        project_id=project_id, structure_type=char.structure_type
+    ).all()
+    code_map = {cd.id: cd.code for cd in cd_same}
+    if struct_ids and code_map:
+        all_cv = CharacterValue.query.filter(
+            CharacterValue.structure_id.in_(struct_ids),
+            CharacterValue.character_id.in_(list(code_map.keys()))
+        ).all()
+        cs_by_struct = {}
+        for cv2 in all_cv:
+            c = code_map.get(cv2.character_id)
+            if c:
+                cs_by_struct.setdefault(cv2.structure_id, {})[c] = cv2.state
+        for entry in entries:
+            entry['char_states'] = cs_by_struct.get(entry['structure_id'], {})
+    else:
+        for entry in entries:
+            entry['char_states'] = {}
+
     parts = Config.STRUCTURE_PARTS.get(char.structure_type, [])
     available_types = sorted({st.structure_type for st in
         Structure.query.join(Specimen).filter(Specimen.project_id == project_id).all()})
 
     explanation = _build_measurement_explanation(char)
+
+    # Characters of the same structure type — used to populate dep code/state pickers
+    dep_chars = CharacterDefinition.query.filter_by(
+        project_id=project_id, structure_type=char.structure_type, active=True
+    ).order_by(CharacterDefinition.code).all()
+    dep_chars_by_code = {c.code: c for c in dep_chars}
 
     return render_template('characters/edit_character.html',
                            project=project, char=char,
@@ -193,7 +246,9 @@ def edit_character(project_id, char_id):
                            structure_parts=Config.STRUCTURE_PARTS,
                            entries=entries, parts=parts,
                            available_types=available_types,
-                           explanation=explanation)
+                           explanation=explanation,
+                           dep_chars=dep_chars,
+                           dep_chars_by_code=dep_chars_by_code)
 
 
 @characters_bp.route('/project/<int:project_id>/characters/print')
@@ -405,12 +460,45 @@ def suggest_thresholds(project_id, char_id):
         'max':  round(float(v.max()), 4),
         'mean': round(float(v.mean()), 4),
         'std':  round(float(v.std()),  4),
+        'values': [round(float(x), 6) for x in values],
         'histogram': {
             'counts': counts.tolist(),
             'edges':  [round(float(e), 4) for e in edges],
         },
         'suggestions': suggestions,
     })
+
+
+def _apply_dependency_inapplicable(char_def, project_id):
+    """For a manual character, force '-' on structures whose dependencies are met
+    and reset auto-assigned '-' back to '?' where dependencies no longer apply."""
+    from app.characters import check_dependencies
+    structs = (Structure.query
+               .join(Specimen)
+               .filter(Specimen.project_id == project_id,
+                       Structure.structure_type == char_def.structure_type)
+               .all())
+    for struct in structs:
+        is_inapp = check_dependencies(char_def, struct, project_id)
+        val = CharacterValue.query.filter_by(
+            structure_id=struct.id, character_id=char_def.id
+        ).first()
+        if is_inapp:
+            if val:
+                if val.state != '-':
+                    val.state = '-'
+                    val.confidence = 1.0
+                    val.auto_assigned = True
+            else:
+                cv = CharacterValue(
+                    structure_id=struct.id, character_id=char_def.id,
+                    state='-', confidence=1.0, auto_assigned=True,
+                )
+                db.session.add(cv)
+        elif val and val.state == '-' and val.auto_assigned:
+            # Dep no longer triggers — restore to uncoded
+            val.state = '?'
+            val.confidence = 0.0
 
 
 def _recompute_character(char_def, project_id):
@@ -587,6 +675,36 @@ def _build_measurement_explanation(char):
             '<img src="/api/project/{project_id}/character/A02/diagram.svg" alt="Point curvature angle diagram" '
             'style="max-width:600px; width:100%; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
         ),
+        'A06': (
+            'Measures the <em>curvature direction of the SuperficialRoot</em> — '
+            'whether the root outline bows toward the Point (inward) or away from it (outward).'
+            '<br><br>'
+            'Two quantities are derived from the root contour:<br>'
+            '&nbsp;&nbsp;1. <strong>Chord</strong>: the straight line from the <em>basal midpoint</em> '
+            '(center between inner and outer edges at the root–shaft junction) to the <em>distal tip</em> '
+            '(point farthest from the base). This represents where a perfectly straight root would lie.<br>'
+            '&nbsp;&nbsp;2. <strong>Arc</strong>: the actual curved midline of the root, running from '
+            'the same basal midpoint to the same tip along the contour. '
+            'Sinuosity = arc length ÷ chord length ≥ 1.0 always (= 1.0 when perfectly straight).<br>'
+            '&nbsp;&nbsp;3. <strong>Direction sign</strong>: whether the arc midpoint '
+            '(<span style="color:#c0392b;">●</span>) lies on the same side of the chord as the Point '
+            'centroid (sign = <strong>+</strong>, curved <em>inward</em>) '
+            'or on the opposite side (sign = <strong>−</strong>, curved <em>outward</em>).<br><br>'
+            'The reported value is <strong>sign × sinuosity</strong>. '
+            'Because sinuosity ≥ 1.0 by definition, the absolute value is <em>always ≥ 1.0</em>. '
+            'Values close to ±1 indicate a nearly straight root; '
+            'larger absolute values indicate more curvature. '
+            'Positive = curved inward (toward Point); '
+            'negative = curved outward (away from Point).'
+            '<br><br>'
+            '<img src="/static/diagrams/a06_superficial_root_profile.svg" '
+            'alt="A06 signed sinuosity — measurement diagram" '
+            'style="max-width:740px; width:100%; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
+            '<br>'
+            '<img src="/api/project/{project_id}/character/A06/diagram.svg" '
+            'alt="A06 — real specimen examples per state" '
+            'style="max-width:620px; width:100%; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
+        ),
         'A09': (
             'Measures the <em>angle between the Shaft and SuperficialRoot</em> — specifically, how much the '
             'superficial root departs from a straight continuation of the shaft axis. '
@@ -598,6 +716,172 @@ def _build_measurement_explanation(char):
             '<br><br>'
             '<img src="/static/diagrams/fork_angle_diagram.svg" alt="Shaft–superficial root deviation angle diagram" '
             'style="max-width:480px; display:block; margin:0.5rem auto; border:1px solid #ddd; border-radius:4px; padding:8px;">'
+        ),
+        'C06': (
+            'Measures the <em>angle between the direction of the Shaft and the direction of the Base</em> '
+            'on the marginal hook. '
+            '<br><br>'
+            'A best-fit direction vector is computed for each part from its landmark sequence. '
+            'The angle between these two vectors is measured at their junction vertex (the Shaft–Base '
+            'meeting point at the base of the hook). '
+            '<strong>0°</strong> would mean Shaft and Base point in the same direction; '
+            'large angles indicate a Shaft that diverges strongly from the Base axis — '
+            'reflecting the overall "openness" of the hook.'
+            '<br><br>'
+            '<img src="/static/diagrams/c06_shaft_angle.png" '
+            'alt="C06 Shaft angle — four states diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'A01': (
+            'Measures the <em>ratio of Point arc length to Shaft arc length</em> on the anchor. '
+            'Arc lengths are summed along consecutive pseudolandmark coordinates for each part; '
+            'values near 0.5 indicate a Point roughly half the Shaft length, while values ≥ 1.0 '
+            'indicate a Point as long as or longer than the Shaft.'
+            '<br><br>'
+            '<img src="/static/diagrams/a01_diagram.png" '
+            'alt="A01 Point/Shaft ratio diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'A03': (
+            'Measures the <em>ratio of SuperficialRoot arc length to Shaft arc length</em> on the anchor. '
+            'Arc lengths are summed along consecutive pseudolandmark coordinates; '
+            'values near 0.5 indicate a superficial root roughly half the shaft, while values '
+            'approaching or exceeding 1.0 indicate a root nearly as long as or longer than the shaft.'
+            '<br><br>'
+            '<img src="/static/diagrams/a03_diagram.png" '
+            'alt="A03 SuperficialRoot/Shaft ratio diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'A04': (
+            'Measures the <em>ratio of DeepRoot arc length to Shaft arc length</em> on the anchor. '
+            'Low values (approaching 0) indicate a rudimentary or knob-shaped deep root, '
+            'while higher values indicate a clearly formed root comparable in size to the shaft.'
+            '<br><br>'
+            '<img src="/static/diagrams/a04_diagram.png" '
+            'alt="A04 DeepRoot form diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C04': (
+            'Measures the <em>vertical displacement between the Point tip and the Toe tip</em> '
+            'on the marginal hook, normalised by centroid size. '
+            'Negative values indicate the Point tip sits above the Toe level; '
+            'values near zero indicate the Point and Toe tips are at the same height.'
+        ),
+        'C01': (
+            'Measures the <em>ratio of Point arc length to Shaft arc length</em> on the marginal hook. '
+            'Arc lengths are computed along the pseudolandmark sequences of each part; '
+            'values below 0.5 indicate a short point relative to the shaft, '
+            'values near 1.0 indicate approximately equal lengths, and values above 1.0 a longer point.'
+            '<br><br>'
+            '<img src="/static/diagrams/c01_diagram.png" '
+            'alt="C01 Point length diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C02': (
+            'Measures the <em>junction angle between Point and Shaft</em> at the bend of the hook. '
+            'Best-fit direction vectors are computed for the proximal half of each part\'s central axis; '
+            'small angles indicate a recurved point, values near 90° a classic right-angle hook, '
+            'and angles above 140° a smoothly evenly-curved hook with no abrupt bend.'
+            '<br><br>'
+            '<img src="/static/diagrams/c02_diagram.png" '
+            'alt="C02 Point curvature junction angle diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C03': (
+            'Measures the <em>sinuosity (arc/chord ratio) of the Point</em> of the marginal hook. '
+            'Sinuosity = arc length along the Point contour ÷ straight-line distance between its endpoints; '
+            'values near 1.0 indicate a gently curved point, while higher values indicate a '
+            'winding or strongly recurved point.'
+            '<br><br>'
+            '<img src="/static/diagrams/c03_diagram.png" '
+            'alt="C03 Point waviness sinuosity diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C05': (
+            'Measures the <em>mean curvature of the Shaft</em> of the marginal hook. '
+            'At each interior landmark, local curvature is estimated as the turning angle '
+            'between adjacent vectors divided by the arc-length step; the mean of these values '
+            'captures overall shaft bending — higher values indicate more strongly curved shafts. '
+            'Colour coding in the diagram encodes local curvature magnitude along the shaft.'
+            '<br><br>'
+            '<img src="/static/diagrams/c05_diagram.png" '
+            'alt="C05 Shaft curvature diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C07': (
+            'Measures the <em>sinuosity (arc/chord ratio) of the Shelf</em> of the marginal hook. '
+            'Sinuosity = arc length along the Shelf contour ÷ straight-line chord between its endpoints; '
+            'values near 1.0 indicate a straight shelf, while higher values indicate an undulating '
+            'or wavy shelf profile.'
+            '<br><br>'
+            '<img src="/static/diagrams/c07_diagram.png" '
+            'alt="C07 Shelf profile sinuosity diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C08': (
+            'Measures the <em>sinuosity (arc/chord ratio) of the Base</em> of the marginal hook. '
+            'Sinuosity = arc length along the Base contour ÷ straight-line chord between its endpoints; '
+            'values near 1.0 indicate a nearly straight base, while higher values reflect a '
+            'conspicuously concave or convex base profile.'
+            '<br><br>'
+            '<img src="/static/diagrams/c08_diagram.png" '
+            'alt="C08 Base profile sinuosity diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C09': (
+            'Measures the <em>ratio of Base arc length to Heel arc length</em> on the marginal hook. '
+            'Values above 1.5 indicate a base that strongly dominates the heel; '
+            'values near 1.0 indicate approximately equal lengths; '
+            'values below 0.67 indicate a heel that is longer than the base.'
+            '<br><br>'
+            '<img src="/static/diagrams/c09_diagram.png" '
+            'alt="C09 Base-Heel ratio diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C10': (
+            'Measures the <em>conspicuousness of the Heel</em> by computing the fraction of '
+            'the total hook arc length occupied by the Heel part. '
+            'Small fractions (< 8%) indicate a barely discernible or absent heel; '
+            'larger fractions indicate an increasingly prominent heel.'
+            '<br><br>'
+            '<img src="/static/diagrams/c10_diagram.png" '
+            'alt="C10 Heel conspicuousness diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C11': (
+            'Measures the <em>sinuosity (arc/chord ratio) of the Heel</em> of the marginal hook. '
+            'Sinuosity = arc length along the Heel contour ÷ straight-line chord between its endpoints; '
+            'values near 1.0 indicate a smooth heel, while higher values indicate an undulating '
+            'or conspicuously wavy heel outline.'
+            '<br><br>'
+            '<img src="/static/diagrams/c11_diagram.png" '
+            'alt="C11 Heel profile sinuosity diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
+        ),
+        'C12': (
+            'Measures the <em>junction angle between Heel and Shaft</em> at their transition point '
+            'on the marginal hook. '
+            'Best-fit direction vectors are computed for the proximal half of each part\'s central axis; '
+            'small angles (< 15°) indicate an abrupt, sharp transition, moderate values a gradual '
+            'change in direction, and large angles (> 40°) a smooth, nearly continuous transition.'
+            '<br><br>'
+            '<img src="/static/diagrams/c12_diagram.png" '
+            'alt="C12 Heel-Shaft transition junction angle diagram" '
+            'style="max-width:860px; width:100%; display:block; margin:0.5rem auto; '
+            'border:1px solid #ddd; border-radius:6px; padding:8px;">'
         ),
     }
 
@@ -895,6 +1179,437 @@ def a02_diagram_svg(project_id):
     out.append('</svg>')
     return Response('\n'.join(out), mimetype='image/svg+xml',
                    headers={'Cache-Control': 'no-cache'})
+
+
+def _a06_compute_on_structure(lm, boundary):
+    """Compute A06 signed sinuosity for one structure; returns (value, profile, outer).
+
+    Mirrors the sinuosity_with_direction logic exactly.
+    Returns (None, None, None) if the structure lacks SuperficialRoot boundary data.
+    """
+    from app.geometry import sinuosity as _sin
+
+    root_idx = boundary.get('SuperficialRoot', [])
+    pt_idx   = boundary.get('Point', [])
+    if not root_idx:
+        return None, None, None
+
+    coords      = lm[root_idx]
+    pt_centroid = lm[pt_idx].mean(axis=0) if pt_idx else None
+
+    fork_pt = coords[0]
+    dists   = np.linalg.norm(coords - fork_pt, axis=1)
+    tip_i   = int(np.argmax(dists))
+    n       = len(coords)
+
+    if 1 < tip_i < n - 1:
+        half_a = coords[:tip_i + 1]
+        half_b = coords[tip_i:]
+        if pt_centroid is not None and len(half_a) >= 2 and len(half_b) >= 2:
+            d_a = float(np.mean(np.linalg.norm(half_a - pt_centroid, axis=1)))
+            d_b = float(np.mean(np.linalg.norm(half_b - pt_centroid, axis=1)))
+            # inner = closer to Point (Point is on inner side of anchor)
+            profile = half_a if d_a < d_b else half_b
+            outer   = half_b if d_a < d_b else half_a
+        else:
+            profile, outer = half_a, half_b
+        if len(profile) > 1 and (np.linalg.norm(profile[-1] - fork_pt) <
+                                  np.linalg.norm(profile[0]  - fork_pt)):
+            profile = profile[::-1]
+        if len(outer) > 1 and (np.linalg.norm(outer[-1] - fork_pt) <
+                                np.linalg.norm(outer[0]  - fork_pt)):
+            outer = outer[::-1]
+    else:
+        profile, outer = coords, None
+
+    if len(profile) < 3:
+        profile = coords
+
+    s = _sin(profile)
+    if s > 2.0:
+        return None, None, None   # implausible — bad split or bad landmarks
+
+    chord_vec = profile[-1] - profile[0]
+    mid_arc   = profile[len(profile) // 2]
+    chord_mid = (profile[0] + profile[-1]) / 2.0
+    offset    = mid_arc - chord_mid
+    cross_arc = float(chord_vec[0] * offset[1] - chord_vec[1] * offset[0])
+
+    if abs(cross_arc) < 1e-10:
+        return s, profile, outer
+
+    if pt_centroid is not None:
+        to_pt    = pt_centroid - profile[0]
+        cross_pt = float(chord_vec[0] * to_pt[1] - chord_vec[1] * to_pt[0])
+        # Inward = midpoint bows toward Point (same side as Point)
+        sign = 1.0 if (np.sign(cross_arc) == np.sign(cross_pt)) else -1.0
+    else:
+        sign = float(np.sign(cross_arc))
+
+    return s * sign, profile, outer
+
+
+@characters_bp.route('/api/project/<int:project_id>/character/A06/diagram.svg')
+@login_required
+def a06_diagram_svg(project_id):
+    """Generate the A06 diagram using real specimens.
+
+    Computes the new signed sinuosity on-the-fly for every anchor structure in the
+    project, assigns each to a state (0/1/2), then picks one representative per
+    state.  This works even when no CharacterValues have been stored yet.
+    """
+    from flask import Response
+    try:
+        return Response(_a06_generate_svg(project_id), mimetype='image/svg+xml',
+                        headers={'Cache-Control': 'no-cache'})
+    except Exception as exc:
+        import traceback
+        tb = traceback.format_exc().replace('<', '&lt;').replace('>', '&gt;')
+        err_svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" width="500" height="120">'
+            '<rect width="100%" height="100%" fill="#fff3f3" stroke="#c0392b" stroke-width="1"/>'
+            f'<text x="10" y="20" font-family="monospace" font-size="11" fill="#c0392b">'
+            f'Diagram error: {str(exc)[:80]}</text>'
+            f'<text x="10" y="38" font-family="monospace" font-size="9" fill="#555">{tb[:400]}</text>'
+            '</svg>'
+        )
+        return Response(err_svg, mimetype='image/svg+xml',
+                        headers={'Cache-Control': 'no-cache'})
+
+
+def _a06_generate_svg(project_id):
+    """Return the A06 diagram as an SVG string (usable inline or saved to disk)."""
+
+    # --- Collect all anchor structures in this project with needed boundaries ---
+    structures = [
+        s for s in (Structure.query
+                    .join(Specimen, Structure.specimen_id == Specimen.id)
+                    .filter(
+                        Specimen.project_id == project_id,
+                        Structure.structure_type == 'anchor',
+                        Structure.landmarks_json.isnot(None),
+                        Structure.boundary_json.isnot(None),
+                    ).all())
+        if s.landmarks_json  # exclude empty [] arrays
+    ]
+
+    # Read the actual state thresholds and names from the character definition
+    from app.models import CharacterDefinition
+    from app.characters import map_value_to_state
+    a06_char = CharacterDefinition.query.filter_by(
+        project_id=project_id, code='A06'
+    ).first()
+    a06_states = a06_char.states_json if a06_char else []
+
+    # Compute value for each structure, bin by state using actual thresholds.
+    # Reject specimens whose sinuosity falls outside a plausible range — values
+    # > 2.0 almost always indicate bad/incomplete landmark tracing.
+    SINUOSITY_MAX = 2.0
+    bins = {}
+    for st in structures:
+        lm  = np.array(st.landmarks_json)
+        bnd = st.boundary_json or {}
+        if not bnd.get('SuperficialRoot'):
+            continue
+        val, _profile, _outer = _a06_compute_on_structure(lm, bnd)
+        if val is None:
+            continue
+        if abs(val) > SINUOSITY_MAX:
+            continue   # unreasonable — skip (likely bad landmark tracing)
+        if a06_states:
+            code, _conf = map_value_to_state(val, a06_states)
+        else:
+            # Fallback if no character definition found
+            if val < -1.03:
+                code = '1'
+            elif val > 1.03:
+                code = '2'
+            else:
+                code = '0'
+        bins.setdefault(code, []).append((abs(val), st, val))
+
+    # Build state_labels from the actual character definition
+    def _thresh_label(state):
+        t_min = state.get('threshold_min')
+        t_max = state.get('threshold_max')
+        name  = state.get('name', f"State {state.get('code','?')}")
+        code  = state.get('code', '?')
+        if t_min is None and t_max is not None:
+            rng = f'signed sinuosity &lt; {t_max}'
+        elif t_min is not None and t_max is None:
+            rng = f'signed sinuosity &ge; {t_min}'
+        elif t_min is not None and t_max is not None:
+            rng = f'{t_min} &le; signed sinuosity &lt; {t_max}'
+        else:
+            rng = 'any value'
+        return code, (f'State {code} — {name}', rng)
+
+    if a06_states:
+        state_labels = dict(_thresh_label(s) for s in a06_states)
+    else:
+        state_labels = {
+            '0': ('State 0', ''),
+            '1': ('State 1', ''),
+            '2': ('State 2', ''),
+        }
+
+    # For the "straight" state pick the specimen closest to 0 (most straight).
+    # For curved states pick the most extreme specimen.
+    def _is_straight_state(code):
+        """True if this state spans zero (the straight state)."""
+        if not a06_states:
+            return code == '0'
+        for s in a06_states:
+            if s.get('code') == code:
+                t_min = s.get('threshold_min')
+                t_max = s.get('threshold_max')
+                # spans zero: min is None or negative AND max is None or positive
+                min_neg = t_min is None or t_min < 0
+                max_pos = t_max is None or t_max > 0
+                return min_neg and max_pos
+        return False
+
+    examples = {}
+    for code, entries in bins.items():
+        if not entries:
+            continue
+        if _is_straight_state(code):
+            entries.sort(key=lambda x: x[0])   # ascending: closest to 0 = most straight
+        else:
+            entries.sort(key=lambda x: x[0], reverse=True)  # most extreme first
+        picked_st, picked_val = entries[0][1], entries[0][2]
+        examples[code] = (picked_st, picked_val)
+
+    # Always show all defined states in order, even those without specimens
+    if a06_states:
+        panel_codes = sorted(s.get('code', '?') for s in a06_states)
+    else:
+        panel_codes = sorted(set(['0', '1', '2']) | set(examples.keys()))
+
+    PANEL_W, PANEL_H = 182, 290
+    MARGIN, GAP = 8, 8
+    CAPTION_H, LEGEND_H = 52, 32
+    n_panels = max(len(panel_codes), 1)
+    W = n_panels * PANEL_W + (n_panels - 1) * GAP + 2 * MARGIN
+    H = MARGIN + PANEL_H + CAPTION_H + LEGEND_H
+
+    # Shared inline style constants (used instead of CSS classes for reliable
+    # rendering when SVG is loaded as an <img> in all browsers)
+    _S_OL  = 'fill:#dde8f4;stroke:#7faed4;stroke-width:1'
+    _S_OE  = 'fill:none;stroke:#b0c8e4;stroke-width:2;stroke-linecap:round'
+    _S_IE  = 'fill:none;stroke:#1a6e2a;stroke-width:2.5;stroke-linecap:round'
+    _S_ML  = 'fill:none;stroke:#777;stroke-width:1.2;stroke-dasharray:3,2;stroke-linecap:round'
+    _S_REF = 'stroke:#2980b9;stroke-width:1.5;stroke-dasharray:5,3;fill:none'
+    _S_MP  = 'fill:#c0392b'
+    _S_DV  = 'stroke:#c0392b;stroke-width:2;fill:none'
+    _FONT  = 'font-family:Arial,sans-serif'
+    _S_LB  = f'{_FONT};font-size:11px;fill:#222;text-anchor:middle'
+    _S_TH  = f'{_FONT};font-size:9px;fill:#555;text-anchor:middle'
+    _S_SP  = f'{_FONT};font-size:9px;font-style:italic;fill:#333;text-anchor:middle'
+    _S_LEG = f'{_FONT};font-size:8.5px;fill:#333'
+
+    def _resample_n(pts, n):
+        """Resample an array of 2-D points to n evenly-spaced points along arc length."""
+        if len(pts) < 2:
+            return pts
+        segs  = np.linalg.norm(np.diff(pts, axis=0), axis=1)
+        dists = np.concatenate([[0], np.cumsum(segs)])
+        total = dists[-1]
+        if total < 1e-10:
+            return np.tile(pts[0], (n, 1))
+        targets = np.linspace(0, total, n)
+        result  = []
+        for t in targets:
+            idx  = int(np.searchsorted(dists, t, side='right')) - 1
+            idx  = min(max(idx, 0), len(pts) - 2)
+            frac = (t - dists[idx]) / max(dists[idx + 1] - dists[idx], 1e-10)
+            result.append(pts[idx] + frac * (pts[idx + 1] - pts[idx]))
+        return np.array(result)
+
+    out = []
+    out.append(f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+               f'viewBox="0 0 {W} {H}">')
+    out.append('<rect width="100%" height="100%" fill="white"/>')
+
+    for i, state_code in enumerate(panel_codes):
+        px  = MARGIN + i * (PANEL_W + GAP)
+        py  = MARGIN
+        pcx = px + PANEL_W / 2.0
+        lbl, thresh = state_labels.get(state_code, (f'State {state_code}', ''))
+
+        example = examples.get(state_code)
+        if example is None:
+            out.append(f'<rect x="{px}" y="{py}" width="{PANEL_W}" height="{PANEL_H}" '
+                       f'fill="#f6f6f6" stroke="#ccc" stroke-width="1" rx="4"/>')
+            out.append(f'<text x="{pcx:.1f}" y="{py + PANEL_H/2:.1f}" '
+                       f'text-anchor="middle" font-family="Arial" font-size="10" fill="#aaa">'
+                       f'No specimen in this state</text>')
+        else:
+            structure, raw_val = example
+            specimen  = Specimen.query.get(structure.specimen_id)
+            lm        = np.array(structure.landmarks_json)
+            boundary  = structure.boundary_json or {}
+
+            root_idx = boundary.get('SuperficialRoot', [])
+            pt_idx   = boundary.get('Point', [])
+
+            # Coordinate transform: fit landmarks into panel
+            pad = 14
+            mn, mx = lm.min(axis=0), lm.max(axis=0)
+            span = mx - mn
+            scale_v = min((PANEL_W - 2 * pad) / max(span[0], 1e-6),
+                          (PANEL_H - 2 * pad) / max(span[1], 1e-6))
+            orig_ctr = (mn + mx) / 2.0
+
+            def _svgpt(pt, _sc=scale_v, _oc=orig_ctr, _pcx=pcx, _py=py):
+                pt = np.asarray(pt)
+                return (float((pt[0] - _oc[0]) * _sc + _pcx),
+                        float((pt[1] - _oc[1]) * _sc + _py + PANEL_H / 2.0))
+
+            # Full anchor outline
+            pts_str = ' '.join(f'{_svgpt(p)[0]:.1f},{_svgpt(p)[1]:.1f}' for p in lm)
+            out.append(f'<polygon style="{_S_OL}" points="{pts_str}"/>')
+
+            if root_idx:
+                root_coords = lm[root_idx]
+                pt_centroid = lm[pt_idx].mean(axis=0) if pt_idx else None
+
+                # Split into inner / outer halves at tip
+                fork_pt = root_coords[0]
+                dists   = np.linalg.norm(root_coords - fork_pt, axis=1)
+                tip_i   = int(np.argmax(dists))
+                nr      = len(root_coords)
+
+                outer = None
+                if 1 < tip_i < nr - 1:
+                    half_a = root_coords[:tip_i + 1]
+                    half_b = root_coords[tip_i:]
+                    if pt_centroid is not None:
+                        d_a = float(np.mean(np.linalg.norm(half_a - pt_centroid, axis=1)))
+                        d_b = float(np.mean(np.linalg.norm(half_b - pt_centroid, axis=1)))
+                        # inner = closer to Point (Point is on inner side of anchor)
+                        inner = half_a if d_a < d_b else half_b
+                        outer = half_b if d_a < d_b else half_a
+                    else:
+                        inner, outer = half_a, half_b
+                    if len(inner) > 1 and (np.linalg.norm(inner[-1] - fork_pt) <
+                                            np.linalg.norm(inner[0]  - fork_pt)):
+                        inner = inner[::-1]
+                    if len(outer) > 1 and (np.linalg.norm(outer[-1] - fork_pt) <
+                                            np.linalg.norm(outer[0]  - fork_pt)):
+                        outer = outer[::-1]
+                    opts = ' '.join(f'{_svgpt(p)[0]:.1f},{_svgpt(p)[1]:.1f}' for p in outer)
+                    out.append(f'<polyline style="{_S_OE}" points="{opts}"/>')
+                else:
+                    inner = root_coords
+
+                # Inner edge
+                ipts = ' '.join(f'{_svgpt(p)[0]:.1f},{_svgpt(p)[1]:.1f}' for p in inner)
+                out.append(f'<polyline style="{_S_IE}" points="{ipts}"/>')
+
+                # Midline: resampled average of inner and outer edges
+                N_ML = 20
+                inner_rs = _resample_n(inner, N_ML)
+                if outer is not None and len(outer) > 1:
+                    outer_rs = _resample_n(outer, N_ML)
+                    midline  = (inner_rs + outer_rs) / 2.0
+                else:
+                    midline  = inner_rs
+                mlpts = ' '.join(f'{_svgpt(p)[0]:.1f},{_svgpt(p)[1]:.1f}' for p in midline)
+                out.append(f'<polyline style="{_S_ML}" points="{mlpts}"/>')
+
+                # Chord: straight from basal midpoint to tip (through root centre)
+                basal_mid = midline[0]
+                tip_pt    = midline[-1]
+                c0x, c0y  = _svgpt(basal_mid)
+                c1x, c1y  = _svgpt(tip_pt)
+                out.append(f'<line style="{_S_REF}" x1="{c0x:.1f}" y1="{c0y:.1f}" '
+                           f'x2="{c1x:.1f}" y2="{c1y:.1f}"/>')
+
+                # Arc midpoint on the midline; displacement from chord midpoint
+                mid_arc     = midline[N_ML // 2]
+                chord_mid_d = (basal_mid + tip_pt) / 2.0
+                mpx, mpy    = _svgpt(mid_arc)
+                fpx, fpy    = _svgpt(chord_mid_d)
+                dvx, dvy      = mpx - fpx, mpy - fpy
+                dv_len        = (dvx**2 + dvy**2) ** 0.5
+
+                out.append(f'<circle style="{_S_MP}" cx="{mpx:.1f}" cy="{mpy:.1f}" r="5"/>')
+                if dv_len > 4:
+                    shrink = min(5.0 / dv_len, 0.45)
+                    aex = mpx - dvx * shrink
+                    aey = mpy - dvy * shrink
+                    # Draw arrowhead as a small triangle instead of marker-end
+                    # (marker-end url() can fail in some browsers when SVG is an <img>)
+                    ax, ay = mpx - fpx, mpy - fpy
+                    al = (ax**2 + ay**2) ** 0.5
+                    if al > 0:
+                        ux, uy = ax / al, ay / al
+                        px1 = aex + uy * 3.5
+                        py1 = aey - ux * 3.5
+                        px2 = aex - uy * 3.5
+                        py2 = aey + ux * 3.5
+                        out.append(f'<line style="{_S_DV}" x1="{fpx:.1f}" y1="{fpy:.1f}" '
+                                   f'x2="{aex:.1f}" y2="{aey:.1f}"/>')
+                        out.append(f'<polygon fill="#c0392b" stroke="none" '
+                                   f'points="{mpx:.1f},{mpy:.1f} {px1:.1f},{py1:.1f} {px2:.1f},{py2:.1f}"/>')
+
+                # Sign badge — derive from threshold sign, not hard-coded state code
+                if _is_straight_state(state_code):
+                    sign_chr, sign_fill, sign_bg, sign_stroke = '≈0', '#555', '#f0f0f0', '#bbb'
+                else:
+                    # outward = negative range; inward = positive range
+                    _s = next((s for s in a06_states if s.get('code') == state_code), {})
+                    _tmax = _s.get('threshold_max')
+                    if _tmax is not None and _tmax <= 0:
+                        sign_chr, sign_fill, sign_bg, sign_stroke = '−', '#c0392b', '#fce8e8', '#e8b0b0'
+                    else:
+                        sign_chr, sign_fill, sign_bg, sign_stroke = '+', '#27ae60', '#eafaf1', '#a9dfbf'
+
+                bx, by = px + PANEL_W - 20, py + 20
+                out.append(f'<circle cx="{bx:.1f}" cy="{by:.1f}" r="13" '
+                           f'fill="{sign_bg}" stroke="{sign_stroke}" stroke-width="1.2"/>')
+                _sgn_style = (f'{_FONT};font-size:{"12" if len(sign_chr) > 1 else "18"}px;'
+                              f'font-weight:bold;text-anchor:middle;dominant-baseline:middle')
+                out.append(f'<text style="{_sgn_style}" x="{bx:.1f}" y="{by:.1f}" '
+                           f'fill="{sign_fill}">{sign_chr}</text>')
+
+                out.append(f'<text style="{_S_TH}" x="{pcx:.1f}" y="{py + PANEL_H - 6:.1f}">'
+                           f'value: {raw_val:.3f}</text>')
+
+            sp_name = specimen.species_name if specimen else '?'
+            out.append(f'<text style="{_S_SP}" x="{pcx:.1f}" y="{py + PANEL_H + 13:.1f}">'
+                       f'{sp_name}</text>')
+
+        cap_y = py + PANEL_H + 27
+        out.append(f'<text style="{_S_LB}" x="{pcx:.1f}" y="{cap_y:.1f}">{lbl}</text>')
+        out.append(f'<text style="{_S_TH}" x="{pcx:.1f}" y="{cap_y + 13:.1f}">{thresh}</text>')
+
+    # Legend strip
+    ly = MARGIN + PANEL_H + CAPTION_H + 12
+    out.append(f'<line x1="10" y1="{ly}" x2="34" y2="{ly}" '
+               f'stroke="#1a6e2a" stroke-width="2.5"/>')
+    out.append(f'<text style="{_S_LEG}" x="38" y="{ly + 4}">inner edge</text>')
+    out.append(f'<line x1="108" y1="{ly}" x2="132" y2="{ly}" '
+               f'stroke="#b0c8e4" stroke-width="2"/>')
+    out.append(f'<text style="{_S_LEG}" x="136" y="{ly + 4}">outer edge</text>')
+    out.append(f'<line x1="208" y1="{ly}" x2="232" y2="{ly}" '
+               f'stroke="#777" stroke-width="1.2" stroke-dasharray="3,2"/>')
+    out.append(f'<text style="{_S_LEG}" x="236" y="{ly + 4}">midline (arc)</text>')
+    out.append(f'<line x1="310" y1="{ly}" x2="334" y2="{ly}" '
+               f'stroke="#2980b9" stroke-width="1.5" stroke-dasharray="5,3"/>')
+    out.append(f'<text style="{_S_LEG}" x="338" y="{ly + 4}">chord (basal midpt&#x2192;tip)</text>')
+    out.append(f'<circle cx="470" cy="{ly}" r="4.5" fill="#c0392b"/>')
+    out.append(f'<text style="{_S_LEG}" x="478" y="{ly + 4}">midline midpt &#xB7; displacement</text>')
+
+    out.append('</svg>')
+    return '\n'.join(out)
+
+
+def _a06_diagram_svg_inner(project_id):
+    from flask import Response
+    return Response(_a06_generate_svg(project_id), mimetype='image/svg+xml',
+                    headers={'Cache-Control': 'no-cache'})
 
 
 def _log(project_id, action):

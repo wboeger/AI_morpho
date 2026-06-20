@@ -1,0 +1,905 @@
+{% extends "base.html" %}
+{% block title %}Optimization — {{ project.name }}{% endblock %}
+{% block back_button %}{% endblock %}
+
+{% block head %}
+<style>
+.opt-header { margin-bottom: 1rem; }
+.opt-header h1 {
+    font-family: var(--serif);
+    font-style: italic;
+    font-weight: 500;
+    font-size: 28px;
+    letter-spacing: -0.01em;
+    color: var(--ink);
+    margin: 0 0 4px;
+}
+.opt-header p  { color: var(--ink-3); margin: 0; font-size: 12.5px; font-style: italic; }
+
+.opt-layout {
+    display: flex;
+    gap: 1rem;
+    height: calc(100vh - 150px);
+    min-height: 500px;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+.opt-sidebar {
+    width: 265px;
+    flex-shrink: 0;
+    background: #fff;
+    border: 1px solid var(--border, #e0e0e0);
+    border-radius: 6px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+}
+.opt-sidebar-title {
+    padding: 0.55rem 0.75rem;
+    font-weight: 600;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--gray-600, #666);
+    border-bottom: 1px solid var(--border, #e0e0e0);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: sticky;
+    top: 0;
+    background: #fff;
+    z-index: 2;
+}
+.opt-loading-txt {
+    font-weight: normal;
+    text-transform: none;
+    font-size: 0.75rem;
+    color: var(--gray-400, #aaa);
+}
+.opt-group-header {
+    padding: 0.35rem 0.75rem 0.2rem;
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    color: var(--gray-500, #999);
+    background: #f8f9fa;
+    border-top: 1px solid var(--border, #e0e0e0);
+}
+.opt-char-row {
+    display: flex;
+    align-items: center;
+    padding: 0.38rem 0.75rem;
+    cursor: pointer;
+    gap: 0.45rem;
+    border-bottom: 1px solid #f3f3f3;
+    transition: background 0.1s;
+    border-left: 3px solid transparent;
+}
+.opt-char-row:hover { background: #f5f7fa; }
+.opt-char-row.selected {
+    background: #eef3fb;
+    border-left-color: var(--primary, #3a7bb5);
+}
+.opt-char-code {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: var(--gray-600, #777);
+    width: 26px;
+    flex-shrink: 0;
+    font-family: monospace;
+}
+.opt-char-name {
+    font-size: 0.8rem;
+    color: #222;
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.opt-score-pill {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #fff;
+    border-radius: 10px;
+    padding: 0 6px;
+    height: 16px;
+    line-height: 16px;
+    flex-shrink: 0;
+}
+
+/* ── Main panel ──────────────────────────────────────────────────────── */
+.opt-main {
+    flex: 1;
+    min-width: 0;
+    background: #fff;
+    border: 1px solid var(--border, #e0e0e0);
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+}
+.opt-placeholder {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #ccc;
+    font-size: 0.9rem;
+    font-style: italic;
+}
+#treeContainer {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+/* Sticky header — sticks at top of scrolling #treeContainer */
+.opt-sticky-top {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    background: #fff;
+    border-bottom: 1px solid #eee;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.05);
+    padding: 0.7rem 1rem 0.55rem;
+    flex-shrink: 0;
+}
+.opt-tree-top {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.5rem;
+    flex-wrap: wrap;
+}
+.opt-tree-title {
+    font-size: 1rem;
+    font-weight: 600;
+    color: #222;
+}
+.opt-step-badge {
+    font-size: 0.75rem;
+    background: #f0f0f0;
+    color: #666;
+    border-radius: 10px;
+    padding: 2px 9px;
+}
+
+/* Signal box */
+.opt-signal-box {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem 0.9rem;
+    background: #f8f9fa;
+    border-radius: 6px;
+    padding: 0.4rem 0.75rem;
+    margin-bottom: 0.55rem;
+    font-size: 0.78rem;
+}
+.sig-heading {
+    font-size: 0.68rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #999;
+    flex-shrink: 0;
+}
+.sig-divider {
+    width: 1px;
+    height: 14px;
+    background: #ddd;
+    flex-shrink: 0;
+}
+.sig-group {
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+.sig-label {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #aaa;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.sig-val {
+    font-weight: 700;
+    color: #333;
+    min-width: 2.2em;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.sig-bar {
+    width: 44px;
+    height: 5px;
+    background: #e0e0e0;
+    border-radius: 3px;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+.sig-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.35s ease;
+}
+.sig-pval { font-weight: 700; color: #333; font-variant-numeric: tabular-nums; }
+.sig-interp {
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 10px;
+}
+.sig-strong    { background: #e8f5e9; color: #2e7d32; }
+.sig-sig       { background: #e3f2fd; color: #1565c0; }
+.sig-marginal  { background: #fff3e0; color: #e65100; }
+.sig-nosig     { background: #fce4ec; color: #c62828; }
+.sig-invar     { background: #f3e5f5; color: #6a1b9a; }
+.sig-nd        { background: #f5f5f5; color: #9e9e9e; }
+
+/* Legend */
+.opt-legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem 0.9rem;
+    font-size: 0.77rem;
+    color: #444;
+}
+.opt-legend-item {
+    display: flex;
+    align-items: center;
+    gap: 0.28rem;
+}
+.swatch-circle {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.swatch-missing {
+    width: 11px; height: 11px;
+    border-radius: 50%;
+    border: 1.5px dashed #aaa;
+    background: #f5f5f5;
+    flex-shrink: 0;
+}
+
+/* Tree body */
+.opt-tree-body { padding: 0.6rem 1rem 1.2rem; flex: 1; }
+#treeSvg { display: block; overflow: visible; }
+
+/* Export buttons */
+.opt-export-group {
+    display: flex;
+    gap: 0.3rem;
+    margin-left: auto;
+}
+.opt-export-btn {
+    font-size: 0.72rem;
+    padding: 3px 9px;
+    border: 1px solid var(--border, #d0d0d0);
+    border-radius: 5px;
+    background: #f8f9fa;
+    color: #555;
+    cursor: pointer;
+    line-height: 1.4;
+    transition: background 0.1s;
+}
+.opt-export-btn:hover { background: #e9ecef; color: #222; }
+
+/* ── Print / PDF export ── */
+@media print {
+    body > nav, .opt-sidebar, .opt-header, .opt-export-group,
+    .opt-signal-box, #back-btn-area, .flash-messages,
+    .opt-step-badge { display: none !important; }
+    .opt-layout { height: auto !important; }
+    .opt-main { border: none !important; }
+    .opt-sticky-top { position: static !important; box-shadow: none !important;
+                      border-bottom: none !important; }
+    #treeContainer { overflow: visible !important; }
+    #printTitle { display: block !important; }
+    #printLegendBlock { display: block !important; }
+    .opt-legend { display: flex !important; }
+}
+#printTitle { display: none; font-size: 13pt; font-weight: bold;
+              font-family: sans-serif; margin-bottom: 4pt; }
+#printLegendBlock { display: none; }
+
+/* No-tree message */
+.opt-no-tree {
+    padding: 3rem;
+    text-align: center;
+    color: #888;
+    font-size: 0.9rem;
+    line-height: 1.8;
+}
+.opt-no-tree a { color: var(--primary, #3a7bb5); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="opt-header">
+    <h1>Character Optimization</h1>
+    <p>Fitch parsimony ancestral state reconstruction mapped onto the molecular phylogeny</p>
+</div>
+
+{% if not has_tree %}
+<div class="opt-no-tree">
+    <p>No phylogenetic tree is associated with this project.</p>
+    <p>Import or generate a tree on the
+       <a href="{{ url_for('phylogeny.phylogeny_view', project_id=project.id) }}">Phylogeny</a> page first.
+    </p>
+</div>
+{% else %}
+<div class="opt-layout">
+
+    <!-- Left: character list -->
+    <div class="opt-sidebar">
+        <div class="opt-sidebar-title">
+            <span>Characters</span>
+            <span class="opt-loading-txt" id="loadingTxt">Loading…</span>
+        </div>
+        <div id="charList"></div>
+    </div>
+
+    <!-- Right: tree visualization -->
+    <div class="opt-main">
+        <div class="opt-placeholder" id="placeholder">Select a character to view its optimization</div>
+        <div id="treeContainer" style="display:none">
+
+            <!-- Sticky header: always visible while scrolling the tree -->
+            <div class="opt-sticky-top">
+                <div id="printTitle"></div>
+                <div class="opt-tree-top">
+                    <span class="opt-tree-title" id="charTitle"></span>
+                    <span class="opt-step-badge" id="stepBadge"></span>
+                    <div class="opt-export-group">
+                        <button class="opt-export-btn" onclick="exportSVG()" title="Download SVG">SVG</button>
+                        <button class="opt-export-btn" onclick="exportPNG()" title="Download PNG (2×)">PNG</button>
+                        <button class="opt-export-btn" onclick="exportPDF()" title="Print / Save as PDF">PDF</button>
+                    </div>
+                </div>
+                <div class="opt-signal-box" id="signalBox"></div>
+                <div class="opt-legend" id="legend"></div>
+            </div>
+
+            <!-- Scrollable tree area -->
+            <div class="opt-tree-body">
+                <svg id="treeSvg"></svg>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if has_tree %}
+<script>
+const PROJECT_ID = {{ project.id }};
+
+// Tableau-10 categorical palette
+const PALETTE = [
+    '#4E79A7', '#F28E2B', '#59A14F', '#E15759',
+    '#76B7B2', '#EDC948', '#B07AA1', '#FF9DA7',
+    '#9C755F', '#BAB0AC'
+];
+
+let allData  = {};   // id → character result
+let ordering = [];   // character ids in server order
+let selectedId = null;
+
+// ── Tree layout helpers ──────────────────────────────────────────────────────
+
+function countLeaves(node) {
+    if (!node.children || !node.children.length) return 1;
+    return node.children.reduce((s, c) => s + countLeaves(c), 0);
+}
+
+function ladderize(node) {
+    if (!node.children || !node.children.length) return;
+    node.children.forEach(ladderize);
+    node.children.sort((a, b) => countLeaves(a) - countLeaves(b));
+}
+
+function getLeaves(node) {
+    if (!node.children || !node.children.length) return [node];
+    return node.children.flatMap(getLeaves);
+}
+
+function assignDepths(node, d) {
+    node._d = d;
+    (node.children || []).forEach(c => assignDepths(c, d + (c.length || 1)));
+}
+
+function assignY(node) {
+    if (!node.children || !node.children.length) return;
+    node.children.forEach(assignY);
+    const ys = node.children.map(c => c._y);
+    node._y = (Math.min(...ys) + Math.max(...ys)) / 2;
+}
+
+// ── Color helpers ────────────────────────────────────────────────────────────
+
+function buildColorMap(ch) {
+    const map = {};
+    (ch.states || []).forEach((s, i) => { map[s.code] = PALETTE[i % PALETTE.length]; });
+    return map;
+}
+
+// Return '#fff' or '#333' depending on which contrasts better with hex color
+function labelColor(hex) {
+    if (!hex || hex.length < 7) return '#fff';
+    const r = parseInt(hex.slice(1, 3), 16);
+    const g = parseInt(hex.slice(3, 5), 16);
+    const b = parseInt(hex.slice(5, 7), 16);
+    return (0.299 * r + 0.587 * g + 0.114 * b) / 255 > 0.55 ? '#333' : '#fff';
+}
+
+// ── Phylogenetic signal box ───────────────────────────────────────────────────
+
+function renderSignalBox(ch) {
+    const box = document.getElementById('signalBox');
+    const sig = ch.signal || {};
+    const { ci, ri, p_value, note } = sig;
+
+    let interpClass = 'sig-nd';
+    let interpText  = 'Insufficient data';
+
+    if (note === 'invariant') {
+        interpClass = 'sig-invar'; interpText = 'Invariant character';
+    } else if (p_value !== null && p_value !== undefined) {
+        if (p_value < 0.001)      { interpClass = 'sig-strong';   interpText = 'Strong signal'; }
+        else if (p_value < 0.05)  { interpClass = 'sig-sig';      interpText = 'Significant';   }
+        else if (p_value < 0.10)  { interpClass = 'sig-marginal'; interpText = 'Marginal';       }
+        else                       { interpClass = 'sig-nosig';    interpText = 'No signal';      }
+    }
+
+    const fmt   = v => (v !== null && v !== undefined) ? v.toFixed(2) : '—';
+    const fmtP  = v => (v !== null && v !== undefined)
+                        ? (v < 0.001 ? '<0.001' : v.toFixed(3)) : '—';
+    const pct   = v => (v !== null && v !== undefined) ? `${Math.round(v * 100)}%` : '0%';
+    const barC  = v => (v === null || v === undefined) ? '#ccc'
+                      : v > 0.7 ? '#59A14F' : v > 0.4 ? '#F28E2B' : '#E15759';
+
+    box.innerHTML = `
+        <span class="sig-heading" title="Phylogenetic signal statistics (499-permutation test)">Signal</span>
+        <span class="sig-divider"></span>
+        <span class="sig-group" title="Consistency Index: ratio of minimum possible steps to observed steps (1 = no homoplasy)">
+            <span class="sig-label">CI</span>
+            <span class="sig-val">${fmt(ci)}</span>
+            <span class="sig-bar"><span class="sig-bar-fill" style="width:${pct(ci)};background:${barC(ci)}"></span></span>
+        </span>
+        <span class="sig-group" title="Retention Index: measures synapomorphy retention relative to maximum possible homoplasy (1 = best)">
+            <span class="sig-label">RI</span>
+            <span class="sig-val">${fmt(ri)}</span>
+            <span class="sig-bar"><span class="sig-bar-fill" style="width:${pct(ri)};background:${barC(ri)}"></span></span>
+        </span>
+        <span class="sig-divider"></span>
+        <span class="sig-group" title="Permutation test p-value: proportion of random tip shuffles with ≤ observed parsimony steps">
+            <span class="sig-label">p</span>
+            <span class="sig-pval">${fmtP(p_value)}</span>
+        </span>
+        <span class="sig-interp ${interpClass}">${interpText}</span>
+    `;
+}
+
+// ── Legend ───────────────────────────────────────────────────────────────────
+
+function renderLegend(ch, colorMap) {
+    const el = document.getElementById('legend');
+    el.innerHTML = '';
+
+    (ch.states || []).forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'opt-legend-item';
+        item.innerHTML = `<span class="swatch-circle" style="background:${colorMap[s.code] || '#ccc'}"></span>
+                          <span><b>${s.code}</b> ${s.name}</span>`;
+        el.appendChild(item);
+    });
+
+    const miss = document.createElement('div');
+    miss.className = 'opt-legend-item';
+    miss.innerHTML = `<span class="swatch-missing"></span><span>No data</span>`;
+    el.appendChild(miss);
+
+    const chg = document.createElement('div');
+    chg.className = 'opt-legend-item';
+    chg.innerHTML = `<svg width="22" height="12" style="flex-shrink:0;overflow:visible">
+                       <line x1="0" y1="6" x2="22" y2="6" stroke="#e53935" stroke-width="2"/>
+                     </svg><span>State change</span>`;
+    el.appendChild(chg);
+}
+
+// ── SVG tree renderer ────────────────────────────────────────────────────────
+
+function renderTree(ch) {
+    const colorMap = buildColorMap(ch);
+    renderLegend(ch, colorMap);
+
+    const svgEl = document.getElementById('treeSvg');
+    svgEl.innerHTML = '';
+
+    const tree = ch.tree;
+    if (!tree) { svgEl.setAttribute('height', 0); return; }
+
+    ladderize(tree);
+
+    const leaves = getLeaves(tree);
+    const N = leaves.length;
+    if (N === 0) return;
+
+    const ROW_H   = 22;
+    const PAD_TOP = 10;
+    const PAD_BOT = 10;
+    const LABEL_W = 215;
+    const PAD_R   = 8;
+    const PAD_L   = 20;
+
+    const body  = document.querySelector('.opt-tree-body');
+    const SVG_W = Math.max((body ? body.clientWidth : 600) - 24, 520);
+    const SVG_H = PAD_TOP + N * ROW_H + PAD_BOT;
+    const X_L   = PAD_L;
+    const X_R   = SVG_W - LABEL_W - PAD_R;
+
+    svgEl.setAttribute('width',  SVG_W);
+    svgEl.setAttribute('height', SVG_H);
+
+    assignDepths(tree, 0);
+    const maxD = Math.max(...leaves.map(l => l._d), 1);
+    const xS   = v => X_L + (v / maxD) * (X_R - X_L);
+
+    leaves.forEach((lf, i) => { lf._y = PAD_TOP + i * ROW_H + ROW_H / 2; });
+    assignY(tree);
+    if (tree._y === undefined) tree._y = SVG_H / 2;
+
+    function mk(tag, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+        svgEl.appendChild(el);
+        return el;
+    }
+
+    function svgTxt(content, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+        el.textContent = content;
+        svgEl.appendChild(el);
+        return el;
+    }
+
+    function draw(node) {
+        const nx = xS(node._d);
+        const ny = node._y;
+        const children = node.children || [];
+
+        if (children.length) {
+            const yTop = Math.min(...children.map(c => c._y));
+            const yBot = Math.max(...children.map(c => c._y));
+            mk('line', { x1: nx, y1: yTop, x2: nx, y2: yBot, stroke: '#c0c0c0', 'stroke-width': 1 });
+
+            children.forEach(c => {
+                mk('line', {
+                    x1: nx, y1: c._y, x2: xS(c._d), y2: c._y,
+                    stroke: c.changed ? '#e53935' : '#c0c0c0',
+                    'stroke-width': c.changed ? 2 : 1
+                });
+                draw(c);
+            });
+
+            // Internal node circle
+            const fill = node.state ? (colorMap[node.state] || '#ececec') : '#ececec';
+            mk('circle', { cx: nx, cy: ny, r: 5, fill, stroke: '#fff', 'stroke-width': 1 });
+            if (node.state) {
+                svgTxt(node.state, {
+                    x: nx, y: ny + 2.5,
+                    'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                    fill: labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
+                });
+            }
+
+        } else {
+            const fill    = node.state ? (colorMap[node.state] || '#ccc') : null;
+            const missing = !node.state;
+
+            // Dotted leader to label column
+            mk('line', {
+                x1: nx + 8, y1: ny, x2: X_R + PAD_R, y2: ny,
+                stroke: '#ddd', 'stroke-width': 0.8, 'stroke-dasharray': '2,3'
+            });
+
+            // Leaf circle
+            mk('circle', {
+                cx: nx, cy: ny, r: 6.5,
+                fill: missing ? '#f5f5f5' : fill,
+                stroke: missing ? '#bbb' : '#fff',
+                'stroke-width': missing ? 1.5 : 1.2,
+                ...(missing ? { 'stroke-dasharray': '2,2' } : {})
+            });
+
+            // State code inside circle (white or dark depending on fill)
+            if (node.state) {
+                svgTxt(node.state, {
+                    x: nx, y: ny + 3,
+                    'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                    fill: labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
+                });
+            }
+
+            // Species name (italic, right side)
+            svgTxt(node.name || '', {
+                x: X_R + PAD_R + 5, y: ny + 4,
+                'font-size': 11, 'font-family': 'sans-serif',
+                fill: '#333', 'font-style': 'italic'
+            });
+        }
+    }
+
+    draw(tree);
+}
+
+// ── Character list ────────────────────────────────────────────────────────────
+
+function renderCharList() {
+    const sidebar = document.getElementById('charList');
+    sidebar.innerHTML = '';
+
+    const typeOrder  = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco'];
+    const typeLabels = {
+        hook: 'Hook', anchor: 'Anchor',
+        superficial_bar: 'Superficial Bar', deep_bar: 'Deep Bar', mco: 'MCO'
+    };
+
+    const groups = {};
+    for (const id of ordering) {
+        const ch = allData[id];
+        const g  = ch.structure_type;
+        if (!groups[g]) groups[g] = [];
+        groups[g].push(ch);
+    }
+
+    const types = typeOrder.filter(t => groups[t])
+        .concat(Object.keys(groups).filter(t => !typeOrder.includes(t)));
+
+    for (const type of types) {
+        const hdr = document.createElement('div');
+        hdr.className = 'opt-group-header';
+        hdr.textContent = typeLabels[type] || type;
+        sidebar.appendChild(hdr);
+
+        for (const ch of groups[type]) {
+            const s = ch.parsimony_score;
+            let bg = '#aaa';
+            if (s === 0)  bg = '#59A14F';
+            else if (s <= 2) bg = '#4E79A7';
+            else if (s <= 4) bg = '#F28E2B';
+            else             bg = '#E15759';
+
+            const row = document.createElement('div');
+            row.className   = 'opt-char-row';
+            row.id          = `crow-${ch.id}`;
+            row.title       = ch.name;
+            row.innerHTML   = `
+                <span class="opt-char-code">${ch.code}</span>
+                <span class="opt-char-name">${ch.name}</span>
+                <span class="opt-score-pill" style="background:${bg}">${s}</span>
+            `;
+            row.addEventListener('click', () => selectChar(ch.id));
+            sidebar.appendChild(row);
+        }
+    }
+
+    document.getElementById('loadingTxt').style.display = 'none';
+}
+
+// ── Select & display ─────────────────────────────────────────────────────────
+
+function selectChar(id) {
+    if (selectedId !== null) {
+        const prev = document.getElementById(`crow-${selectedId}`);
+        if (prev) prev.classList.remove('selected');
+    }
+    selectedId = id;
+    const row = document.getElementById(`crow-${id}`);
+    if (row) { row.classList.add('selected'); row.scrollIntoView({ block: 'nearest' }); }
+
+    const ch = allData[id];
+    document.getElementById('placeholder').style.display   = 'none';
+    document.getElementById('treeContainer').style.display = 'flex';
+
+    document.getElementById('charTitle').textContent = `${ch.code}: ${ch.name}`;
+    const s = ch.parsimony_score;
+    document.getElementById('stepBadge').textContent =
+        `${s} parsimony step${s !== 1 ? 's' : ''}`;
+
+    renderSignalBox(ch);
+    renderTree(ch);
+}
+
+// ── Export helpers ────────────────────────────────────────────────────────────
+
+function _buildExportSVG() {
+    const origSvg = document.getElementById('treeSvg');
+    const ch = allData[selectedId];
+    const w = parseInt(origSvg.getAttribute('width'))  || 800;
+    const h = parseInt(origSvg.getAttribute('height')) || 600;
+
+    // Build legend rows as SVG text
+    const TITLE_H = 28;
+    const LEG_ROW = 16;
+    const legendStates = (ch.states || []);
+    const legLines = legendStates.length + 2;   // states + "no data" + "state change"
+    const LEG_H   = legLines * LEG_ROW + 8;
+    const TOTAL_H = TITLE_H + h + LEG_H + 8;
+
+    const ns = 'http://www.w3.org/2000/svg';
+    const svg = document.createElementNS(ns, 'svg');
+    svg.setAttribute('xmlns', ns);
+    svg.setAttribute('width', w);
+    svg.setAttribute('height', TOTAL_H);
+    svg.setAttribute('font-family', 'sans-serif');
+
+    // White background
+    const bg = document.createElementNS(ns, 'rect');
+    bg.setAttribute('width', w); bg.setAttribute('height', TOTAL_H); bg.setAttribute('fill', '#fff');
+    svg.appendChild(bg);
+
+    // Title
+    const titleEl = document.createElementNS(ns, 'text');
+    titleEl.setAttribute('x', 10); titleEl.setAttribute('y', 19);
+    titleEl.setAttribute('font-size', '13'); titleEl.setAttribute('font-weight', 'bold');
+    titleEl.setAttribute('fill', '#222');
+    titleEl.textContent = `${ch.code}: ${ch.name}  (${ch.parsimony_score} parsimony step${ch.parsimony_score !== 1 ? 's' : ''})`;
+    svg.appendChild(titleEl);
+
+    // Tree group (translated down by TITLE_H)
+    const g = document.createElementNS(ns, 'g');
+    g.setAttribute('transform', `translate(0,${TITLE_H})`);
+    const treeClone = origSvg.cloneNode(true);
+    while (treeClone.firstChild) g.appendChild(treeClone.firstChild);
+    svg.appendChild(g);
+
+    // Legend below tree
+    const colorMap = buildColorMap(ch);
+    let ly = TITLE_H + h + 14;
+
+    // State swatches
+    (ch.states || []).forEach(s => {
+        const col = colorMap[s.code] || '#ccc';
+        const circ = document.createElementNS(ns, 'circle');
+        circ.setAttribute('cx', 18); circ.setAttribute('cy', ly - 3);
+        circ.setAttribute('r', 5); circ.setAttribute('fill', col);
+        svg.appendChild(circ);
+        const lbl = document.createElementNS(ns, 'text');
+        lbl.setAttribute('x', 28); lbl.setAttribute('y', ly);
+        lbl.setAttribute('font-size', '11'); lbl.setAttribute('fill', '#333');
+        lbl.textContent = `${s.code}  ${s.name}`;
+        svg.appendChild(lbl);
+        ly += LEG_ROW;
+    });
+
+    // "No data"
+    const ndCirc = document.createElementNS(ns, 'circle');
+    ndCirc.setAttribute('cx', 18); ndCirc.setAttribute('cy', ly - 3);
+    ndCirc.setAttribute('r', 5); ndCirc.setAttribute('fill', '#f5f5f5');
+    ndCirc.setAttribute('stroke', '#aaa'); ndCirc.setAttribute('stroke-width', 1.5);
+    ndCirc.setAttribute('stroke-dasharray', '2,2');
+    svg.appendChild(ndCirc);
+    const ndLbl = document.createElementNS(ns, 'text');
+    ndLbl.setAttribute('x', 28); ndLbl.setAttribute('y', ly);
+    ndLbl.setAttribute('font-size', '11'); ndLbl.setAttribute('fill', '#555');
+    ndLbl.textContent = 'No data';
+    svg.appendChild(ndLbl);
+    ly += LEG_ROW;
+
+    // "State change"
+    const scLine = document.createElementNS(ns, 'line');
+    scLine.setAttribute('x1', 10); scLine.setAttribute('y1', ly - 3);
+    scLine.setAttribute('x2', 28); scLine.setAttribute('y2', ly - 3);
+    scLine.setAttribute('stroke', '#e53935'); scLine.setAttribute('stroke-width', 2);
+    svg.appendChild(scLine);
+    const scLbl = document.createElementNS(ns, 'text');
+    scLbl.setAttribute('x', 32); scLbl.setAttribute('y', ly);
+    scLbl.setAttribute('font-size', '11'); scLbl.setAttribute('fill', '#555');
+    scLbl.textContent = 'State change';
+    svg.appendChild(scLbl);
+
+    return { svg, ch };
+}
+
+function exportSVG() {
+    if (!selectedId) return;
+    const { svg, ch } = _buildExportSVG();
+    const str = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+                new XMLSerializer().serializeToString(svg);
+    const blob = new Blob([str], { type: 'image/svg+xml' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url; a.download = `${ch.code}_optimization.svg`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function exportPNG() {
+    if (!selectedId) return;
+    const { svg, ch } = _buildExportSVG();
+    const w = parseInt(svg.getAttribute('width'));
+    const h = parseInt(svg.getAttribute('height'));
+    const SCALE = 2;
+
+    const str  = new XMLSerializer().serializeToString(svg);
+    const blob = new Blob([str], { type: 'image/svg+xml' });
+    const url  = URL.createObjectURL(blob);
+
+    const img = new Image();
+    img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width  = w * SCALE;
+        canvas.height = h * SCALE;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.scale(SCALE, SCALE);
+        ctx.drawImage(img, 0, 0);
+        URL.revokeObjectURL(url);
+        canvas.toBlob(pngBlob => {
+            const a = document.createElement('a');
+            a.href     = URL.createObjectURL(pngBlob);
+            a.download = `${ch.code}_optimization.png`;
+            a.click();
+            setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+        }, 'image/png');
+    };
+    img.src = url;
+}
+
+function exportPDF() {
+    if (!selectedId) return;
+    const ch = allData[selectedId];
+    // Set visible print title, then call window.print()
+    const pt = document.getElementById('printTitle');
+    pt.textContent = `${ch.code}: ${ch.name}  —  ${ch.parsimony_score} parsimony step${ch.parsimony_score !== 1 ? 's' : ''}`;
+    window.print();
+    // Hide again after print dialog closes
+    setTimeout(() => { pt.textContent = ''; }, 500);
+}
+
+// ── Fetch all optimizations ───────────────────────────────────────────────────
+
+async function init() {
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/optimization/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await resp.json();
+
+        if (data.error) {
+            document.getElementById('loadingTxt').textContent = 'Error';
+            document.getElementById('placeholder').textContent = data.error;
+            return;
+        }
+
+        ordering = [];
+        for (const ch of data.characters) {
+            allData[ch.id] = ch;
+            ordering.push(ch.id);
+        }
+
+        renderCharList();
+        if (ordering.length > 0) selectChar(ordering[0]);
+
+    } catch (e) {
+        document.getElementById('loadingTxt').textContent = 'Error';
+        console.error(e);
+    }
+}
+
+init();
+</script>
+{% endif %}
+{% endblock %}

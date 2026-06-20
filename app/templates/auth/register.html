@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Register - GyroMorpho{% endblock %}
+{% block title %}Register — GyroMorpho{% endblock %}
+{% block back_button %}{% endblock %}
 {% block content %}
-<div style="max-width:400px; margin: 3rem auto;">
+<div class="auth-wrap">
     <div class="card">
-        <h2>Register</h2>
+        <h2>Create account</h2>
         <form method="POST">
             <div class="form-group">
                 <label>Username</label>
@@ -14,13 +15,13 @@
                 <input type="email" name="email" required>
             </div>
             <div class="form-group">
-                <label>Password (min 6 characters)</label>
+                <label>Password <span style="font-weight:400; color:var(--gray-500);">(min 6 characters)</span></label>
                 <input type="password" name="password" required minlength="6">
             </div>
-            <button type="submit" class="btn btn-primary">Register</button>
+            <button type="submit" class="btn btn-primary" style="width:100%; margin-top:0.25rem;">Create account</button>
         </form>
-        <p style="margin-top:1rem; font-size:0.9rem;">
-            Already have an account? <a href="{{ url_for('auth.login') }}">Login</a>
+        <p style="margin-top:1rem; font-size:0.875rem; text-align:center;">
+            Already have an account? <a href="{{ url_for('auth.login') }}">Sign in</a>
         </p>
     </div>
 </div>

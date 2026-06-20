@@ -3,51 +3,169 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}GyroMorpho v2{% endblock %}</title>
+    <title>{% block title %}GyroMorpho{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/tokens.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <script src="https://d3js.org/d3.v7.min.js"></script>
     {% block head %}{% endblock %}
 </head>
+
+{% if current_user.is_authenticated %}
+{# ── Authenticated: full sidebar + main layout ── #}
+<body class="app-shell">
+<div class="app">
+
+  {# ── Sidebar ── #}
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="mark"></span>
+      <span class="name">GyroMorpho</span>
+      <span class="ver">v2.4</span>
+    </div>
+
+    {% if project is defined and project %}
+    <a href="{{ url_for('project.view_project', project_id=project.id) }}" class="proj-pill">
+      <span class="lbl">Project</span>
+      <span class="val">{{ project.name }}</span>
+      <span class="meta">
+        {%- if stats is defined -%}{{ stats.specimens }} specimens · {{ stats.structures }} structures{%- else -%}open project{%- endif -%}
+      </span>
+    </a>
+
+    <div class="nav-section">Pipeline</div>
+    <a href="{{ url_for('project.view_project', project_id=project.id) }}"
+       class="nav-item {% if request.endpoint in ('project.view_project','project.specimen_detail','project.add_specimen','project.edit_dna') %}active{% endif %}">
+      <span class="num">01</span><span>Specimens</span>
+    </a>
+    <a href="{{ url_for('project.view_project', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'landmarks' %}active{% endif %}">
+      <span class="num">02</span><span>Landmarks</span>
+    </a>
+    <a href="{{ url_for('project.view_project', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'boundaries' %}active{% endif %}">
+      <span class="num">03</span><span>Boundaries</span>
+    </a>
+    <a href="{{ url_for('characters.workshop', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'characters' %}active{% endif %}">
+      <span class="num">04</span><span>Characters</span>
+    </a>
+    <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'matrix' %}active{% endif %}">
+      <span class="num">05</span><span>Matrix</span>
+    </a>
+    <a href="{{ url_for('phylogeny.phylogeny_view', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'phylogeny' %}active{% endif %}">
+      <span class="num">06</span><span>Phylogeny</span>
+    </a>
+
+    <div class="nav-section">Outputs</div>
+    <a href="{{ url_for('optimization.optimization_view', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'optimization' %}active{% endif %}">
+      <span class="num">07</span><span>Optimization</span>
+    </a>
+    <a href="{{ url_for('descriptions.species_descriptions', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'descriptions' %}active{% endif %}">
+      <span class="num">08</span><span>Descriptions</span>
+    </a>
+    <a href="{{ url_for('ai_advisor.advisor_page', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'ai_advisor' %}active{% endif %}">
+      <span class="num">AI</span><span>AI Advisor</span>
+    </a>
+    <a href="{{ url_for('export.export_page', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'export' %}active{% endif %}">
+      <span class="num">09</span><span>Export</span>
+    </a>
+
+    {% else %}
+    {# No project context — dashboard / backups #}
+    <a href="{{ url_for('project.dashboard') }}"
+       class="nav-item {% if request.endpoint == 'project.dashboard' %}active{% endif %}">
+      <span class="num">00</span><span>Projects</span>
+    </a>
+    <a href="{{ url_for('backup.backup_list') }}"
+       class="nav-item {% if request.blueprint == 'backup' %}active{% endif %}">
+      <span class="num">—</span><span>Backups</span>
+    </a>
+    {% endif %}
+
+    <div class="sidebar-foot">
+      <span class="avatar">{{ current_user.username[:2].upper() }}</span>
+      <div style="display:flex; flex-direction:column; line-height:1.3; min-width:0;">
+        <span style="color:var(--ink); font-size:11.5px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">{{ current_user.username }}</span>
+        <a href="{{ url_for('auth.logout') }}" style="font-size:10px; color:var(--ink-3);">Logout</a>
+      </div>
+    </div>
+  </aside>
+
+  {# ── Main ── #}
+  <main class="main">
+    <div class="topbar">
+      <span class="crumb">
+        {%- if project is defined and project -%}
+          {{ project.name }}
+          {%- if request.blueprint == 'landmarks' %} / LANDMARKS
+          {%- elif request.blueprint == 'boundaries' %} / BOUNDARIES
+          {%- elif request.blueprint == 'characters' %} / CHARACTERS
+          {%- elif request.blueprint == 'matrix' %} / MATRIX
+          {%- elif request.blueprint == 'phylogeny' %} / PHYLOGENY
+          {%- elif request.blueprint == 'optimization' %} / OPTIMIZATION
+          {%- elif request.blueprint == 'descriptions' %} / DESCRIPTIONS
+          {%- elif request.blueprint == 'ai_advisor' %} / AI ADVISOR
+          {%- elif request.blueprint == 'export' %} / EXPORT
+          {%- else %} / SPECIMENS
+          {%- endif %}
+        {%- else -%}
+          GyroMorpho
+        {%- endif -%}
+      </span>
+      <div class="right">
+        <div class="search">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input placeholder="Search…" />
+          <span class="kbd">⌘K</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="content">
+      {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+      <div class="flash-messages" style="margin-bottom:14px;">
+        {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %}
+      {% endwith %}
+
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+
+</div>
+
+{% else %}
+{# ── Unauthenticated: centered auth layout, no sidebar ── #}
 <body>
-    <nav class="navbar">
-        <a href="{{ url_for('project.dashboard') }}" class="nav-brand">GyroMorpho v2</a>
-        {% if current_user.is_authenticated %}
-        <div class="nav-links">
-            {% if project is defined and project %}
-            <a href="{{ url_for('project.view_project', project_id=project.id) }}">Specimens</a>
-            <a href="{{ url_for('characters.workshop', project_id=project.id) }}">Characters</a>
-            <a href="{{ url_for('matrix.matrix_view', project_id=project.id) }}">Matrix</a>
-            <a href="{{ url_for('descriptions.species_descriptions', project_id=project.id) }}">Descriptions</a>
-            <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}">Diagnoses</a>
-            <a href="{{ url_for('export.export_page', project_id=project.id) }}">Export</a>
-            <a href="{{ url_for('phylogeny.phylogeny_view', project_id=project.id) }}">Phylogeny</a>
-            <a href="{{ url_for('ai_advisor.advisor_page', project_id=project.id) }}">AI Advisor</a>
-            {% endif %}
-            <a href="{{ url_for('backup.backup_list') }}">Backups</a>
-            <span class="nav-user">{{ current_user.username }}</span>
-            <a href="{{ url_for('auth.logout') }}">Logout</a>
-        </div>
-        {% endif %}
-    </nav>
+<div class="auth-shell">
+  <div class="auth-wrap">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="flash-messages" style="margin-bottom:14px;">
+      {% for category, message in messages %}
+      <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
 
-    <main class="container">
-        {% block back_button %}
-        <a href="javascript:history.back()" class="btn btn-sm btn-outline" style="margin-bottom:0.75rem; display:inline-block;">&larr; Back</a>
-        {% endblock %}
+    {{ self.content() }}
+  </div>
+</div>
+{% endif %}
 
-        {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-        <div class="flash-messages">
-            {% for category, message in messages %}
-            <div class="flash flash-{{ category }}">{{ message }}</div>
-            {% endfor %}
-        </div>
-        {% endif %}
-        {% endwith %}
-
-        {% block content %}{% endblock %}
-    </main>
-
-    {% block scripts %}{% endblock %}
+{% block scripts %}{% endblock %}
 </body>
 </html>

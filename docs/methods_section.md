@@ -2,7 +2,7 @@
 
 *This document is auto-maintained. Update after any major change to character definitions, measurement algorithms, or pipeline architecture.*
 
-*Last revised: 2026-04-12*
+*Last revised: 2026-05-03*
 
 ---
 
@@ -10,23 +10,75 @@
 
 Morphometric data were acquired and processed using **GyroMorpho v2**, a custom web-based platform developed for the collaborative morphometric analysis of gyrodactylid sclerotized structures (hooks, anchors, bars, and MCO). The system integrates image-based landmark annotation, automated geometric measurement, discrete character coding, phylogenetic matrix export, and AI-assisted character evaluation into a single reproducible workflow.
 
+The platform runs as a local Flask application (Python 3.10+) backed by an SQLite database. All user data — microscopy images, landmark coordinates, character values, and phylogenetic trees — are stored within the project directory. Users access the interface through a web browser; no internet connection is required for morphometric analysis.
+
+---
+
+## File Storage Layout
+
+All uploaded and generated files reside under a single root defined in `config.py`:
+
+```
+AI_morpho2/
+│
+├── data/
+│   ├── db.sqlite                        ← SQLite database (all project metadata, specimens,
+│   │                                      characters, character values, matrix states)
+│   └── uploads/                         ← root upload folder (UPLOAD_FOLDER in config)
+│       ├── <project_id>/                ← one folder per project (numeric ID)
+│       │   └── structures/              ← structure images added via "Add Structure" or
+│       │       └── <filename>.png         "Replace Image" on the Specimen page
+│       ├── project_<project_id>/        ← batch-import staging area
+│       │   ├── hooks/                   ← images imported via folder scan (scan_images /
+│       │   ├── anchors/                   import_images routes), indexed by structure type
+│       │   ├── superficial_bars/
+│       │   ├── deep_bars/
+│       │   ├── mcos/
+│       │   └── landmarks/
+│       │       └── <type>s/             ← landmark CSVs from ImageJ macro batch import
+│       └── <structure_id>_<filename>    ← flat-root images from folder import (import_images)
+│
+└── phylogeny/
+    └── Results/
+        └── job_<YYYYMMDD_HHMMSS>/      ← one folder per phylogenetic analysis job
+            ├── input.fa / input_filtered.fa   ← FASTA sequences (uploaded or fetched)
+            ├── <marker>_raw.fa                ← raw downloaded sequences
+            ├── <marker>_aligned.fa            ← MAFFT-aligned sequences
+            ├── <marker>_trimmed.fa            ← trimAl-trimmed alignment
+            ├── infile.txt.raxml.*             ← RAxML-NG output files
+            ├── nj_tree.nwk                    ← neighbour-joining tree (if NJ run)
+            └── rooted_tree.tre                ← re-rooted tree after outgroup selection
+```
+
+> **Database vs. files:** Landmark coordinates (`landmarks_json`), boundary assignments (`boundary_json`), character state codes (`CharacterValue.state`), and the active project tree (`Project.tree_newick`) are all stored as columns in the SQLite database. The files on disk are microscopy images and sequence alignments only; losing the database loses all analytical results even if the image files are intact. **Back up `data/db.sqlite` regularly.**
+
 ---
 
 ## Structures Examined
 
 For each specimen, up to five categories of sclerotized structures were digitized:
 
-- **Hooks** (*Hamuli*): The marginal hooks were annotated with up to 12 part boundaries (Point, Shaft, Base, Shelf, Heel, Toe) defining the major morphological regions.
-- **Anchors**: Haptor anchors were annotated with up to nine regions (Point, Shaft, SuperficialRoot, DeepRoot).
-- **Superficial bars**: The superficial (dorsal) haptor bar was annotated as BarProper with optional shield structures.
-- **Deep bars**: The deep (ventral) haptor bar, annotated as a single region.
-- **Male copulatory organ (MCO)**: The sclerotized MCO was annotated with bulb and armature regions.
+- **Hooks** (*Hamuli*): The marginal hooks were annotated with up to six part boundaries (Point, Shaft, Base, Shelf, Heel, Toe) defining the major morphological regions.
+- **Anchors**: Haptor anchors were annotated with up to four regions (Point, Shaft, SuperficialRoot, DeepRoot).
+- **Superficial bars**: The superficial (dorsal) haptor bar was annotated as BarProper with optional shield structures (Shield, ShieldDistalEnd, AnterolateralProcesses).
+- **Deep bars**: The deep (ventral) haptor bar, annotated as a single BarProper region.
+- **Male copulatory organ (MCO)**: The sclerotized MCO was annotated with bulb and armature regions (Bulb, PrincipalSpine, Spinelets).
+
+---
+
+## Specimen Management
+
+Specimens are created per project and identified by a binomial species name. Each specimen record optionally carries a specimen ID / accession label and free-text notes. Specimen names can be edited at any time from the Specimen detail page (Edit Names button). Specimens can also be created automatically when a phylogenetic tree is imported into the matrix: tip labels from the Newick string are parsed and any name not already present in the specimen list is added.
+
+When importing data from another project (cross-project import), specimen matching is performed by **normalised epithet key**: accession prefixes, colon/semicolon suffixes, structural suffixes (e.g., `-hooks`, `-anchors`), concatenated genus+species strings, and leading numeric tokens are all stripped before comparison, leaving a canonical `"genus epithet"` key. The same normalisation is applied when matching image filenames or landmark CSVs from a folder to existing specimens.
 
 ---
 
 ## Image Acquisition and Landmark Placement
 
-Microscopy images of individual sclerotized structures were uploaded to GyroMorpho v2. Landmark contours were placed manually using the integrated image editor, which provides pan/zoom, brightness/contrast adjustment, and semi-automated contour tracing (deep-learning-assisted boundary suggestion using a U-Net architecture trained on gyrodactylid hook outlines). Landmarks were placed as ordered sequences of 2D coordinate points tracing the outer contour of each structure. Part boundaries were then defined by marking the index ranges of landmark points corresponding to each morphological region (e.g., Point, Shaft, Heel). All landmark placements and boundary assignments were confirmed by the annotator before characters were computed.
+Microscopy images of individual sclerotized structures were uploaded to GyroMorpho v2. Landmark contours were placed manually using the integrated image editor, which provides pan/zoom and semi-automated contour tracing. Landmarks were placed as ordered sequences of 2D coordinate points tracing the outer contour of each structure. Part boundaries were then defined by marking the index ranges of landmark points corresponding to each morphological region (e.g., Point, Shaft, Heel). All landmark placements and boundary assignments were confirmed by the annotator before characters were computed.
+
+Landmark CSVs (ImageJ Results table format, X and Y columns) may be uploaded individually per structure or in batch via a ZIP archive of CSVs produced by the Gyro-Landmark ImageJ macro. Batch import uses fuzzy name matching (exact → starts-with → substring) against `Specimen.species_name` and auto-resamples to the target landmark count for each structure type (`Config.LANDMARK_COUNTS`). Images may similarly be imported in batch from a local folder using the Scan / Import Images tools, which apply the same epithet-key normalisation to match filenames to specimens.
 
 ---
 
@@ -44,7 +96,19 @@ $$L_{\text{chord}} = \|p_n - p_1\|$$
 
 **Sinuosity**: The ratio of arc length to chord length, capturing the overall undulation of a part outline:
 $$S = L_{\text{arc}} / L_{\text{chord}}$$
-A value of 1.0 indicates a perfectly straight outline; higher values indicate increasing waviness.
+Because the chord is the shortest path between two points, *S* ≥ 1.0 by definition. A value of 1.0 indicates a perfectly straight outline; higher values indicate increasing waviness.
+
+**Signed sinuosity (A06)**: An extension of sinuosity that also encodes the direction in which a contour bows, used specifically for the superficial root profile character. The superficial root boundary is a closed loop traversing both the inner and outer edges of the root. The profile is extracted as follows:
+
+1. The fork point is taken as the first landmark in the SuperficialRoot boundary sequence.
+2. The tip is identified as the point of maximum Euclidean distance from the fork.
+3. The loop is split at the tip into two half-sequences (side A: fork→tip; side B: tip→end).
+4. Each half is assigned as *inner* or *outer* based on mean distance to the Point centroid: the half closer to the Point is the inner edge (it faces the anchor shaft and Point, i.e., the medial surface of the root).
+5. The inner-edge profile — oriented fork-to-tip — is used to compute arc length and chord length.
+
+The sign is determined by the cross product of the chord vector with the displacement from the chord midpoint to the arc midpoint:
+$$\text{signed sinuosity} = S \times \text{sign}$$
+where sign = +1 if the arc midpoint lies on the same side of the chord as the Point centroid (bowing *inward*, toward the Point) and sign = −1 if it lies on the opposite side (bowing *outward*, away from the Point). Because *S* ≥ 1.0, the absolute value of the reported statistic is always ≥ 1.0; values close to ±1 indicate a nearly straight profile, and larger absolute values indicate greater curvature. Specimens whose raw sinuosity exceeds 2.0 (indicative of incomplete or erroneous landmark tracing) are excluded from character assignment and coded as missing ("?").
 
 **Local curvature**: At each interior landmark point *i*, the signed Menger curvature was computed from three consecutive points using the formula:
 $$\kappa_i = \frac{4 \cdot A_{i-1,i,i+1}}{d_{i-1,i} \cdot d_{i,i+1} \cdot d_{i-1,i+1}}$$
@@ -139,10 +203,12 @@ where *σ*²_total is the total variance of the raw values and WCSS_k is the min
 | A03 | Superficial root length | arc(SuperficialRoot) / arc(Shaft) | 0: <0.8; 1: 0.8–1.2; 2: >1.2 |
 | A04 | Deep root form | arc(DeepRoot) / arc(Shaft) | 0: <0.3 (knob); 1: ≥0.3 (distinct root) |
 | A05 | Root divergence angle | fork angle SuperficialRoot, DeepRoot | 0: <70°; 1: 70–120°; 2: >120° |
-| A06 | Superficial root profile | signed sinuosity(SuperficialRoot) | 0: −1.03 to 1.03 (straight); 1: <−1.03 (inward); 2: >1.03 (outward) |
+| A06 | Superficial root profile | signed sinuosity of inner edge (see above); sign = +1 if arc midpoint bows toward Point, −1 if away | 0: <−0.509 (curved outward); 1: −0.509 to 0.5125 (straight†); 2: ≥0.5125 (curved inward) |
 | A07 | Deep root profile | sinuosity(DeepRoot) | 0: <1.08; 1: ≥1.08 [inapplicable if A04=0] |
 | A08 | Sclerite at superficial root tip | manual | 0: absent; 1: present |
 | A09 | Shaft–superficial root angle | fork angle Shaft, SuperficialRoot | 0: <25° (nearly aligned); 1: 25–60° (moderately divergent); 2: >60° (widely divergent) |
+
+† The "straight" state (code 1) is defined by the threshold interval produced by Fisher-Jenks optimization on the observed data. Because signed sinuosity has |value| ≥ 1.0 by definition, no specimen can occupy a state whose interval lies entirely within (−1, +1). This state therefore remains unoccupied in the present dataset and is retained in the matrix only to preserve the three-state coding scheme for potential future specimens with near-zero curvature (e.g., if data from additional taxa with nearly straight roots are added).
 
 ### Bar and MCO Characters (B01–B06, D01–D03, M01–M06)
 
@@ -154,11 +220,41 @@ All bar (superficial and deep) and MCO characters were scored manually based on 
 
 The discrete state codes for all specimens and characters were assembled into a standard morphological character matrix. The matrix was exported in NEXUS format for phylogenetic analysis. Inapplicable characters were coded as "−" and missing data as "?". The platform also supports direct export to TNT and raw CSV formats.
 
+### Cross-Project Import
+
+Character states from another GyroMorpho v2 project may be imported into the matrix using the **Import States** tool (matrix toolbar). Matching is performed by character code (exact, case-insensitive) and species name (normalised epithet key). A dry-run preview reports how many states will be imported, how many are skipped because the source lacks a matching character or specimen, and how many are skipped because a value already exists (overridable with the Overwrite toggle).
+
+Similarly, specimen data (images, landmark CSVs, boundary assignments) from another project can be bulk-imported from the Specimens page using the **Import from Project** tool, with the same epithet-key matching logic.
+
+---
+
+## Phylogenetic Analysis
+
+Molecular phylogenies were estimated from DNA sequence data downloaded from GenBank or supplied by the user. The pipeline on the platform performs the following steps automatically:
+
+1. **Sequence retrieval**: NCBI Entrez is queried for the selected marker (18S rRNA, ITS, COI, or user-defined) for each specimen that has a recorded accession number. Sequences are concatenated into a FASTA file.
+2. **Alignment**: Multiple sequence alignment was performed using MAFFT (v7+, `--auto` strategy).
+3. **Trimming**: Ambiguously aligned columns were removed with trimAl (`-automated1`).
+4. **Tree inference**: Maximum-likelihood phylogeny was estimated with RAxML-NG, with automatic substitution model selection (GTR+G default) and 100 bootstrap replicates. A neighbour-joining tree (via BioPython) is also available as a fast alternative.
+5. **Tree import and rooting**: The resulting Newick tree is imported into the matrix view, where the user may select an outgroup for re-rooting. Re-rooting is performed server-side using BioPython `root_with_outgroup` and the updated tree is saved to `Project.tree_newick`. Tip labels in the imported tree are automatically parsed and any new species names are added to the specimen list.
+
+Phylogenetic job results are written to:
+```
+AI_morpho2/phylogeny/Results/job_<YYYYMMDD_HHMMSS>/
+```
+Each job folder is self-contained and can be deleted without affecting the database.
+
+---
+
+## Taxonomic Descriptions
+
+Auto-generated taxonomic descriptions are produced from the character matrix for each specimen. The description enumerates confirmed character states for each structure type (hooks, anchors, bars, MCO) in standard morphological prose format. Descriptions are rendered in the browser and can be exported as formatted DOCX files (Microsoft Word) that include an illustration gallery (one image per structure type) followed by the description text. Both the web view and the DOCX strip the species name from the top of the description body since it is already displayed as the section heading.
+
 ---
 
 ## AI-Assisted Character Evaluation
 
-An AI-advisory module was implemented to assist with character design and evaluation. The module transmits the full project context (specimen counts, character definitions, value statistics, and state distributions) to a large language model (Anthropic Claude Opus 4.6 or user-specified alternative) and receives structured suggestions for: (i) new characters that could be measured from the existing landmark data; (ii) improved state boundary definitions for existing characters; (iii) redundant or uninformative characters warranting removal; and (iv) general observations on the morphometric scheme. Users may also pose free-form scientific questions about their dataset; the advisor responds with the full project context available. AI suggestions are presented for expert review and are not applied automatically.
+An AI-advisory module was implemented to assist with character design and evaluation. The module transmits the full project context (specimen counts, character definitions, value statistics, and state distributions) to a large language model (Anthropic Claude Sonnet 4.6 or user-specified alternative) and receives structured suggestions for: (i) new characters that could be measured from the existing landmark data; (ii) improved state boundary definitions for existing characters; (iii) redundant or uninformative characters warranting removal; and (iv) general observations on the morphometric scheme. Users may also pose free-form scientific questions about their dataset; the advisor responds with the full project context available. AI suggestions are presented for expert review and are not applied automatically.
 
 ---
 

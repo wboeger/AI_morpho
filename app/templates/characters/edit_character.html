@@ -24,7 +24,29 @@
                 <input type="text" name="name" value="{{ char.name }}" required>
             </div>
             <div class="form-group">
-                <label>Structure: {{ char.structure_type.replace('_', ' ') }} | Type: {{ char.computation_type }}</label>
+                <label>Computation type</label>
+                <div style="display:flex; align-items:center; gap:0.6rem; margin-top:0.35rem;">
+                    <select name="computation_type" id="computationTypeSelect"
+                            onchange="toggleGeometricFields()"
+                            style="flex:1;">
+                        <option value="geometric" {% if char.computation_type == 'geometric' %}selected{% endif %}>
+                            Automatic (geometric)
+                        </option>
+                        <option value="manual" {% if char.computation_type == 'manual' %}selected{% endif %}>
+                            Manual (gallery coding)
+                        </option>
+                    </select>
+                    {% if char.computation_type == 'geometric' %}
+                    <span style="background:#e0f2fe; color:#0369a1; font-size:0.75rem;
+                                 font-weight:600; padding:0.2rem 0.5rem; border-radius:4px;">AUTO</span>
+                    {% else %}
+                    <span style="background:#fef3c7; color:#92400e; font-size:0.75rem;
+                                 font-weight:600; padding:0.2rem 0.5rem; border-radius:4px;">MANUAL</span>
+                    {% endif %}
+                </div>
+                <span style="font-size:0.75rem; color:var(--gray-500);">
+                    Structure: {{ char.structure_type.replace('_',' ') }}
+                </span>
             </div>
         </div>
 
@@ -38,7 +60,7 @@
             <input type="text" name="parts_involved" value="{{ (char.parts_involved or [])|join(', ') }}">
         </div>
 
-        {% if char.computation_type == 'geometric' %}
+        <div id="geometricFields" style="display:{% if char.computation_type == 'geometric' %}block{% else %}none{% endif %};">
         <div class="form-group">
             <label>Geometric Operation</label>
             <select name="geometric_operation">
@@ -51,7 +73,7 @@
             <label>Formula</label>
             <input type="text" name="formula" value="{{ char.formula or '' }}">
         </div>
-        {% endif %}
+        </div>
 
         <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
             <legend style="font-weight:600; display:flex; align-items:center; gap:0.75rem;">
@@ -71,13 +93,13 @@
                 <div id="suggestionLoading" style="font-size:0.85rem; color:var(--gray-500);">Computing…</div>
                 <div id="suggestionContent" style="display:none;">
                     <div style="font-size:0.8rem; color:var(--gray-600); margin-bottom:0.5rem;" id="suggestionStats"></div>
-                    <canvas id="suggestionHistogram" height="60"
-                        style="width:100%; border-radius:3px; background:#fff; display:block; margin-bottom:0.6rem;"></canvas>
+                    <div id="suggestionHistogram" class="histogram-container"
+                        style="background:#fff; border-radius:3px; margin-bottom:0.6rem;"></div>
                     <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-bottom:0.6rem;" id="suggestionOptions"></div>
                     <div style="display:flex; gap:0.5rem; align-items:center;">
                         <button type="button" class="btn btn-sm btn-primary" onclick="applySuggestion()">Apply to States</button>
                         <button type="button" class="btn btn-sm btn-outline" onclick="document.getElementById('suggestionPanel').style.display='none'">Close</button>
-                        <span style="font-size:0.78rem; color:var(--gray-500);">Existing states will be replaced.</span>
+                        <span style="font-size:0.78rem; color:var(--gray-500);">Updates thresholds in existing states (same count), or replaces all states if count differs.</span>
                     </div>
                 </div>
             </div>
@@ -111,21 +133,61 @@
 
         <fieldset style="border:1px solid var(--gray-300); padding:0.75rem; border-radius:4px; margin-bottom:0.75rem;">
             <legend style="font-weight:600;">Dependencies</legend>
+            <p style="font-size:0.78rem; color:var(--gray-500); margin:0 0 0.5rem;">
+                When the condition is met, this character is forced to <strong>–</strong> (inapplicable) for that specimen.
+                The right panel previews which specimens are affected as you type.
+            </p>
+            <!-- Datalist of available character codes -->
+            <datalist id="depCharCodeList">
+                {% for c in dep_chars %}
+                <option value="{{ c.code }}">{{ c.code }} – {{ c.name }}</option>
+                {% endfor %}
+            </datalist>
+
             <div id="depsContainer">
                 {% for d in (char.dependencies_json or []) %}
-                <div style="display:flex; gap:0.5rem; margin-bottom:0.3rem; align-items:center;">
-                    <span>If</span>
-                    <input type="text" name="dep_char_{{ loop.index0 }}" value="{{ d.if_character }}" style="width:100px;">
-                    <span>=</span>
-                    <input type="text" name="dep_state_{{ loop.index0 }}" value="{{ d.if_state }}" style="width:80px;">
-                    <span>then inapplicable</span>
+                {% set dc = dep_chars_by_code.get(d.if_character) %}
+                <div class="dep-row" style="display:flex; gap:0.5rem; margin-bottom:0.4rem; align-items:center; flex-wrap:wrap;">
+                    <span style="font-size:0.85rem;">If</span>
+                    <input type="text" class="dep-code-input"
+                           list="depCharCodeList"
+                           name="dep_char_{{ loop.index0 }}"
+                           value="{{ d.if_character }}"
+                           placeholder="Code"
+                           style="width:90px;"
+                           oninput="onDepCodeChange(this)">
+                    <span style="font-size:0.85rem;">=</span>
+                    <select class="dep-state-select"
+                            name="dep_state_{{ loop.index0 }}"
+                            style="min-width:160px; font-size:0.85rem;"
+                            onchange="evaluateDepsLive()">
+                        <option value="">— select state —</option>
+                        {% if dc %}
+                            {% for s in (dc.states_json or []) %}
+                            <option value="{{ s.code }}" {% if s.code == d.if_state %}selected{% endif %}>
+                                {{ s.code }}: {{ s.name }}
+                            </option>
+                            {% endfor %}
+                        {% else %}
+                            {# dep char not found or from another type — keep saved value selectable #}
+                            <option value="{{ d.if_state }}" selected>{{ d.if_state }}</option>
+                        {% endif %}
+                    </select>
+                    <span style="font-size:0.85rem; color:var(--gray-500);">→ inapplicable</span>
+                    <button type="button" class="btn btn-sm" onclick="removeDep(this)"
+                            style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;"
+                            title="Remove this dependency">&times;</button>
                 </div>
                 {% endfor %}
             </div>
-            <button type="button" class="btn btn-sm btn-outline" onclick="addDep()">+ Add Dependency</button>
+            <div style="display:flex; align-items:center; gap:1rem; margin-top:0.4rem;">
+                <button type="button" class="btn btn-sm btn-outline" onclick="addDep()">+ Add Dependency</button>
+                <span id="depPreviewSummary" style="font-size:0.8rem; color:#c0392b;"></span>
+            </div>
         </fieldset>
 
-        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <button type="button" class="btn btn-primary"
+                onclick="renumberStates(); renumberDeps(); this.closest('form').submit();">Save Changes</button>
         <a href="{{ url_for('characters.workshop', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
     </form>
 </div>
@@ -199,6 +261,12 @@
 
 {% block scripts %}
 <script>
+function toggleGeometricFields() {
+    const type = document.getElementById('computationTypeSelect').value;
+    document.getElementById('geometricFields').style.display =
+        type === 'geometric' ? 'block' : 'none';
+}
+
 let stateCount = {{ (char.states_json or [])|length }};
 let depCount = {{ (char.dependencies_json or [])|length }};
 const PART_COLORS = ['#e74c3c','#3498db','#2ecc71','#f39c12','#9b59b6','#1abc9c','#e67e22','#34495e'];
@@ -254,13 +322,13 @@ function renumberStates() {
     });
 }
 
-/* Also renumber deps */
+/* Renumber dep fields before submit */
 function renumberDeps() {
-    const rows = document.querySelectorAll('#depsContainer > div');
-    rows.forEach((row, i) => {
-        const inputs = row.querySelectorAll('input');
-        if (inputs[0]) inputs[0].name = `dep_char_${i}`;
-        if (inputs[1]) inputs[1].name = `dep_state_${i}`;
+    document.querySelectorAll('#depsContainer .dep-row').forEach((row, i) => {
+        const codeInp = row.querySelector('.dep-code-input');
+        const stateSel = row.querySelector('.dep-state-select');
+        if (codeInp)  codeInp.name  = `dep_char_${i}`;
+        if (stateSel) stateSel.name = `dep_state_${i}`;
     });
 }
 
@@ -301,16 +369,120 @@ document.addEventListener('DOMContentLoaded', () => {
     initDragDrop();
 });
 
+// Lookup: character code → {name, states:[{code,name}]}
+const DEP_CHARS = {
+{% for c in dep_chars %}
+    {{ c.code | tojson }}: {
+        name: {{ c.name | tojson }},
+        states: {{ (c.states_json or []) | tojson }}
+    },
+{% endfor %}
+};
+
+function _buildStateSelect(sel, charCode, selectedState) {
+    const saved = sel.value || selectedState || '';
+    sel.innerHTML = '<option value="">— select state —</option>';
+    const char = DEP_CHARS[charCode.toUpperCase()];
+    if (char && char.states && char.states.length) {
+        char.states.forEach(s => {
+            const opt = document.createElement('option');
+            opt.value = s.code;
+            opt.textContent = `${s.code}: ${s.name}`;
+            if (s.code === (saved || selectedState)) opt.selected = true;
+            sel.appendChild(opt);
+        });
+    } else if (saved) {
+        // Unknown char — keep the saved value so it round-trips
+        const opt = document.createElement('option');
+        opt.value = saved; opt.textContent = saved; opt.selected = true;
+        sel.appendChild(opt);
+    }
+}
+
+function onDepCodeChange(inp) {
+    const row = inp.closest('.dep-row');
+    const sel = row.querySelector('.dep-state-select');
+    _buildStateSelect(sel, inp.value.trim(), '');
+    evaluateDepsLive();
+}
+
 function addDep() {
     const i = depCount++;
-    const html = `<div style="display:flex; gap:0.5rem; margin-bottom:0.3rem; align-items:center;">
-        <span>If</span>
-        <input type="text" name="dep_char_${i}" placeholder="Code" style="width:100px;">
-        <span>=</span>
-        <input type="text" name="dep_state_${i}" placeholder="State" style="width:80px;">
-        <span>then inapplicable</span>
+    const html = `<div class="dep-row" style="display:flex; gap:0.5rem; margin-bottom:0.4rem; align-items:center; flex-wrap:wrap;">
+        <span style="font-size:0.85rem;">If</span>
+        <input type="text" class="dep-code-input" list="depCharCodeList"
+               name="dep_char_${i}" placeholder="Code" style="width:90px;"
+               oninput="onDepCodeChange(this)">
+        <span style="font-size:0.85rem;">=</span>
+        <select class="dep-state-select" name="dep_state_${i}"
+                style="min-width:160px; font-size:0.85rem;" onchange="evaluateDepsLive()">
+            <option value="">— select state —</option>
+        </select>
+        <span style="font-size:0.85rem; color:var(--gray-500);">→ inapplicable</span>
+        <button type="button" class="btn btn-sm" onclick="removeDep(this)"
+                style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;"
+                title="Remove">&times;</button>
     </div>`;
     document.getElementById('depsContainer').insertAdjacentHTML('beforeend', html);
+    evaluateDepsLive();
+}
+
+function removeDep(btn) {
+    btn.closest('.dep-row').remove();
+    evaluateDepsLive();
+}
+
+function evaluateDepsLive() {
+    // Collect current dep rules from the form
+    const deps = [];
+    document.querySelectorAll('#depsContainer .dep-row').forEach(row => {
+        const codeInp = row.querySelector('.dep-code-input');
+        const stateSel = row.querySelector('.dep-state-select');
+        if (codeInp && stateSel) {
+            const code  = codeInp.value.trim().toUpperCase();
+            const state = stateSel.value.trim();
+            if (code && state) deps.push({ code, state });
+        }
+    });
+
+    let count = 0;
+    refEntries.forEach((entry, idx) => {
+        const isInapp = deps.length > 0 && deps.some(d =>
+            (entry.char_states || {})[d.code] === d.state
+        );
+        const item = document.querySelector(`.ref-item[data-idx="${idx}"]`);
+        if (!item) return;
+
+        let overlay = item.querySelector('.dep-live-overlay');
+        if (isInapp) {
+            count++;
+            item.style.opacity = '0.45';
+            if (!overlay) {
+                overlay = document.createElement('div');
+                overlay.className = 'dep-live-overlay';
+                overlay.style.cssText = [
+                    'position:absolute', 'top:2px', 'right:2px',
+                    'background:#c0392b', 'color:white',
+                    'font-size:0.6rem', 'font-weight:700',
+                    'padding:1px 4px', 'border-radius:3px',
+                    'pointer-events:none', 'z-index:10'
+                ].join(';');
+                overlay.textContent = '—';
+                item.style.position = 'relative';
+                item.appendChild(overlay);
+            }
+        } else {
+            item.style.opacity = '';
+            if (overlay) overlay.remove();
+        }
+    });
+
+    const summary = document.getElementById('depPreviewSummary');
+    if (summary) {
+        summary.textContent = deps.length > 0
+            ? `${count} of ${refEntries.length} specimen${count !== 1 ? 's' : ''} → inapplicable`
+            : '';
+    }
 }
 
 /* ── Reference panel drawing ── */
@@ -483,35 +655,34 @@ function renderSuggestions(data) {
 }
 
 function drawSuggestionHistogram(data) {
-    const canvas = document.getElementById('suggestionHistogram');
-    canvas.width = canvas.offsetWidth || 400;
-    const W = canvas.width, H = canvas.height;
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, W, H);
+    const container = document.getElementById('suggestionHistogram');
+    container.innerHTML = '';
+    const values = data.values;
+    if (!values || values.length === 0) { container.innerHTML = '<p>No data</p>'; return; }
 
-    const { counts, edges } = data.histogram;
-    const maxCount = Math.max(...counts, 1);
-    const vmin = edges[0], vmax = edges[edges.length - 1];
-    const vrange = vmax - vmin || 1;
-    const pad = 4;
+    const width = 600, height = 280, margin = {top: 20, right: 20, bottom: 40, left: 50};
+    const svg = d3.select(container).append('svg').attr('viewBox', `0 0 ${width} ${height}`);
 
-    // Bars
-    for (let i = 0; i < counts.length; i++) {
-        const x  = pad + (edges[i] - vmin) / vrange * (W - 2*pad);
-        const x2 = pad + (edges[i+1] - vmin) / vrange * (W - 2*pad);
-        const bh = (counts[i] / maxCount) * (H - pad * 2);
-        ctx.fillStyle = '#93c5fd';
-        ctx.fillRect(x, H - pad - bh, x2 - x - 1, bh);
-    }
+    const x = d3.scaleLinear().domain(d3.extent(values)).nice().range([margin.left, width - margin.right]);
+    const bins = d3.bin().domain(x.domain()).thresholds(20)(values);
+    const y = d3.scaleLinear().domain([0, d3.max(bins, d => d.length)]).nice().range([height - margin.bottom, margin.top]);
 
-    // Break lines for selected k
-    const kStr = String(_selectedK);
-    const breaks = data.suggestions[kStr]?.breaks || [];
-    ctx.strokeStyle = '#dc2626';
-    ctx.lineWidth = 1.5;
+    svg.selectAll('rect').data(bins).join('rect')
+        .attr('x', d => x(d.x0) + 1).attr('y', d => y(d.length))
+        .attr('width', d => Math.max(0, x(d.x1) - x(d.x0) - 1))
+        .attr('height', d => y(0) - y(d.length))
+        .attr('fill', '#3a7bb5');
+
+    svg.append('g').attr('transform', `translate(0,${height - margin.bottom})`).call(d3.axisBottom(x));
+    svg.append('g').attr('transform', `translate(${margin.left},0)`).call(d3.axisLeft(y));
+
+    // Draw Jenks break lines for selected k
+    const breaks = data.suggestions[String(_selectedK)]?.breaks || [];
     breaks.forEach(b => {
-        const bx = pad + (b - vmin) / vrange * (W - 2*pad);
-        ctx.beginPath(); ctx.moveTo(bx, 0); ctx.lineTo(bx, H); ctx.stroke();
+        svg.append('line')
+            .attr('x1', x(b)).attr('x2', x(b))
+            .attr('y1', margin.top).attr('y2', height - margin.bottom)
+            .attr('stroke', '#e74c3c').attr('stroke-width', 2).attr('stroke-dasharray', '4,4');
     });
 }
 
@@ -520,39 +691,51 @@ function applySuggestion() {
     const breaks = _suggestionData.suggestions[String(_selectedK)]?.breaks;
     if (!breaks) return;
 
-    // Build k state rows
-    const container = document.getElementById('statesContainer');
-    container.innerHTML = '';
     const k = _selectedK;
-    for (let i = 0; i < k; i++) {
-        const tmin = i === 0     ? '' : String(breaks[i-1]);
-        const tmax = i === k - 1 ? '' : String(breaks[i]);
-        const name = i === 0     ? 'state 0 (edit name)' :
-                     i === k - 1 ? `state ${i} (edit name)` :
-                                   `state ${i} (edit name)`;
-        container.insertAdjacentHTML('beforeend', `
-            <div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
-                <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
-                <input type="text" data-field="code" value="${i}">
-                <input type="text" data-field="name" value="${name}">
-                <input type="text" data-field="desc" placeholder="Description">
-                <div style="display:flex; gap:0.3rem;">
-                    <input type="number" data-field="threshold_min" value="${tmin}" placeholder="Min" step="any" style="width:80px;">
-                    <input type="number" data-field="threshold_max" value="${tmax}" placeholder="Max" step="any" style="width:80px;">
-                </div>
-                <div style="display:flex; gap:0.2rem;">
-                    <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,-1)" style="padding:0.1rem 0.3rem;">&uarr;</button>
-                    <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,1)" style="padding:0.1rem 0.3rem;">&darr;</button>
-                    <button type="button" class="btn btn-sm" onclick="removeState(this)" style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;">&times;</button>
-                </div>
-            </div>`);
+    const container = document.getElementById('statesContainer');
+    const existingRows = container.querySelectorAll('.state-row');
+
+    if (existingRows.length === k) {
+        // Same number of states — update only the threshold fields, preserve names/codes/descs
+        existingRows.forEach((row, i) => {
+            const tmin = i === 0     ? '' : String(breaks[i-1]);
+            const tmax = i === k - 1 ? '' : String(breaks[i]);
+            const minInp = row.querySelector('input[data-field="threshold_min"]');
+            const maxInp = row.querySelector('input[data-field="threshold_max"]');
+            if (minInp) minInp.value = tmin;
+            if (maxInp) maxInp.value = tmax;
+        });
+    } else {
+        // Different number — replace all rows (names will need editing)
+        container.innerHTML = '';
+        for (let i = 0; i < k; i++) {
+            const tmin = i === 0     ? '' : String(breaks[i-1]);
+            const tmax = i === k - 1 ? '' : String(breaks[i]);
+            container.insertAdjacentHTML('beforeend', `
+                <div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+                    <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
+                    <input type="text" data-field="code" value="${i}">
+                    <input type="text" data-field="name" value="state ${i} (edit name)">
+                    <input type="text" data-field="desc" placeholder="Description">
+                    <div style="display:flex; gap:0.3rem;">
+                        <input type="number" data-field="threshold_min" value="${tmin}" placeholder="Min" step="any" style="width:80px;">
+                        <input type="number" data-field="threshold_max" value="${tmax}" placeholder="Max" step="any" style="width:80px;">
+                    </div>
+                    <div style="display:flex; gap:0.2rem;">
+                        <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,-1)" style="padding:0.1rem 0.3rem;">&uarr;</button>
+                        <button type="button" class="btn btn-sm btn-outline" onclick="moveState(this,1)" style="padding:0.1rem 0.3rem;">&darr;</button>
+                        <button type="button" class="btn btn-sm" onclick="removeState(this)" style="padding:0.1rem 0.3rem; color:#e74c3c; background:none; border:1px solid #e74c3c;">&times;</button>
+                    </div>
+                </div>`);
+        }
+        initDragDrop();
     }
-    initDragDrop();
     document.getElementById('suggestionPanel').style.display = 'none';
 }
 
 // Initial render
 refreshRefPanel();
+evaluateDepsLive();
 
 document.addEventListener('keydown', e => {
     if (e.key === 'Escape') {

@@ -2,10 +2,46 @@
 {% block title %}Description: {{ specimen.species_name }}{% endblock %}
 {% block content %}
 <h1>Description: <em>{{ specimen.species_name }}</em></h1>
+
+{% if images %}
+<div class="card" style="margin-bottom:1rem;">
+    <h3 style="margin-top:0; margin-bottom:0.75rem;">Illustrations</h3>
+    <div style="display:flex; flex-wrap:wrap; gap:1rem;">
+        {% for img in images %}
+        <div style="text-align:center; cursor:pointer;" onclick="openLightbox('{{ img.image_url }}', '{{ img.label }}')">
+            <img src="{{ img.image_url }}" alt="{{ img.label }}"
+                 style="max-height:160px; max-width:200px; border:1px solid #ccc; border-radius:4px; object-fit:contain;">
+            <div style="font-size:0.78rem; color:#555; margin-top:0.25rem;">{{ img.label }}</div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.82);
+     z-index:9999; align-items:center; justify-content:center; flex-direction:column;">
+    <div style="position:relative; max-width:90vw; max-height:85vh; text-align:center;">
+        <img id="lbImg" src="" alt="" style="max-width:85vw; max-height:80vh; border-radius:6px;">
+        <div id="lbCaption" style="color:#fff; margin-top:0.5rem; font-size:0.9rem;"></div>
+    </div>
+    <button onclick="closeLightbox()" style="position:fixed; top:1rem; right:1.2rem;
+            background:none; border:none; color:#fff; font-size:2rem; cursor:pointer;">×</button>
+</div>
+{% endif %}
+
 <div class="card">
-    <div class="description-text" id="descText">{{ description }}</div>
-    <div style="margin-top:1rem; display:flex; gap:0.5rem;">
+    {# Strip leading species-name line — it's already in the <h1> above #}
+    {% set _blocks = description.split('\n\n') %}
+    {% if _blocks and _blocks[0].strip() == specimen.species_name %}
+        {% set _display = _blocks[1:]|join('\n\n') %}
+    {% else %}
+        {% set _display = description %}
+    {% endif %}
+    <div class="description-text" id="descText" style="white-space:pre-wrap;">{{ _display }}</div>
+    <div style="margin-top:1rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
         <button class="btn btn-outline" onclick="regenerate()">Regenerate</button>
+        <a href="{{ url_for('descriptions.export_description_docx', project_id=project.id, specimen_id=specimen.id) }}"
+           class="btn btn-outline">&#8659; Save as DOCX</a>
         <a href="{{ url_for('descriptions.species_descriptions', project_id=project.id) }}" class="btn btn-outline">Back</a>
     </div>
 </div>
@@ -15,8 +51,33 @@
 function regenerate() {
     fetch(`/api/project/{{ project.id }}/descriptions/{{ specimen.id }}/regenerate`, {method: 'POST'})
         .then(r => r.json()).then(data => {
-            document.getElementById('descText').textContent = data.description;
+            const speciesName = {{ specimen.species_name|tojson }};
+            let text = data.description;
+            const blocks = text.split('\n\n');
+            if (blocks.length && blocks[0].trim() === speciesName) {
+                text = blocks.slice(1).join('\n\n');
+            }
+            document.getElementById('descText').textContent = text;
         });
 }
+
+function openLightbox(url, caption) {
+    const lb = document.getElementById('lightbox');
+    document.getElementById('lbImg').src = url;
+    document.getElementById('lbCaption').textContent = caption;
+    lb.style.display = 'flex';
+}
+
+function closeLightbox() {
+    document.getElementById('lightbox').style.display = 'none';
+}
+
+document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeLightbox();
+});
+
+document.getElementById('lightbox')?.addEventListener('click', function(e) {
+    if (e.target === this) closeLightbox();
+});
 </script>
 {% endblock %}

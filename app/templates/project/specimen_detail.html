@@ -1,0 +1,750 @@
+{% extends "base.html" %}
+{% block title %}{{ specimen.species_name }} — GyroMorpho{% endblock %}
+
+{% block content %}
+
+{% set ST_LABELS = {
+    'hook':             'Hook',
+    'anchor':           'Anchor',
+    'superficial_bar':  'Superficial Bar',
+    'deep_bar':         'Deep Bar',
+    'mco':              'MCO'
+} %}
+
+{% set ST_COLORS = {
+    'hook':             '#dc2626',
+    'anchor':           '#2563a8',
+    'superficial_bar':  '#d97706',
+    'deep_bar':         '#7c3aed',
+    'mco':              '#059669'
+} %}
+
+{% set PART_COLORS = {
+    'Point':                  '#e74c3c',
+    'Shaft':                  '#3498db',
+    'Toe':                    '#2ecc71',
+    'Shelf':                  '#f39c12',
+    'Base':                   '#9b59b6',
+    'Heel':                   '#1abc9c',
+    'SuperficialRoot':        '#e67e22',
+    'DeepRoot':               '#34495e',
+    'BarProper':              '#3498db',
+    'Shield':                 '#2ecc71',
+    'ShieldDistalEnd':        '#f39c12',
+    'AnterolateralProcesses': '#9b59b6',
+    'Bulb':                   '#e74c3c',
+    'PrincipalSpine':         '#3498db',
+    'Spinelets':              '#2ecc71'
+} %}
+
+{# ── Header ── #}
+<div class="page-header" style="margin-bottom:1.25rem;">
+    <div>
+        <h1 id="specimenNameDisplay" style="font-style:italic; margin-bottom:0.15rem;">{{ specimen.species_name }}</h1>
+        <p style="font-size:0.8rem; color:var(--gray-400); margin:0;">
+            {{ specimen_index }} / {{ specimen_total }}
+            <span id="specimenIdDisplay">{% if specimen.specimen_id_label %} &nbsp;·&nbsp; {{ specimen.specimen_id_label }}{% endif %}</span>
+        </p>
+    </div>
+    <div style="display:flex; gap:0.4rem; align-items:center;">
+        <a href="{{ url_for('project.view_project', project_id=project.id) }}"
+           class="btn btn-outline btn-sm">← List</a>
+        <button class="btn btn-outline btn-sm" onclick="openEditSpecimen()">Edit Names</button>
+        {% if prev_specimen_id %}
+        <a href="{{ url_for('project.specimen_detail', specimen_id=prev_specimen_id) }}"
+           class="btn btn-outline btn-sm" title="Previous specimen">‹ Prev</a>
+        {% else %}
+        <button class="btn btn-outline btn-sm" disabled style="opacity:0.4; cursor:default;">‹ Prev</button>
+        {% endif %}
+        {% if next_specimen_id %}
+        <a href="{{ url_for('project.specimen_detail', specimen_id=next_specimen_id) }}"
+           class="btn btn-primary btn-sm" title="Next specimen">Next ›</a>
+        {% else %}
+        <button class="btn btn-primary btn-sm" disabled style="opacity:0.4; cursor:default;">Next ›</button>
+        {% endif %}
+    </div>
+</div>
+
+{# ── DNA + notes strip ── #}
+{% if specimen.dna_sequences or specimen.notes %}
+<div class="card" style="padding:0.875rem 1.25rem; margin-bottom:1.25rem;
+     display:flex; gap:2rem; flex-wrap:wrap; align-items:flex-start;">
+    {% if specimen.dna_sequences %}
+    <div>
+        <p class="sd-meta-label">DNA Sequences</p>
+        <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+            {% for d in specimen.dna_sequences %}
+            <span class="sd-dna-chip {% if d.available %}sd-dna-ok{% else %}sd-dna-na{% endif %}">
+                {{ d.marker }}{% if d.accession %} · {{ d.accession }}{% endif %}
+                {% if not d.available %} (unavailable){% endif %}
+            </span>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+    {% if specimen.notes %}
+    <div style="flex:1; min-width:200px;">
+        <p class="sd-meta-label">Notes</p>
+        <p style="font-size:0.875rem; color:var(--gray-700); margin:0;">{{ specimen.notes }}</p>
+    </div>
+    {% endif %}
+</div>
+{% endif %}
+
+{# ── Structure cards ── #}
+{% for st in structure_types %}
+{% set s = structures[st] %}
+{% set parts = structure_parts.get(st, []) %}
+
+<div class="sd-card" id="card-{{ st }}">
+
+    {# ── Left: visual panel ── #}
+    <div class="sd-visual">
+        <div class="sd-type-badge"
+             style="background:{{ ST_COLORS[st] }}1a; color:{{ ST_COLORS[st] }}; border-color:{{ ST_COLORS[st] }}44;">
+            {{ ST_LABELS[st] }}
+        </div>
+
+        {% if s and (s.landmarks_json or s.image_path) %}
+            <div class="sd-canvas-wrap" id="wrap-{{ st }}">
+                {# Shape view #}
+                <canvas id="canvas-{{ st }}" class="sd-canvas" width="580" height="440"></canvas>
+                {# Photo view (hidden initially) #}
+                {% if s.image_path %}
+                <img id="photo-{{ st }}" class="sd-photo" style="display:none;"
+                     src="/uploads/{{ s.image_path }}" alt="{{ specimen.species_name }} {{ ST_LABELS[st] }}">
+                {% endif %}
+                {% if s.image_path %}
+                <button class="sd-toggle-btn btn btn-sm btn-ghost"
+                        id="toggle-{{ st }}"
+                        onclick="toggleView('{{ st }}')">Show Photo</button>
+                {% endif %}
+            </div>
+
+            {# Part legend — only when boundaries are assigned #}
+            {% if s.boundary_json and parts %}
+            <div class="sd-legend">
+                {% for part in parts %}
+                {% if s.boundary_json.get(part) %}
+                <span class="sd-legend-chip"
+                      style="background:{{ PART_COLORS.get(part, '#999') }}22;
+                             color:{{ PART_COLORS.get(part, '#999') }};
+                             border-color:{{ PART_COLORS.get(part, '#999') }}55;">
+                    {{ part }}
+                </span>
+                {% endif %}
+                {% endfor %}
+            </div>
+            {% endif %}
+
+        {% elif s %}
+            {# Structure exists but has no data yet #}
+            <div class="sd-empty-visual">
+                <span style="font-size:2.5rem; color:var(--gray-300);">⬡</span>
+                <p style="font-size:0.8rem; color:var(--gray-400); margin-top:0.5rem; text-align:center;">
+                    No image or landmarks yet
+                </p>
+            </div>
+        {% else %}
+            {# Structure type not recorded at all #}
+            <div class="sd-empty-visual">
+                <span style="font-size:2.5rem; color:var(--gray-200);">—</span>
+                <p style="font-size:0.8rem; color:var(--gray-400); margin-top:0.5rem; text-align:center;">
+                    Not recorded
+                </p>
+            </div>
+        {% endif %}
+    </div>{# /.sd-visual #}
+
+    {# ── Right: info + actions ── #}
+    <div class="sd-info">
+
+        {# Status chips #}
+        <div class="sd-status-row">
+            {% if s %}
+                {% if s.image_path %}
+                <span class="sd-chip sd-ok" title="Image uploaded">Img ✓</span>
+                {% else %}
+                <span class="sd-chip sd-miss" title="No image">Img ✗</span>
+                {% endif %}
+
+                {% if s.landmarks_json %}
+                    {% if s.landmarks_confirmed %}
+                    <span class="sd-chip sd-ok" title="Landmarks confirmed">LM ✓</span>
+                    {% else %}
+                    <span class="sd-chip sd-warn" title="Landmarks present, not confirmed">LM ~</span>
+                    {% endif %}
+                {% else %}
+                <span class="sd-chip sd-miss" title="No landmarks">LM ✗</span>
+                {% endif %}
+
+                {% if s.boundary_json %}
+                    {% if s.boundary_confirmed %}
+                    <span class="sd-chip sd-ok" title="Boundaries confirmed">Bnd ✓</span>
+                    {% else %}
+                    <span class="sd-chip sd-warn" title="Boundaries not confirmed">Bnd ~</span>
+                    {% endif %}
+                {% else %}
+                <span class="sd-chip sd-miss" title="No boundaries">Bnd ✗</span>
+                {% endif %}
+
+                {% if s.landmarks_json %}
+                <span class="sd-chip sd-gray">{{ s.landmarks_json|length }} pts</span>
+                {% endif %}
+            {% else %}
+                <span class="sd-chip sd-miss">Not recorded</span>
+            {% endif %}
+        </div>
+
+        {# Action buttons #}
+        <div class="sd-actions">
+            {% if s %}
+                <button class="btn btn-sm {% if not s.image_path %}btn-primary{% else %}btn-outline{% endif %}"
+                        onclick="openImgModal({{ s.id }}, '{{ ST_LABELS[st]|e }}')">
+                    ↑ {% if not s.image_path %}Upload Image{% else %}Replace Image{% endif %}
+                </button>
+
+                <button class="btn btn-sm {% if not s.landmarks_json %}btn-primary{% else %}btn-outline{% endif %}"
+                        onclick="openCsvModal({{ s.id }}, '{{ ST_LABELS[st]|e }}')">
+                    ↑ {% if not s.landmarks_json %}Upload CSV{% else %}Replace CSV{% endif %}
+                </button>
+
+                <a href="{{ url_for('landmarks.landmark_editor', structure_id=s.id) }}"
+                   class="btn btn-sm btn-outline">Edit Landmarks</a>
+
+                {% if s.landmarks_json %}
+                <a href="{{ url_for('boundaries.boundary_editor', structure_id=s.id) }}"
+                   class="btn btn-sm btn-outline">Edit Boundaries</a>
+                {% endif %}
+
+                <button class="btn btn-sm"
+                        style="color:var(--danger); background:none; border:none; cursor:pointer;"
+                        onclick="deleteStructure({{ s.id }}, '{{ ST_LABELS[st]|e }}')"
+                        title="Delete this structure">Delete</button>
+            {% else %}
+                <button class="btn btn-primary btn-sm"
+                        onclick="openAddModal('{{ st }}', '{{ ST_LABELS[st]|e }}')">
+                    + Add {{ ST_LABELS[st] }}
+                </button>
+            {% endif %}
+        </div>
+
+        {# Guidance hints #}
+        {% if s and not s.landmarks_json and not s.image_path %}
+        <p class="sd-hint">Upload a photo and an ImageJ landmark CSV to begin analysis for this structure.</p>
+        {% elif s and not s.landmarks_json %}
+        <p class="sd-hint">Upload an ImageJ landmark CSV to enable geometric character computation.</p>
+        {% elif s and s.landmarks_json and not s.boundary_json %}
+        <p class="sd-hint">Assign part boundaries to enable per-part color coding and character computation.</p>
+        {% endif %}
+
+    </div>{# /.sd-info #}
+</div>{# /.sd-card #}
+{% endfor %}
+
+
+{# ═══════ Modals ═══════ #}
+
+<div id="uploadToast" style="
+    display:none; position:fixed; bottom:1.5rem; left:50%; transform:translateX(-50%);
+    background:#1e3a5f; color:#fff; font-size:0.85rem; font-weight:600;
+    padding:0.6rem 1.4rem; border-radius:999px; box-shadow:0 4px 16px rgba(0,0,0,.25);
+    z-index:9999; pointer-events:none; white-space:nowrap;
+"></div>
+
+<div id="imgModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="max-width:440px;">
+        <h3 id="imgModalTitle" style="margin:0 0 1rem;">Upload Image</h3>
+        <div id="imgPreview" style="display:none; margin-bottom:0.75rem; text-align:center;">
+            <img id="imgPreviewImg" style="max-width:100%; max-height:200px; border-radius:6px; border:1px solid var(--gray-200);" alt="">
+        </div>
+        <form id="imgForm" enctype="multipart/form-data">
+            <input type="file" id="imgFileInput" name="image" accept="image/*" required
+                   style="display:block; width:100%; margin-bottom:0.5rem;"
+                   onchange="previewImage(this)">
+            <p class="sd-hint" style="margin-bottom:0.75rem;">JPEG, PNG or TIFF. Max 50 MB.</p>
+            <div id="imgStatus" style="font-size:0.82rem; min-height:1.2rem; margin-bottom:0.4rem; color:var(--primary);"></div>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+                <button type="button" class="btn btn-outline btn-sm"
+                        onclick="closeModal('imgModal')">Cancel</button>
+                <button type="submit" id="imgSubmitBtn" class="btn btn-primary btn-sm">Upload</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="csvModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="max-width:440px;">
+        <h3 id="csvModalTitle" style="margin:0 0 0.5rem;">Upload Landmark CSV</h3>
+        <p class="sd-hint" style="margin-bottom:0.75rem;">
+            ImageJ Results table with X and Y columns. Landmarks will be resampled automatically.
+        </p>
+        <form id="csvForm" enctype="multipart/form-data">
+            <input type="file" name="csv_file" accept=".csv" required
+                   style="display:block; width:100%; margin-bottom:0.75rem;">
+            <div id="csvStatus" style="font-size:0.82rem; min-height:1.2rem; margin-bottom:0.4rem; color:var(--primary);"></div>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+                <button type="button" class="btn btn-outline btn-sm"
+                        onclick="closeModal('csvModal')">Cancel</button>
+                <button type="submit" id="csvSubmitBtn" class="btn btn-primary btn-sm">Upload</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div id="editSpecimenModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="max-width:480px;">
+        <h3 style="margin:0 0 1rem;">Edit Specimen</h3>
+        <div class="form-group" style="margin-bottom:0.75rem;">
+            <label style="font-size:0.85rem; font-weight:600; display:block; margin-bottom:0.3rem;">
+                Species name <span style="color:var(--danger);">*</span>
+            </label>
+            <input id="editSpeciesName" type="text" class="form-control"
+                   style="font-style:italic; width:100%;"
+                   placeholder="Genus species">
+        </div>
+        <div class="form-group" style="margin-bottom:0.75rem;">
+            <label style="font-size:0.85rem; font-weight:600; display:block; margin-bottom:0.3rem;">
+                Specimen ID / accession
+            </label>
+            <input id="editSpecimenId" type="text" class="form-control"
+                   style="width:100%;" placeholder="e.g. AB012345">
+        </div>
+        <div class="form-group" style="margin-bottom:1rem;">
+            <label style="font-size:0.85rem; font-weight:600; display:block; margin-bottom:0.3rem;">Notes</label>
+            <textarea id="editNotes" class="form-control" rows="3"
+                      style="width:100%; resize:vertical;" placeholder="Optional notes"></textarea>
+        </div>
+        <div id="editSpecimenStatus" style="font-size:0.82rem; min-height:1.2rem; margin-bottom:0.5rem;"></div>
+        <div style="display:flex; gap:0.5rem; justify-content:flex-end;">
+            <button type="button" class="btn btn-outline btn-sm"
+                    onclick="closeModal('editSpecimenModal')">Cancel</button>
+            <button type="button" id="editSpecimenSaveBtn" class="btn btn-primary btn-sm"
+                    onclick="saveSpecimen()">Save</button>
+        </div>
+    </div>
+</div>
+
+<div id="addModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="max-width:480px;">
+        <h3 id="addModalTitle" style="margin:0 0 1rem;">Add Structure</h3>
+        <form id="addForm" enctype="multipart/form-data"
+              data-action="{{ url_for('project.add_structure', specimen_id=specimen.id) }}">
+            <input type="hidden" name="structure_type" id="addModalType">
+            <div class="form-group">
+                <label>Landmark CSV <span style="font-weight:400; color:var(--gray-500);">(optional)</span></label>
+                <input type="file" name="csv_file" accept=".csv">
+                <p class="sd-hint">ImageJ Results table (X, Y columns).</p>
+            </div>
+            <div class="form-group">
+                <label>Image <span style="font-weight:400; color:var(--gray-500);">(optional)</span></label>
+                <input type="file" name="image" accept="image/*">
+            </div>
+            <div id="addStatus" style="font-size:0.82rem; min-height:1.2rem; margin-bottom:0.4rem; color:var(--primary);"></div>
+            <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem;">
+                <button type="button" class="btn btn-outline btn-sm"
+                        onclick="closeModal('addModal')">Cancel</button>
+                <button type="submit" id="addSubmitBtn" class="btn btn-primary btn-sm">Add Structure</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+
+{# ═══════ Styles ═══════ #}
+<style>
+.sd-meta-label {
+    font-size:0.72rem; font-weight:700; text-transform:uppercase;
+    letter-spacing:0.06em; color:var(--gray-400); margin-bottom:0.35rem;
+}
+.sd-dna-chip {
+    font-size:0.8rem; padding:0.2rem 0.55rem; border-radius:999px; border:1px solid;
+}
+.sd-dna-ok { background:var(--success-bg); color:#065f46; border-color:#6ee7b7; }
+.sd-dna-na { background:var(--gray-200);   color:var(--gray-500); border-color:var(--gray-300); }
+
+/* Card layout */
+.sd-card {
+    display:flex; background:var(--surface);
+    border:1px solid var(--border); border-radius:var(--radius);
+    box-shadow:var(--shadow-sm); margin-bottom:1rem; overflow:hidden;
+    transition:box-shadow var(--ease);
+}
+.sd-card:hover { box-shadow:var(--shadow); }
+
+/* Visual panel */
+.sd-visual {
+    width:300px; min-width:300px;
+    background:var(--gray-50); border-right:1px solid var(--border);
+    display:flex; flex-direction:column; align-items:stretch;
+    padding:0.875rem; gap:0.5rem; position:relative;
+}
+.sd-type-badge {
+    font-size:0.7rem; font-weight:700; letter-spacing:0.06em;
+    text-transform:uppercase; padding:0.2rem 0.6rem; border-radius:999px;
+    border:1.5px solid; align-self:flex-start;
+}
+.sd-canvas-wrap {
+    position:relative; background:#fff;
+    border:1px solid var(--gray-200); border-radius:var(--radius-sm);
+    overflow:hidden; flex:1;
+}
+.sd-canvas {
+    display:block; width:100%; height:220px;
+}
+.sd-photo {
+    display:block; width:100%; height:220px;
+    object-fit:contain; background:#fff;
+}
+.sd-toggle-btn {
+    position:absolute; bottom:6px; right:6px;
+    font-size:0.72rem; padding:0.2rem 0.5rem;
+    background:rgba(255,255,255,0.9); border:1px solid var(--gray-300);
+    border-radius:var(--radius-sm); cursor:pointer;
+    color:var(--gray-600);
+}
+.sd-toggle-btn:hover { background:#fff; color:var(--primary); }
+.sd-empty-visual {
+    flex:1; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; min-height:160px;
+}
+.sd-legend { display:flex; flex-wrap:wrap; gap:0.3rem; }
+.sd-legend-chip {
+    font-size:0.7rem; font-weight:600;
+    padding:0.15rem 0.45rem; border-radius:999px; border:1px solid;
+}
+
+/* Info panel */
+.sd-info {
+    flex:1; padding:1.25rem 1.5rem;
+    display:flex; flex-direction:column; gap:0.875rem;
+}
+.sd-status-row { display:flex; gap:0.3rem; flex-wrap:wrap; }
+.sd-chip {
+    font-size:0.72rem; font-weight:700; padding:0.18rem 0.5rem;
+    border-radius:999px; border:1px solid; letter-spacing:0.01em;
+}
+.sd-ok   { background:var(--success-bg); color:#065f46; border-color:#6ee7b7; }
+.sd-warn { background:var(--warning-bg); color:#92400e; border-color:#fcd34d; }
+.sd-miss { background:var(--danger-bg);  color:#991b1b; border-color:#fca5a5; }
+.sd-gray { background:var(--gray-100);   color:var(--gray-600); border-color:var(--gray-300); }
+.sd-actions { display:flex; gap:0.4rem; flex-wrap:wrap; align-items:center; }
+.sd-hint { font-size:0.78rem; color:var(--gray-500); margin:0; line-height:1.5; }
+
+@media (max-width:700px) {
+    .sd-card { flex-direction:column; }
+    .sd-visual { width:100%; min-width:0; border-right:none; border-bottom:1px solid var(--border); }
+}
+</style>
+
+
+{# ═══════ Scripts — ALL data serialised here, AFTER template output ═══════ #}
+<script>
+/* ── Structure data (serialised from Python) ─────────────────── */
+const STRUCTURE_DATA = {
+{% for st in structure_types %}{% set s = structures[st] %}{% if s %}
+    {{ st|tojson }}: {
+        lm:     {{ (s.landmarks_json or [])|tojson }},
+        bnd:    {{ (s.boundary_json   or {})|tojson }},
+        parts:  {{ structure_parts.get(st, [])|tojson }},
+        imgUrl: {{ ('/uploads/' + s.image_path if s.image_path else '')|tojson }}
+    },
+{% endif %}{% endfor %}
+};
+
+const PART_COLORS = {{ PART_COLORS|tojson }};
+
+/* ── Canvas drawing ──────────────────────────────────────────── */
+function drawStructure(st) {
+    const d      = STRUCTURE_DATA[st];
+    const canvas = document.getElementById('canvas-' + st);
+    if (!d || !canvas) return;
+
+    /* Size the backing buffer to the CSS-rendered width */
+    const w = canvas.parentElement.clientWidth || 280;
+    canvas.width  = w * (window.devicePixelRatio || 1);
+    canvas.height = 220 * (window.devicePixelRatio || 1);
+    const ctx = canvas.getContext('2d');
+    ctx.scale(window.devicePixelRatio || 1, window.devicePixelRatio || 1);
+
+    const W = w, H = 220;
+    ctx.clearRect(0, 0, W, H);
+
+    const lm = d.lm;
+    if (!lm || lm.length < 3) {
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = '13px system-ui, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('No landmarks', W / 2, H / 2);
+        return;
+    }
+
+    /* Bounding box + transform */
+    let mnX=Infinity, mxX=-Infinity, mnY=Infinity, mxY=-Infinity;
+    lm.forEach(([x,y]) => { mnX=Math.min(mnX,x); mxX=Math.max(mxX,x); mnY=Math.min(mnY,y); mxY=Math.max(mxY,y); });
+    const pad = 20;
+    const sc  = Math.min((W-pad*2)/(mxX-mnX||1), (H-pad*2)/(mxY-mnY||1));
+    const ox  = W/2 - ((mnX+mxX)/2)*sc;
+    const oy  = H/2 - ((mnY+mxY)/2)*sc;
+    const tx  = (x,y) => [x*sc+ox, y*sc+oy];
+
+    /* Build index → colour from boundaries */
+    const bnd    = d.bnd   || {};
+    const parts  = d.parts || [];
+    const colOf  = {};
+    const hasBnd = parts.some(p => (bnd[p]||[]).length > 0);
+    if (hasBnd) {
+        parts.forEach(p => { (bnd[p]||[]).forEach(i => { colOf[i] = PART_COLORS[p] || '#94a3b8'; }); });
+    }
+
+    /* Segments */
+    for (let i = 0; i < lm.length - 1; i++) {
+        const [x1,y1] = tx(lm[i][0],   lm[i][1]);
+        const [x2,y2] = tx(lm[i+1][0], lm[i+1][1]);
+        ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2);
+        ctx.strokeStyle = colOf[i] || (hasBnd ? '#e2e8f0' : '#94a3b8');
+        ctx.lineWidth   = colOf[i] ? 2.5 : 1.5;
+        ctx.stroke();
+    }
+
+    /* Dots */
+    lm.forEach(([x,y], i) => {
+        const [sx,sy] = tx(x,y);
+        ctx.beginPath();
+        ctx.arc(sx, sy, colOf[i] ? 2.5 : 1.5, 0, Math.PI*2);
+        ctx.fillStyle = colOf[i] || (hasBnd ? '#cbd5e1' : '#64748b');
+        ctx.fill();
+    });
+}
+
+/* ── Photo / shape toggle ────────────────────────────────────── */
+const viewMode = {};
+
+function toggleView(st) {
+    viewMode[st] = viewMode[st] === 'photo' ? 'shape' : 'photo';
+    const isPhoto  = viewMode[st] === 'photo';
+    const canvas   = document.getElementById('canvas-' + st);
+    const photo    = document.getElementById('photo-'  + st);
+    const btn      = document.getElementById('toggle-' + st);
+    if (canvas) canvas.style.display = isPhoto ? 'none' : 'block';
+    if (photo)  photo.style.display  = isPhoto ? 'block' : 'none';
+    if (btn)    btn.textContent      = isPhoto ? 'Show Shape' : 'Show Photo';
+    if (!isPhoto) drawStructure(st);
+}
+
+/* ── Modals ──────────────────────────────────────────────────── */
+function openModal(id)  { document.getElementById(id).style.display = 'flex'; }
+function closeModal(id) { document.getElementById(id).style.display = 'none'; }
+document.querySelectorAll('.gyro-modal').forEach(m =>
+    m.addEventListener('click', e => { if (e.target === m) m.style.display = 'none'; })
+);
+
+/* ── Toast ─────────────────────────────────────────────────────── */
+function showToast(msg, duration) {
+    const t = document.getElementById('uploadToast');
+    t.textContent = msg;
+    t.style.display = 'block';
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => { t.style.display = 'none'; }, duration || 2800);
+}
+
+/* ── Image-preview before submit ───────────────────────────────── */
+function previewImage(input) {
+    const preview = document.getElementById('imgPreview');
+    const img     = document.getElementById('imgPreviewImg');
+    if (input.files && input.files[0]) {
+        img.src = URL.createObjectURL(input.files[0]);
+        preview.style.display = 'block';
+    }
+}
+
+/* ── Open / configure modals ───────────────────────────────────── */
+function openImgModal(structId, label) {
+    document.getElementById('imgModalTitle').textContent = 'Upload Image — ' + label;
+    document.getElementById('imgForm').dataset.action = '/api/structure/' + structId + '/upload_image';
+    document.getElementById('imgStatus').textContent = '';
+    document.getElementById('imgPreview').style.display = 'none';
+    document.getElementById('imgFileInput').value = '';
+    document.getElementById('imgSubmitBtn').disabled = false;
+    document.getElementById('imgSubmitBtn').textContent = 'Upload';
+    openModal('imgModal');
+}
+function openCsvModal(structId, label) {
+    document.getElementById('csvModalTitle').textContent = 'Upload Landmark CSV — ' + label;
+    document.getElementById('csvForm').dataset.action = '/structure/' + structId + '/landmarks/upload';
+    document.getElementById('csvStatus').textContent = '';
+    document.getElementById('csvSubmitBtn').disabled = false;
+    document.getElementById('csvSubmitBtn').textContent = 'Upload';
+    openModal('csvModal');
+}
+function openAddModal(type, label) {
+    document.getElementById('addModalTitle').textContent = 'Add ' + label;
+    document.getElementById('addModalType').value = type;
+    openModal('addModal');
+}
+function deleteStructure(structId, label) {
+    if (!confirm('Delete the ' + label + ' structure? All landmarks, boundaries and character values will be lost.')) return;
+    fetch('/api/structure/' + structId + '/delete', { method: 'DELETE' })
+        .then(r => r.json())
+        .then(d => { if (d.status === 'ok') location.reload(); else alert(d.error || 'Error'); });
+}
+
+/* ── AJAX upload helper ────────────────────────────────────────── */
+async function ajaxUpload(formEl, statusEl, submitBtn) {
+    const url = formEl.dataset.action;
+    if (!url) return;
+    const data = new FormData(formEl);
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Uploading…';
+    statusEl.textContent = '';
+    try {
+        const resp = await fetch(url, {
+            method: 'POST',
+            body: data,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' }
+        });
+        if (!resp.ok) {
+            const txt = await resp.text();
+            throw new Error(txt || `HTTP ${resp.status}`);
+        }
+        return await resp.json();
+    } catch (err) {
+        statusEl.style.color = 'var(--danger)';
+        statusEl.textContent = 'Error: ' + err.message;
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Upload';
+        return null;
+    }
+}
+
+/* ── Edit specimen ────────────────────────────────────────────── */
+const SPECIMEN_ID = {{ specimen.id }};
+const _specimenData = {
+    species_name:      {{ specimen.species_name|tojson }},
+    specimen_id_label: {{ (specimen.specimen_id_label or '')|tojson }},
+    notes:             {{ (specimen.notes or '')|tojson }}
+};
+
+function openEditSpecimen() {
+    document.getElementById('editSpeciesName').value = _specimenData.species_name;
+    document.getElementById('editSpecimenId').value  = _specimenData.specimen_id_label;
+    document.getElementById('editNotes').value       = _specimenData.notes;
+    document.getElementById('editSpecimenStatus').textContent = '';
+    document.getElementById('editSpecimenSaveBtn').disabled = false;
+    openModal('editSpecimenModal');
+    setTimeout(() => document.getElementById('editSpeciesName').focus(), 80);
+}
+
+async function saveSpecimen() {
+    const name = document.getElementById('editSpeciesName').value.trim();
+    const statusEl = document.getElementById('editSpecimenStatus');
+    const saveBtn  = document.getElementById('editSpecimenSaveBtn');
+    if (!name) {
+        statusEl.style.color = 'var(--danger)';
+        statusEl.textContent = 'Species name is required.';
+        return;
+    }
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    statusEl.textContent = '';
+    try {
+        const resp = await fetch('/api/specimen/' + SPECIMEN_ID, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                species_name:      name,
+                specimen_id_label: document.getElementById('editSpecimenId').value.trim(),
+                notes:             document.getElementById('editNotes').value.trim()
+            })
+        });
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+        _specimenData.species_name      = data.species_name;
+        _specimenData.specimen_id_label = data.specimen_id_label || '';
+        _specimenData.notes             = data.notes || '';
+        document.getElementById('specimenNameDisplay').textContent = data.species_name;
+        document.getElementById('specimenIdDisplay').textContent =
+            data.specimen_id_label ? ' · ' + data.specimen_id_label : '';
+        document.title = data.species_name + ' — GyroMorpho';
+        closeModal('editSpecimenModal');
+        showToast('Specimen updated');
+    } catch(err) {
+        statusEl.style.color = 'var(--danger)';
+        statusEl.textContent = 'Error: ' + err.message;
+    } finally {
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+    }
+}
+
+/* ── Wire all form handlers once DOM is ready ─────────────────── */
+document.addEventListener('DOMContentLoaded', () => {
+
+    /* Default to photo mode when an image exists; shape mode otherwise */
+    Object.keys(STRUCTURE_DATA).forEach(st => {
+        const d        = STRUCTURE_DATA[st];
+        const hasImage = d && d.imgUrl;
+        if (hasImage) {
+            viewMode[st] = 'photo';
+            const canvas = document.getElementById('canvas-' + st);
+            const photo  = document.getElementById('photo-'  + st);
+            const btn    = document.getElementById('toggle-' + st);
+            if (canvas) canvas.style.display = 'none';
+            if (photo)  photo.style.display  = 'block';
+            if (btn)    btn.textContent      = 'Show Shape';
+        } else {
+            viewMode[st] = 'shape';
+            drawStructure(st);
+        }
+    });
+
+    /* Image upload */
+    document.getElementById('imgForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const result = await ajaxUpload(
+            this,
+            document.getElementById('imgStatus'),
+            document.getElementById('imgSubmitBtn')
+        );
+        if (!result) return;
+        document.getElementById('imgStatus').style.color = 'var(--success, #065f46)';
+        document.getElementById('imgStatus').textContent = '✓ Image uploaded successfully';
+        closeModal('imgModal');
+        showToast('Image uploaded — reloading…');
+        setTimeout(() => location.reload(), 600);
+    });
+
+    /* CSV upload */
+    document.getElementById('csvForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const result = await ajaxUpload(
+            this,
+            document.getElementById('csvStatus'),
+            document.getElementById('csvSubmitBtn')
+        );
+        if (!result) return;
+        document.getElementById('csvStatus').style.color = 'var(--success, #065f46)';
+        document.getElementById('csvStatus').textContent = `✓ ${result.landmark_count} landmarks loaded`;
+        closeModal('csvModal');
+        showToast(`CSV loaded — ${result.landmark_count} landmarks`);
+        setTimeout(() => location.reload(), 600);
+    });
+
+    /* Add structure */
+    document.getElementById('addForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const statusEl = document.getElementById('addStatus');
+        const submitBtn = document.getElementById('addSubmitBtn');
+        const result = await ajaxUpload(this, statusEl, submitBtn);
+        if (!result) return;
+        statusEl.style.color = 'var(--success, #065f46)';
+        statusEl.textContent = '✓ ' + result.message;
+        closeModal('addModal');
+        showToast(result.message);
+        setTimeout(() => location.reload(), 600);
+    });
+
+});
+</script>
+{% endblock %}
