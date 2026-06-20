@@ -1,5 +1,6 @@
 import os
 import threading
+from datetime import datetime, timedelta
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
@@ -8,33 +9,49 @@ db = SQLAlchemy()
 login_manager = LoginManager()
 login_manager.login_view = 'auth.login'
 
-# ── Hourly backup scheduler ────────────────────────────────────────────────────
+# ── Daily backup scheduler (one backup/day at noon; keep 5 most recent) ─────────
 _backup_timer: threading.Timer | None = None
-_BACKUP_INTERVAL_SECONDS = 3600  # 1 hour
+_BACKUP_HOUR = 12  # local-time hour for the daily backup (noon)
+
+
+def _seconds_until_next_run() -> float:
+    """Seconds from now until the next _BACKUP_HOUR:00 local time."""
+    now = datetime.now()
+    target = now.replace(hour=_BACKUP_HOUR, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
 
 
 def _run_backup():
-    """Execute one backup then reschedule."""
+    """Execute one daily backup then reschedule for the next noon."""
     global _backup_timer
     try:
         from scripts.backup import create_backup
         create_backup(verbose=True)
     except Exception as exc:
         print(f'[backup] ERROR during scheduled backup: {exc}')
-    _backup_timer = threading.Timer(_BACKUP_INTERVAL_SECONDS, _run_backup)
+    delay = _seconds_until_next_run()
+    _backup_timer = threading.Timer(delay, _run_backup)
     _backup_timer.daemon = True
     _backup_timer.start()
 
 
 def start_backup_scheduler():
-    """Start the hourly backup background thread (call once at app startup)."""
+    """Start the daily backup background thread (call once at app startup).
+
+    Fires once per day at _BACKUP_HOUR local time; retention is handled by
+    scripts.backup (keeps the 5 most recent, prunes the oldest).
+    """
     global _backup_timer
     if _backup_timer is not None:
         return  # already running
-    _backup_timer = threading.Timer(_BACKUP_INTERVAL_SECONDS, _run_backup)
+    delay = _seconds_until_next_run()
+    _backup_timer = threading.Timer(delay, _run_backup)
     _backup_timer.daemon = True
     _backup_timer.start()
-    print(f'[backup] Hourly backup scheduler started (interval: {_BACKUP_INTERVAL_SECONDS}s)')
+    next_run = (datetime.now() + timedelta(seconds=delay)).strftime('%Y-%m-%d %H:%M')
+    print(f'[backup] Daily backup scheduler started (next run: {next_run}, keep 5)')
 
 
 def create_app(config_class=None):
