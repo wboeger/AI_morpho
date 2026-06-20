@@ -171,34 +171,44 @@
 <!-- Per-page scroll memory: returning to a page restores its previous scroll. -->
 <script>
 (function () {
-    // Let us manage scroll restoration ourselves (consistent across link nav,
-    // not just back/forward).
+    // Manage scroll restoration ourselves (consistent across link nav + reload).
     if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
 
     var KEY = 'scroll:' + location.pathname + location.search;
+    var restoring = false;   // guard: don't save while we're programmatically scrolling
 
     function save() {
-        try { sessionStorage.setItem(KEY, String(window.scrollY)); } catch (e) {}
+        if (restoring) return;               // never overwrite with a partial restore pos
+        try { sessionStorage.setItem(KEY, String(window.scrollY || window.pageYOffset || 0)); }
+        catch (e) {}
     }
 
-    // Save on any navigation away (covers links, form posts, tab close, bfcache).
+    // Save ONLY on real navigation away (link, form submit, reload, tab close).
+    // No continuous scroll-saving — that races the restore and creeps to the top.
     window.addEventListener('pagehide', save);
     window.addEventListener('beforeunload', save);
-    // Also save continuously (throttled) so a crash/redirect still has a value.
-    var t = null;
-    window.addEventListener('scroll', function () {
-        if (t) return;
-        t = setTimeout(function () { save(); t = null; }, 250);
-    }, { passive: true });
+    // Capture clicks/submits a beat before navigation as a belt-and-suspenders save.
+    document.addEventListener('click', save, true);
+    document.addEventListener('submit', save, true);
 
     function restore() {
-        var y = sessionStorage.getItem(KEY);
-        if (y === null) return;
-        y = parseInt(y, 10) || 0;
-        // Try a few times — content/images may shift layout after load.
-        [0, 60, 200, 500].forEach(function (d) {
-            setTimeout(function () { window.scrollTo(0, y); }, d);
-        });
+        var raw = sessionStorage.getItem(KEY);
+        if (raw === null) return;
+        var y = parseInt(raw, 10) || 0;
+        if (y <= 0) return;
+        restoring = true;
+        // Re-apply repeatedly: long lists grow as images decode, so the target
+        // height isn't reached until later — keep nudging until it sticks.
+        var tries = 0;
+        var iv = setInterval(function () {
+            window.scrollTo(0, y);
+            tries++;
+            // Stop once we're close enough, or after ~2s of attempts.
+            if (Math.abs((window.scrollY || 0) - y) < 3 || tries > 40) {
+                clearInterval(iv);
+                setTimeout(function () { restoring = false; }, 100);
+            }
+        }, 50);
     }
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
@@ -206,9 +216,7 @@
     } else {
         window.addEventListener('DOMContentLoaded', restore);
     }
-    // Restore again when fully loaded (images change height on long lists).
-    window.addEventListener('load', restore);
-    // bfcache restore (back/forward) — page comes back from cache.
+    window.addEventListener('load', restore);                 // after images load
     window.addEventListener('pageshow', function (e) { if (e.persisted) restore(); });
 })();
 </script>
