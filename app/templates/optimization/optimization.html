@@ -320,9 +320,20 @@
 {% endblock %}
 
 {% block content %}
-<div class="opt-header">
-    <h1>Character Optimization</h1>
-    <p>Fitch parsimony ancestral state reconstruction mapped onto the molecular phylogeny</p>
+<div class="opt-header" style="display:flex; align-items:flex-start; justify-content:space-between; gap:1rem;">
+    <div>
+        <h1>Character Optimization</h1>
+        <p>Fitch parsimony ancestral state reconstruction mapped onto the molecular phylogeny</p>
+    </div>
+    {% if has_tree %}
+    <div style="display:flex; align-items:center; gap:0.6rem; flex-shrink:0;">
+        <span id="runStamp" style="font-size:11px; color:var(--ink-3,#999); font-style:italic;"></span>
+        <button id="rerunBtn" class="btn btn-primary btn-sm" onclick="rerun()"
+                title="Recompute parsimony from the current character states">
+            &#8635; Re-run optimization
+        </button>
+    </div>
+    {% endif %}
 </div>
 
 {% if not has_tree %}
@@ -869,7 +880,14 @@ function exportPDF() {
 
 // ── Fetch all optimizations ───────────────────────────────────────────────────
 
+function setRunStamp() {
+    const el = document.getElementById('runStamp');
+    if (el) el.textContent = 'Last computed ' + new Date().toLocaleTimeString();
+}
+
 async function init() {
+    // Remember the current selection so a re-run keeps the same character in view.
+    const prevSelected = selectedId;
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/optimization/run`, {
             method: 'POST',
@@ -884,6 +902,8 @@ async function init() {
             return;
         }
 
+        // Reset so removed/edited characters don't linger.
+        allData = {};
         ordering = [];
         for (const ch of data.characters) {
             allData[ch.id] = ch;
@@ -891,12 +911,28 @@ async function init() {
         }
 
         renderCharList();
-        if (ordering.length > 0) selectChar(ordering[0]);
+        if (prevSelected !== null && allData[prevSelected]) {
+            selectChar(prevSelected);          // keep what the user was looking at
+        } else if (ordering.length > 0) {
+            selectChar(ordering[0]);
+        }
+        setRunStamp();
 
     } catch (e) {
         document.getElementById('loadingTxt').textContent = 'Error';
         console.error(e);
     }
+}
+
+// Re-run button: recompute live (e.g. after adding/changing states elsewhere).
+async function rerun() {
+    const btn = document.getElementById('rerunBtn');
+    const lt  = document.getElementById('loadingTxt');
+    const old = btn ? btn.innerHTML : '';
+    if (btn) { btn.disabled = true; btn.innerHTML = 'Computing…'; }
+    if (lt)  { lt.style.display = ''; lt.textContent = 'Recomputing…'; }
+    await init();
+    if (btn) { btn.disabled = false; btn.innerHTML = old; }
 }
 
 init();
