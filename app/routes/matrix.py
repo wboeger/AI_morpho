@@ -400,6 +400,8 @@ def cell_detail(project_id):
             'image_url':        f'/uploads/{structure.image_path}' if structure.image_path else None,
             'landmarks':        structure.landmarks_json,
             'boundaries':       structure.boundary_json,
+            'struct_id':        structure.id,
+            'char_id':          char.id,
         })
 
     from flask import abort

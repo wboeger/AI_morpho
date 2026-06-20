@@ -128,6 +128,8 @@ def create_app(config_class=None):
         _migrate_a06_names()
         _migrate_structures()
         _migrate_specimens()
+        _migrate_users()
+        _backfill_no_image_unknown()
         _ensure_admin()
 
     # Start hourly backup scheduler (only in the main process, not reloader child).
@@ -139,6 +141,53 @@ def create_app(config_class=None):
         start_backup_scheduler()
 
     return app
+
+
+def _migrate_users():
+    """Add the users.active column if missing (defaults existing users to active)."""
+    from sqlalchemy import inspect as sa_inspect, text
+    inspector = sa_inspect(db.engine)
+    if 'users' not in inspector.get_table_names():
+        return
+    cols = [c['name'] for c in inspector.get_columns('users')]
+    if 'active' not in cols:
+        db.session.execute(text('ALTER TABLE users ADD COLUMN active BOOLEAN DEFAULT 1'))
+        db.session.execute(text('UPDATE users SET active = 1 WHERE active IS NULL'))
+        db.session.commit()
+        print('[migrate] users.active column added.')
+
+
+def _backfill_no_image_unknown():
+    """Code characters as '?' for structures flagged no_image that have no value
+    yet. Idempotent and add-only: never overwrites an existing coded value."""
+    from sqlalchemy import inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'structures' not in inspector.get_table_names():
+        return
+    from app.models import Structure, CharacterDefinition, CharacterValue, Specimen
+    from app.routes.project import _NO_IMAGE_REASON
+    from datetime import datetime, timezone
+    added = 0
+    for st in Structure.query.filter_by(no_image=True).all():
+        sp = db.session.get(Specimen, st.specimen_id)
+        if not sp:
+            continue
+        chars = CharacterDefinition.query.filter_by(
+            project_id=sp.project_id, structure_type=st.structure_type, active=True).all()
+        for ch in chars:
+            exists = CharacterValue.query.filter_by(
+                structure_id=st.id, character_id=ch.id).first()
+            if exists:
+                continue
+            db.session.add(CharacterValue(
+                structure_id=st.id, character_id=ch.id, state='?',
+                confidence=0.0, auto_assigned=True,
+                override_reason=_NO_IMAGE_REASON,
+                override_at=datetime.now(timezone.utc)))
+            added += 1
+    if added:
+        db.session.commit()
+        print(f'[migrate] Coded {added} no-image character value(s) as "?".')
 
 
 def _ensure_admin():

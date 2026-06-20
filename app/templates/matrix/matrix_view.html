@@ -204,6 +204,8 @@
 <script>
 const projectId = {{ project.id }};
 let currentValueId = null;
+let currentStructId = null;
+let currentCharId = null;
 
 // Species names in matrix order (server-side order = tree leaf order when tree present)
 const matrixSpecies = {{ matrix_data | map(attribute='specimen.species_name') | list | tojson }};
@@ -241,22 +243,30 @@ function _renderCellDetail(data, hasValue) {
 
     document.getElementById('detailContent').innerHTML = html;
 
-    // Override buttons (only for coded cells)
+    // Track ids for override/assign. Coded cells override an existing value;
+    // uncoded cells (struct_id+char_id) assign a new one.
+    currentStructId = data.struct_id || null;
+    currentCharId   = data.char_id || null;
+
+    // Override/assign buttons — available for every cell that maps to a character.
     const btns    = document.getElementById('overrideButtons');
     const overBtn = document.getElementById('overrideBtn');
     btns.innerHTML = '';
-    if (hasValue) {
+    const canCode = (data.states !== undefined) && (currentValueId || (currentStructId && currentCharId));
+    if (canCode) {
         overBtn.style.display = '';
-        (data.states || []).forEach(s => {
+        // Real character states, then a universal "? unknown" option for all series.
+        const opts = (data.states || []).slice();
+        opts.push({ code: '?', name: 'unknown' });
+        opts.forEach(s => {
             const btn = document.createElement('button');
             btn.className = `state-btn ${s.code === data.state ? 'active' : ''}`;
             btn.textContent = `${s.code}: ${s.name}`;
+            btn.dataset.state = s.code;
             btn.onclick = () => {
                 btns.querySelectorAll('.state-btn').forEach(b => b.classList.remove('active'));
                 btn.classList.add('active');
-                btn.dataset.state = s.code;
             };
-            btn.dataset.state = s.code;
             btns.appendChild(btn);
         });
     } else {
@@ -302,11 +312,24 @@ function submitOverride() {
     const state = activeBtn.dataset.state;
     const reason = document.getElementById('overrideReason').value;
 
-    fetch(`/api/project/${projectId}/matrix/override`, {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({value_id: currentValueId, state: state, reason: reason})
-    }).then(() => location.reload());
+    let req;
+    if (currentValueId) {
+        req = fetch(`/api/project/${projectId}/matrix/override`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({value_id: currentValueId, state: state, reason: reason})
+        });
+    } else if (currentStructId && currentCharId) {
+        // Uncoded cell — create the value (used for marking "?" etc.)
+        req = fetch(`/api/project/${projectId}/matrix/assign`, {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({structure_id: currentStructId, character_id: currentCharId, state: state})
+        });
+    } else {
+        return;
+    }
+    req.then(() => location.reload());
 }
 
 function uploadTree() {

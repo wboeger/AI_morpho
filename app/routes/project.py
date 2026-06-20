@@ -82,6 +82,46 @@ def _save_structure_image(file_storage, structure_type: str) -> str:
     scheme with content deduplication."""
     return _store_structure_bytes(file_storage.read(), file_storage.filename,
                                   structure_type)
+
+
+_NO_IMAGE_REASON = 'no image — coded unknown'
+
+
+def _apply_no_image_unknown(structure, uid=None):
+    """Set every active character of this structure's type to '?' (unknown),
+    because the structure has no image. Marked with _NO_IMAGE_REASON so it can
+    be cleanly reverted if the 'no image' flag is removed."""
+    from datetime import datetime, timezone
+    from app.models import CharacterDefinition, CharacterValue, Specimen as _Sp
+    specimen = _Sp.query.get(structure.specimen_id)
+    chars = CharacterDefinition.query.filter_by(
+        project_id=specimen.project_id,
+        structure_type=structure.structure_type,
+        active=True).all()
+    for ch in chars:
+        v = CharacterValue.query.filter_by(
+            structure_id=structure.id, character_id=ch.id).first()
+        if v:
+            v.state = '?'
+            v.confidence = 0.0
+            v.auto_assigned = True
+            v.override_reason = _NO_IMAGE_REASON
+            v.override_by = uid
+            v.override_at = datetime.now(timezone.utc)
+        else:
+            db.session.add(CharacterValue(
+                structure_id=structure.id, character_id=ch.id,
+                state='?', confidence=0.0, auto_assigned=True,
+                override_reason=_NO_IMAGE_REASON, override_by=uid,
+                override_at=datetime.now(timezone.utc), reviewer_id=uid))
+
+
+def _clear_no_image_unknown(structure):
+    """Remove the '?' values that were auto-set because of a 'no image' flag."""
+    from app.models import CharacterValue
+    for v in CharacterValue.query.filter_by(
+            structure_id=structure.id, override_reason=_NO_IMAGE_REASON).all():
+        db.session.delete(v)
 from flask import Blueprint, render_template, redirect, url_for, flash, request, current_app, jsonify
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
@@ -381,6 +421,10 @@ def toggle_no_image(structure_id):
     _get_project_or_404(specimen.project_id)
     structure.no_image = not bool(structure.no_image)
     state = 'marked' if structure.no_image else 'cleared'
+    if structure.no_image:
+        _apply_no_image_unknown(structure, current_user.id)   # code characters as '?'
+    else:
+        _clear_no_image_unknown(structure)                    # revert the '?'
     _log(specimen.project_id,
          f'{state} no-image for {structure.structure_type} of {specimen.species_name}')
     db.session.commit()
@@ -408,6 +452,8 @@ def mark_no_image_new(specimen_id):
     else:
         st = Structure(specimen_id=specimen_id, structure_type=structure_type, no_image=True)
         db.session.add(st)
+    db.session.flush()                         # ensure st.id for character values
+    _apply_no_image_unknown(st, current_user.id)
     _log(project.id, f'Marked no-image for {structure_type} of {specimen.species_name}')
     db.session.commit()
     return jsonify({'status': 'ok', 'structure_id': st.id, 'no_image': True})

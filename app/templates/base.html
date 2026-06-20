@@ -91,9 +91,9 @@
     {% endif %}
 
     {% if current_user.role == 'admin' %}
-    <a href="{{ url_for('auth.register') }}"
-       class="nav-item {% if request.endpoint == 'auth.register' %}active{% endif %}">
-      <span class="num">+</span><span>Add user</span>
+    <a href="{{ url_for('auth.users') }}"
+       class="nav-item {% if request.endpoint in ('auth.users','auth.register') %}active{% endif %}">
+      <span class="num">+</span><span>Users</span>
     </a>
     {% endif %}
 

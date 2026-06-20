@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+{% block title %}Users — GyroMorpho{% endblock %}
+{% block content %}
+<div style="max-width:920px;">
+  <h2 style="margin-bottom:0.25rem;">Users &amp; permissions</h2>
+  <p style="color:var(--text-muted,#888); font-size:0.9rem; margin-bottom:1.2rem;">
+    Manage logins and roles. <a href="{{ url_for('auth.register') }}">+ Add user</a>
+  </p>
+
+  <table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+    <thead>
+      <tr style="text-align:left; border-bottom:2px solid var(--border,#ddd);">
+        <th style="padding:0.5rem;">User</th>
+        <th style="padding:0.5rem;">Role</th>
+        <th style="padding:0.5rem;">Status</th>
+        <th style="padding:0.5rem;">Reset password</th>
+        <th style="padding:0.5rem;"></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      <tr style="border-bottom:1px solid var(--border,#eee); {% if not u.active %}opacity:0.55;{% endif %}">
+        <td style="padding:0.5rem;">
+          <strong>{{ u.username }}</strong>
+          {% if u.id == current_user.id %}<span style="font-size:0.7rem; color:var(--text-muted,#888);">(you)</span>{% endif %}
+          <br><span style="font-size:0.75rem; color:var(--text-muted,#888);">{{ u.email }}</span>
+        </td>
+
+        <td style="padding:0.5rem;">
+          <form method="POST" action="{{ url_for('auth.set_role', user_id=u.id) }}" style="display:flex; gap:0.3rem;">
+            <select name="role" style="font-size:0.8rem; padding:0.15rem 0.3rem;">
+              <option value="annotator" {% if u.role=='annotator' %}selected{% endif %}>Annotator</option>
+              <option value="reviewer"  {% if u.role=='reviewer'  %}selected{% endif %}>Reviewer</option>
+              <option value="admin"     {% if u.role=='admin'     %}selected{% endif %}>Admin</option>
+            </select>
+            <button class="btn btn-sm btn-outline" type="submit">Set</button>
+          </form>
+        </td>
+
+        <td style="padding:0.5rem;">
+          {% if u.active %}<span style="color:var(--success,#16a34a);">active</span>
+          {% else %}<span style="color:var(--danger,#dc2626);">disabled</span>{% endif %}
+          {% if u.id != current_user.id %}
+          <form method="POST" action="{{ url_for('auth.toggle_active', user_id=u.id) }}" style="display:inline;">
+            <button class="btn btn-sm btn-outline" type="submit">
+              {{ 'Disable' if u.active else 'Enable' }}
+            </button>
+          </form>
+          {% endif %}
+        </td>
+
+        <td style="padding:0.5rem;">
+          <form method="POST" action="{{ url_for('auth.reset_password', user_id=u.id) }}" style="display:flex; gap:0.3rem;">
+            <input type="password" name="password" placeholder="new password" minlength="6"
+                   style="font-size:0.8rem; padding:0.15rem 0.3rem; width:130px;">
+            <button class="btn btn-sm btn-outline" type="submit">Reset</button>
+          </form>
+        </td>
+
+        <td style="padding:0.5rem; text-align:right;">
+          {% if u.id != current_user.id %}
+          <form method="POST" action="{{ url_for('auth.delete_user', user_id=u.id) }}" style="display:inline;"
+                onsubmit="return confirm('Delete user {{ u.username }}? This cannot be undone.');">
+            <button class="btn btn-sm btn-danger" type="submit">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
