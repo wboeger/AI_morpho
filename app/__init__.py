@@ -46,6 +46,14 @@ def create_app(config_class=None):
 
     app.config.from_object(config_class)
 
+    # Seed the data volume on first boot (no-op if db.sqlite already present or
+    # DATA_SEED_URL unset). Must run before makedirs/db so the download lands.
+    try:
+        from scripts.seed_data import seed_if_empty
+        seed_if_empty(app.config['DATA_DIR'])
+    except Exception as exc:
+        print(f'[seed] skipped: {exc}')
+
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     os.makedirs(app.config.get('UNET_WEIGHTS_DIR', 'unet/weights'), exist_ok=True)
 
@@ -104,9 +112,12 @@ def create_app(config_class=None):
         _migrate_structures()
         _migrate_specimens()
 
-    # Start hourly backup scheduler (only in the main process, not reloader child)
+    # Start hourly backup scheduler (only in the main process, not reloader child).
+    # Disabled by default on Railway/production via ENABLE_BACKUPS=0 to avoid
+    # filling the volume with hourly full-image copies.
     import sys
-    if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    backups_on = os.environ.get('ENABLE_BACKUPS', '1') not in ('0', 'false', 'False')
+    if backups_on and (not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true'):
         start_backup_scheduler()
 
     return app

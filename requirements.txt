@@ -6,6 +6,9 @@ Flask-WTF>=1.2
 Werkzeug>=3.0
 numpy>=1.24
 Pillow>=10.0
-opencv-python-headless>=4.8
-torch>=2.0
-torchvision>=0.15
+gunicorn>=21.2
+
+# NOTE: torch / torchvision / opencv are only needed for offline U-Net landmark
+# training (see unet/), NOT by the web app. They are intentionally excluded from
+# the deploy build to keep it small/fast. Install them locally if training:
+#   pip install torch torchvision opencv-python-headless

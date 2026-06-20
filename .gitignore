@@ -19,6 +19,9 @@ gyro.db
 # Logs
 *.log
 
+# Seed archive for Railway (upload to a GitHub Release, never commit)
+data.zip
+
 # Phylogeny run outputs (large, regenerated)
 phylogeny/Results/
 

@@ -2,13 +2,22 @@ import os
 
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 
+# Persistent data location. On Railway, attach a Volume and the platform sets
+# RAILWAY_VOLUME_MOUNT_PATH automatically; locally it falls back to ./data.
+# Override explicitly with DATA_DIR if needed.
+DATA_DIR = (os.environ.get('DATA_DIR')
+            or os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+            or os.path.join(BASE_DIR, 'data'))
+os.makedirs(DATA_DIR, exist_ok=True)
+
 
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
-    SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(BASE_DIR, 'data', 'db.sqlite')}"
+    DATA_DIR = DATA_DIR
+    SQLALCHEMY_DATABASE_URI = f"sqlite:///{os.path.join(DATA_DIR, 'db.sqlite')}"
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 30}}
-    UPLOAD_FOLDER = os.path.join(BASE_DIR, 'data', 'uploads')
+    UPLOAD_FOLDER = os.path.join(DATA_DIR, 'uploads')
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max upload
     UNET_WEIGHTS_DIR = os.path.join(BASE_DIR, 'unet', 'weights')
 

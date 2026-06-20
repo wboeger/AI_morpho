@@ -26,9 +26,13 @@ from datetime import datetime
 # ── Paths ──────────────────────────────────────────────────────────────────────
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
-BACKUP_DIR   = os.path.join(PROJECT_ROOT, 'project backup')
-DB_PATH      = os.path.join(PROJECT_ROOT, 'data', 'db.sqlite')
-UPLOADS_DIR  = os.path.join(PROJECT_ROOT, 'data', 'uploads')
+# Honor the same data location as the app (Railway Volume / DATA_DIR override).
+DATA_DIR     = (os.environ.get('DATA_DIR')
+                or os.environ.get('RAILWAY_VOLUME_MOUNT_PATH')
+                or os.path.join(PROJECT_ROOT, 'data'))
+BACKUP_DIR   = os.path.join(DATA_DIR, 'project backup')
+DB_PATH      = os.path.join(DATA_DIR, 'db.sqlite')
+UPLOADS_DIR  = os.path.join(DATA_DIR, 'uploads')
 MAX_BACKUPS  = 48   # hours of hourly backups to retain
 
 
