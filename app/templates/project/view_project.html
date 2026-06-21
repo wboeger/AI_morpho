@@ -149,7 +149,7 @@
                             {% if st.no_image %}<span title="No image available" style="font-size:0.75rem;">&#8856;</span>
                             {% elif st.landmarks_confirmed %}<span>&#10003;</span>{% endif %}
                             <button type="button"
-                                    onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}')"
+                                    onclick="deleteStructure({{ st.id }}, '{{ st.structure_type }}', '{{ s.species_name|e }}', {{ s.id }})"
                                     title="Remove this structure"
                                     style="background:none; border:none; color:inherit; opacity:0.65; cursor:pointer;
                                            font-size:0.8rem; line-height:1; padding:0 0 0 0.1rem;"
@@ -919,18 +919,39 @@ function deleteSpecimen(projectId, specimenId, speciesName) {
         });
 }
 
-function deleteStructure(structureId, structureType, speciesName) {
+function deleteStructure(structureId, structureType, speciesName, specimenId) {
     if (!confirm(`Delete ${structureType.replace('_',' ')} for "${speciesName}"? All landmarks, boundaries, and character values for this structure will be lost.`)) return;
     fetch(`/api/structure/${structureId}/delete`, {method: 'DELETE'})
         .then(r => r.json())
         .then(data => {
-            if (data.status === 'ok') {
-                // Remove in place — no page reload, so scroll position is kept.
-                document.querySelectorAll(
-                    `[data-struct-chip="${structureId}"], [data-struct-actions="${structureId}"]`
-                ).forEach(el => el.remove());
-            } else {
-                alert(data.error || 'Error deleting structure');
+            if (data.status !== 'ok') { alert(data.error || 'Error deleting structure'); return; }
+
+            // Remove in place — no page reload, so scroll position is kept.
+            const chip = document.querySelector(`[data-struct-chip="${structureId}"]`);
+            const cell = chip ? chip.closest('td') : null;
+            document.querySelectorAll(
+                `[data-struct-chip="${structureId}"], [data-struct-actions="${structureId}"]`
+            ).forEach(el => el.remove());
+
+            // Restore an "+ Add" affordance so the structure/image can be re-added.
+            if (cell && specimenId) {
+                const wrap = document.createElement('span');
+                wrap.setAttribute('data-readd', structureType);
+                wrap.style.cssText = 'display:inline-flex; gap:0.2rem; align-items:center;';
+                const addBtn = document.createElement('button');
+                addBtn.className = 'btn btn-sm btn-outline';
+                addBtn.title = 'Add ' + structureType.replace('_', ' ');
+                addBtn.textContent = '+ Add';
+                addBtn.onclick = () => openAddStructure(specimenId, speciesName);
+                const noimgBtn = document.createElement('button');
+                noimgBtn.className = 'btn btn-sm btn-outline';
+                noimgBtn.title = 'Mark as no image available for ' + structureType.replace('_', ' ');
+                noimgBtn.style.opacity = '0.7';
+                noimgBtn.innerHTML = '&#8856;';
+                noimgBtn.onclick = () => markNoImage(specimenId, structureType, noimgBtn);
+                wrap.appendChild(addBtn);
+                wrap.appendChild(noimgBtn);
+                cell.appendChild(wrap);
             }
         });
 }
