@@ -141,7 +141,7 @@
                         '#50b383' if st.structure_type == 'anchor' else
                         '#d9844a' if st.structure_type == 'superficial_bar' else
                         '#9b59b6' if st.structure_type == 'deep_bar' else '#e74c3c' %}
-                    <div style="display:inline-flex; flex-direction:column; align-items:flex-start; gap:0.2rem; vertical-align:top; margin-right:0.3rem;">
+                    <div data-struct-chip="{{ st.id }}" style="display:inline-flex; flex-direction:column; align-items:flex-start; gap:0.2rem; vertical-align:top; margin-right:0.3rem;">
                         <span class="part-chip struct-chip"
                               style="background:{{ chip_color }}{% if st.no_image %}; opacity:0.55; text-decoration:line-through;{% endif %};
                                      display:inline-flex; align-items:center; gap:0.25rem;">
@@ -199,6 +199,7 @@
                 <td style="white-space:nowrap;">
                     <a href="{{ url_for('project.specimen_detail', specimen_id=s.id) }}" class="btn btn-sm btn-primary">View</a>
                     {% for st in s.structures if st.structure_type in structure_types %}
+                    <span data-struct-actions="{{ st.id }}">
                     {% if not st.no_image %}
                     <a href="{{ url_for('landmarks.landmark_editor', structure_id=st.id) }}" class="btn btn-sm btn-outline"
                        title="{{ st.structure_type.replace('_',' ') }} landmarks">LM</a>
@@ -224,6 +225,7 @@
                         &#8682; img
                     </button>
                     {% endif %}
+                    </span>
                     {% endfor %}
                     <button class="btn btn-sm btn-danger" onclick="deleteSpecimen({{ project.id }}, {{ s.id }}, '{{ s.species_name|e }}')" title="Delete specimen">Delete</button>
                 </td>
@@ -922,8 +924,14 @@ function deleteStructure(structureId, structureType, speciesName) {
     fetch(`/api/structure/${structureId}/delete`, {method: 'DELETE'})
         .then(r => r.json())
         .then(data => {
-            if (data.status === 'ok') location.reload();
-            else alert(data.error || 'Error deleting structure');
+            if (data.status === 'ok') {
+                // Remove in place — no page reload, so scroll position is kept.
+                document.querySelectorAll(
+                    `[data-struct-chip="${structureId}"], [data-struct-actions="${structureId}"]`
+                ).forEach(el => el.remove());
+            } else {
+                alert(data.error || 'Error deleting structure');
+            }
         });
 }
 
