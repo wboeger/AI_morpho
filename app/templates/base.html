@@ -198,24 +198,52 @@
     document.addEventListener('click', save, true);
     document.addEventListener('submit', save, true);
 
+    var _restoreActive = false;
+
     function restore() {
+        if (_restoreActive) return;
         var raw = sessionStorage.getItem(KEY);
         if (raw === null) return;
         var y = parseInt(raw, 10) || 0;
         if (y <= 0) return;
+
+        _restoreActive = true;
         restoring = true;
-        // Re-apply repeatedly: long lists grow as images decode, so the target
-        // height isn't reached until later — keep nudging until it sticks.
-        var tries = 0;
-        var iv = setInterval(function () {
-            window.scrollTo(0, y);
-            tries++;
-            // Stop once we're close enough, or after ~2s of attempts.
-            if (Math.abs((window.scrollY || 0) - y) < 3 || tries > 40) {
-                clearInterval(iv);
-                setTimeout(function () { restoring = false; }, 100);
-            }
-        }, 50);
+        var done = false;
+
+        // Re-apply the target until the (image-grown) page can actually reach it.
+        // Do NOT stop just because we're "close" — a short page clamps scrollTo,
+        // and images decoding later grow the page well after first paint.
+        function apply() { if (!done) window.scrollTo(0, y); }
+        apply();
+
+        // React to layout growth: image loads + any height change.
+        document.addEventListener('load', apply, true);   // <img> load events bubble in capture
+        var ro = null;
+        if (window.ResizeObserver) {
+            ro = new ResizeObserver(apply);
+            try { ro.observe(document.documentElement); ro.observe(document.body); } catch (e) {}
+        }
+        // Decaying re-apply schedule out to ~12s (covers slow image loads on Railway).
+        [30, 80, 160, 300, 500, 800, 1200, 2000, 3000, 5000, 8000, 12000]
+            .forEach(function (d) { setTimeout(apply, d); });
+
+        function stop() {
+            if (done) return;
+            done = true;
+            restoring = false;
+            _restoreActive = false;
+            if (ro) ro.disconnect();
+            document.removeEventListener('load', apply, true);
+            ['wheel', 'touchstart', 'keydown', 'mousedown'].forEach(function (ev) {
+                window.removeEventListener(ev, stop, true);
+            });
+        }
+        // Hand control back the moment the user scrolls/clicks, else after 12s.
+        ['wheel', 'touchstart', 'keydown', 'mousedown'].forEach(function (ev) {
+            window.addEventListener(ev, stop, true);
+        });
+        setTimeout(stop, 12500);
     }
 
     if (document.readyState === 'complete' || document.readyState === 'interactive') {
