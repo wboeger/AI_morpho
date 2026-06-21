@@ -49,6 +49,19 @@ def matrix_view(project_id):
         structures = Structure.query.filter_by(specimen_id=specimen.id).all()
         row = {'specimen': specimen, 'cells': {}}
 
+        # Distinct images available for this specimen (shown next to the name).
+        _seen_img = set()
+        row['images'] = []
+        for s in structures:
+            if s.image_path and not s.no_image:
+                u = f'/uploads/{s.image_path}'
+                if u not in _seen_img:
+                    _seen_img.add(u)
+                    row['images'].append({
+                        'url': u,
+                        'type': s.structure_type.replace('_', ' '),
+                    })
+
         for char in characters:
             # Find the structure of matching type
             struct = next((s for s in structures if s.structure_type == char.structure_type), None)

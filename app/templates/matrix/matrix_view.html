@@ -117,6 +117,18 @@
                                 onclick="deleteSpecies('{{ row.specimen.id }}', '{{ row.specimen.species_name | replace("'", "\\'") }}')"
                                 title="Delete">&#10005;</button>
                         </span>
+                        {% if row.images %}
+                        <span class="sp-thumbs" style="display:inline-flex; gap:3px; margin-left:0.45rem; vertical-align:middle;">
+                            {% for im in row.images %}
+                            <img src="{{ im.url }}" alt="{{ row.specimen.species_name }} {{ im.type }}"
+                                 title="{{ im.type }} — click to magnify"
+                                 style="height:26px; width:auto; max-width:48px; object-fit:contain;
+                                        border:1px solid #ddd; border-radius:3px; background:#fafafa;
+                                        cursor:zoom-in; vertical-align:middle;"
+                                 onclick="event.stopPropagation(); matrixLightbox(this.src, '{{ row.specimen.species_name | replace("'", "\\'") }} — {{ im.type }}')">
+                            {% endfor %}
+                        </span>
+                        {% endif %}
                     </td>
                     {% for c in characters %}
                     {% set val = row.cells[c.code] %}
@@ -198,11 +210,25 @@
         </div>
     </div>
 </div>
+
+<!-- Image lightbox (species thumbnails) -->
+<div id="matrixLightbox" onclick="this.style.display='none'"
+     style="display:none; position:fixed; inset:0; z-index:9999; background:rgba(0,0,0,0.8);
+            align-items:center; justify-content:center; cursor:zoom-out; flex-direction:column; gap:0.6rem;">
+    <img id="matrixLightboxImg" src="" alt=""
+         style="max-width:92vw; max-height:86vh; object-fit:contain; border-radius:6px; background:#fff; box-shadow:0 8px 40px rgba(0,0,0,0.5);">
+    <div id="matrixLightboxCaption" style="color:#fff; font-style:italic; font-size:0.9rem;"></div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 const projectId = {{ project.id }};
+function matrixLightbox(src, caption) {
+    document.getElementById('matrixLightboxImg').src = src;
+    document.getElementById('matrixLightboxCaption').textContent = caption || '';
+    document.getElementById('matrixLightbox').style.display = 'flex';
+}
 let currentValueId = null;
 let currentStructId = null;
 let currentCharId = null;
