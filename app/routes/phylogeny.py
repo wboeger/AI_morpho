@@ -599,9 +599,15 @@ def _concatenated_pipeline_thread(app, job_id):
             job.trimmed_fasta_path = cat_path
             job.fasta_filename     = 'concatenated.fa'
             job.n_sequences        = n_taxa
+            # Column ranges per fragment — drives per-partition model selection
+            job.partition_spec = [
+                {'name': '18S', 'start': 1, 'end': w18s},
+                {'name': 'ITS', 'start': w18s + 1, 'end': w18s + wITS},
+            ]
             _set_status(job, 'trimmed',
                         f'Concatenation done: {n_taxa} taxa, {w18s}bp 18S + {wITS}bp ITS = '
-                        f'{w18s + wITS}bp total. Ready for Galaxy.')
+                        f'{w18s + wITS}bp total. Best model selected per partition '
+                        f'during Bayesian run. Ready for Galaxy.')
 
             _nj_step(job)
             _modeltest_step(job)
@@ -1151,9 +1157,51 @@ def _modeltest_step(job):
                     prev_msg + f' | ModelTest-NG error: {exc}')
 
 
+def _build_mrbayes_block(ngen, nruns, nchains, burninfrac, lset_cmd, partitions):
+    """Build the MrBayes command block.
+
+    With >=2 partitions, define a charset per fragment and let MrBayes select
+    the best substitution model *independently per partition* via reversible-jump
+    MCMC (nst=mixed), with substitution parameters unlinked across partitions.
+    Without partitions, a single nst=mixed model is used (model selection over
+    the whole alignment) unless an explicit lset is supplied.
+    """
+    lines = ['begin mrbayes;', '  set autoclose=yes nowarn=yes;']
+    parts = [p for p in (partitions or []) if p.get('end', 0) >= p.get('start', 1)]
+
+    if len(parts) >= 2:
+        names = []
+        for p in parts:
+            cname = re.sub(r'[^A-Za-z0-9_]', '_', str(p['name']))
+            names.append(cname)
+            lines.append(f"  charset {cname} = {int(p['start'])}-{int(p['end'])};")
+        lines.append(f"  partition byFragment = {len(names)}: {', '.join(names)};")
+        lines.append('  set partition = byFragment;')
+        # Per-partition model selection: nst=mixed samples substitution models;
+        # invgamma covers +I+G. Unlink so each fragment gets its own parameters.
+        lines.append('  lset applyto=(all) nst=mixed rates=invgamma;')
+        lines.append('  unlink statefreq=(all) revmat=(all) shape=(all) '
+                     'pinvar=(all) tratio=(all);')
+        lines.append('  prset applyto=(all) ratepr=variable;')
+    else:
+        eff = (lset_cmd or 'lset nst=mixed rates=invgamma').rstrip().rstrip(';')
+        lines.append(f'  {eff};')
+
+    lines.append(f'  mcmc ngen={ngen} nruns={nruns} nchains={nchains} '
+                 f'samplefreq=1000 printfreq=10000 burninfrac={burninfrac} '
+                 f'savebrlens=yes;')
+    lines.append('  sumt;')
+    lines.append('end;')
+    return '\n' + '\n'.join(lines) + '\n'
+
+
 def _fasta_to_nexus(fasta_path, nexus_path, ngen=1000000, nruns=2, nchains=4,
-                    burninfrac=0.25, lset_cmd=None):
-    """Convert a FASTA alignment to NEXUS with an embedded MrBayes block."""
+                    burninfrac=0.25, lset_cmd=None, partitions=None):
+    """Convert a FASTA alignment to NEXUS with an embedded MrBayes block.
+
+    If `partitions` (list of {name,start,end}) is given, the run is partitioned
+    and the substitution model is selected per partition (see _build_mrbayes_block).
+    """
     from Bio import SeqIO, AlignIO
     from Bio.Align import MultipleSeqAlignment
 
@@ -1172,20 +1220,8 @@ def _fasta_to_nexus(fasta_path, nexus_path, ngen=1000000, nruns=2, nchains=4,
     seq_len = len(records[0].seq)
     ntax = len(records)
 
-    effective_lset = lset_cmd or 'lset nst=6 rates=invgamma'
-    # Ensure semicolon
-    if not effective_lset.rstrip().endswith(';'):
-        effective_lset += ';'
-    mb_block = (
-        f'\nbegin mrbayes;\n'
-        f'  set autoclose=yes;\n'
-        f'  {effective_lset}\n'
-        f'  mcmc ngen={ngen} nruns={nruns} nchains={nchains} '
-        f'samplefreq=1000 printfreq=10000 burninfrac={burninfrac} '
-        f'savebrlens=yes;\n'
-        f'  sumt;\n'
-        f'end;\n'
-    )
+    mb_block = _build_mrbayes_block(ngen, nruns, nchains, burninfrac,
+                                    lset_cmd, partitions)
 
     with open(nexus_path, 'w') as fh:
         fh.write('#NEXUS\n\n')
@@ -1516,18 +1552,26 @@ def submit_cipres(project_id, job_id):
             nruns      = int(body.get('nruns', 2))
             nchains    = int(body.get('nchains', 4))
             burninfrac = float(body.get('burninfrac', 0.25))
+            # Default to nst=mixed so MrBayes selects the best substitution
+            # model (per partition when the alignment is partitioned).
             lset_cmd   = (body.get('lset_cmd') or '').strip() or \
-                         job.mrbayes_lset or 'lset nst=6 rates=invgamma'
+                         job.mrbayes_lset or 'lset nst=mixed rates=invgamma'
+            partitions = job.partition_spec or None
             nexus_path = submit_path.rsplit('.', 1)[0] + '.nex'
             _fasta_to_nexus(submit_path, nexus_path, ngen, nruns, nchains,
-                            burninfrac, lset_cmd=lset_cmd)
+                            burninfrac, lset_cmd=lset_cmd, partitions=partitions)
             history_id, galaxy_job_id = _submit_to_galaxy_mrbayes(
                 nexus_path, api_key, ngen, nruns, nchains, burninfrac
             )
             job.phylo_method   = 'mrbayes'
             job.mrbayes_lset   = lset_cmd
+            if partitions:
+                pnames = ', '.join(p['name'] for p in partitions)
+                model_note = f'per-partition model selection (nst=mixed) on {pnames}'
+            else:
+                model_note = f'model: {job.best_fit_model or lset_cmd}'
             job.status_message = (f'MrBayes submitted to Galaxy (job: {galaxy_job_id}); '
-                                  f'model: {job.best_fit_model or lset_cmd}')
+                                  f'{model_note}')
         else:
             history_id, galaxy_job_id = _submit_to_galaxy_raxml(
                 submit_path, api_key, job.n_bootstraps or 1000

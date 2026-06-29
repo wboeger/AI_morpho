@@ -263,6 +263,8 @@ class PhylogenyJob(db.Model):
     bad_accessions = db.Column(db.JSON, default=list)
     restrict_species = db.Column(db.JSON)   # optional list of species names; if set,
                                             # ingroup is limited to these (from Specimens page)
+    partition_spec = db.Column(db.JSON)     # [{name,start,end}] column ranges per
+                                            # fragment for partitioned model selection
 
     # Sequence counts through pipeline
     n_sequences_raw = db.Column(db.Integer)
