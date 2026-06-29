@@ -1,0 +1,9 @@
+# Extra system binaries the phylogeny pipeline shells out to.
+# Railway builds with NIXPACKS; these apt packages are added at build time.
+#   mafft        - multiple sequence alignment  (_align_step)
+#   trimal       - alignment trimming           (_trim_step)
+#   r-base-core  - provides Rscript             (_root_tree)
+#   r-cran-ape   - R 'ape' package for tree rooting (root(), write.tree)
+# RAxML / MrBayes run remotely on Galaxy, so they are not needed here.
+[phases.setup]
+aptPkgs = ["mafft", "trimal", "r-base-core", "r-cran-ape"]
