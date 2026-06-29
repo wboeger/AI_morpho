@@ -261,6 +261,8 @@ class PhylogenyJob(db.Model):
     nj_newick = db.Column(db.Text)                       # rapid NJ tree Newick
     outgroup_definitions = db.Column(db.JSON)   # [{family, mode, n}, ...]
     bad_accessions = db.Column(db.JSON, default=list)
+    restrict_species = db.Column(db.JSON)   # optional list of species names; if set,
+                                            # ingroup is limited to these (from Specimens page)
 
     # Sequence counts through pipeline
     n_sequences_raw = db.Column(db.Integer)

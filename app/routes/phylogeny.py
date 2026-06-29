@@ -24,7 +24,7 @@ from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 
 from app import db
-from app.models import Project, PhylogenyJob
+from app.models import Project, PhylogenyJob, Specimen
 
 phylo_bp = Blueprint('phylogeny', __name__)
 
@@ -94,6 +94,38 @@ def _parse_species_name(description):
     if len(parts) >= 2:
         return parts[1]
     return parts[0]
+
+
+def _norm_species(name):
+    """Normalize a species name for matching: lowercase, spaces/underscores unified,
+    collapse to 'genus species' (first two tokens), strip punctuation."""
+    if not name:
+        return ''
+    s = str(name).replace('_', ' ').lower().strip()
+    s = re.sub(r'[^a-z0-9 ]+', ' ', s)
+    toks = s.split()
+    return ' '.join(toks[:2])
+
+
+def _restrict_ingroup(ingroup, restrict_species):
+    """Keep only ingroup records whose species matches the allowed set.
+
+    restrict_species is a list of species names (from the project Specimens page).
+    Matching is normalized (case/underscore/whitespace insensitive, genus+epithet).
+    Returns (kept_records, matched_norms, missing_species).
+    """
+    allowed = {_norm_species(s) for s in (restrict_species or []) if _norm_species(s)}
+    if not allowed:
+        return ingroup, set(), []
+    kept, matched = [], set()
+    for rec in ingroup:
+        sp = rec.id.split('|')[1] if '|' in rec.id else rec.id
+        n = _norm_species(sp)
+        if n in allowed:
+            kept.append(rec)
+            matched.add(n)
+    missing = sorted(a for a in allowed if a not in matched)
+    return kept, matched, missing
 
 
 def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
@@ -190,6 +222,19 @@ def _fetch_step(job):
 
     _set_status(job, 'fetching', f'Processing {len(records)} sequences…')
     ingroup = _process_records(records, bad_acc, min_len, max_factor)
+
+    # Optional: restrict ingroup to species selected from the project Specimens page
+    if job.restrict_species:
+        kept, matched, missing = _restrict_ingroup(ingroup, job.restrict_species)
+        msg = (f'Restricted to project specimens: {len(kept)} of {len(ingroup)} '
+               f'sequences kept ({len(matched)} species matched).')
+        if missing:
+            shown = ', '.join(m.replace(' ', '_') for m in missing[:8])
+            more = '' if len(missing) <= 8 else f' (+{len(missing) - 8} more)'
+            msg += f' No NCBI {job.marker} sequence for: {shown}{more}.'
+        ingroup = kept
+        _set_status(job, 'fetching', msg)
+
     job.n_sequences_deduped = len(ingroup)
     ingroup_species = {r.id.split('|')[1] for r in ingroup if '|' in r.id}
     db.session.commit()
@@ -390,6 +435,15 @@ def _fetch_marker(job, marker, gene_query, suffix):
 
     records = _ncbi_fetch_batch(ids, email)
     ingroup = _process_records(records, bad_acc, min_len, max_factor)
+
+    # Optional: restrict ingroup to project specimen species
+    if job.restrict_species:
+        kept, matched, missing = _restrict_ingroup(ingroup, job.restrict_species)
+        _set_status(job, 'fetching',
+                    f'[{marker}] Restricted to project specimens: {len(kept)} of '
+                    f'{len(ingroup)} kept ({len(matched)} species matched'
+                    f'{", " + str(len(missing)) + " missing" if missing else ""}).')
+        ingroup = kept
 
     # Outgroups
     seen = {r.id.split('|')[1] for r in ingroup if '|' in r.id}
@@ -1055,6 +1109,11 @@ def phylogeny_view(project_id):
             .filter_by(project_id=project_id)
             .order_by(PhylogenyJob.submitted_at.desc())
             .all())
+    specimen_species = sorted({
+        (s.species_name or '').strip()
+        for s in Specimen.query.filter_by(project_id=project_id).all()
+        if (s.species_name or '').strip()
+    })
     defaults = {
         'target_taxon':     'Gyrodactylidae',
         'gene_query':       DEFAULT_GENE_QUERY_18S,
@@ -1064,7 +1123,8 @@ def phylogeny_view(project_id):
         'galaxy_api_key':   current_app.config.get('GALAXY_API_KEY', ''),
     }
     return render_template('phylogeny/phylogeny.html',
-                           project=project, jobs=jobs, defaults=defaults)
+                           project=project, jobs=jobs, defaults=defaults,
+                           specimen_species=specimen_species)
 
 
 @phylo_bp.route('/project/<int:project_id>/phylogeny/create', methods=['POST'])
@@ -1140,6 +1200,20 @@ def _create_job_inner(project_id):
         max_length_factor = max(1.0, float(request.form.get('max_length_factor', 2.0) or 2.0))
         bad_acc     = [s.strip() for s in request.form.get('bad_accessions', '').splitlines() if s.strip()]
 
+        # Optional: restrict ingroup to selected project specimens.
+        # Sent as JSON list in 'restrict_species' when the toggle is on.
+        restrict_species = None
+        rs_raw = request.form.get('restrict_species', '').strip()
+        if rs_raw:
+            try:
+                parsed = _json.loads(rs_raw)
+                if isinstance(parsed, list):
+                    restrict_species = [str(s).strip() for s in parsed if str(s).strip()]
+            except Exception:
+                restrict_species = [s.strip() for s in rs_raw.splitlines() if s.strip()]
+            if not restrict_species:
+                restrict_species = None
+
         # Parse outgroup definitions: each line "Family | mode | n"
         og_defs = []
         for line in request.form.get('outgroup_defs', '').splitlines():
@@ -1178,6 +1252,7 @@ def _create_job_inner(project_id):
             max_length_factor=max_length_factor,
             bad_accessions=bad_acc,
             outgroup_definitions=og_defs,
+            restrict_species=restrict_species,
             galaxy_api_key=galaxy_api_key,
             status='created',
             status_message='Starting NCBI retrieval…',

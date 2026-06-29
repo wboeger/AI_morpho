@@ -163,6 +163,45 @@
                             <small style="color:var(--gray-500);">Used only at submission time. Stored encrypted with the job record.</small>
                         </div>
                     </fieldset>
+
+                    <fieldset style="border:1px solid var(--gray-300); border-radius:4px; padding:0.75rem; margin-top:0.75rem;">
+                        <legend style="font-weight:600; font-size:0.9rem; padding:0 0.25rem;">Limit to Project Specimens</legend>
+                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600; font-size:0.85rem; cursor:pointer;">
+                            <input type="checkbox" id="restrictToggle" style="width:auto;"
+                                   onchange="toggleRestrict()">
+                            Only include species present on the Specimens page
+                        </label>
+                        <p style="font-size:0.78rem; color:var(--gray-500); margin:0.4rem 0;">
+                            When on, the NCBI ingroup is filtered to the species you select below.
+                            Outgroups are unaffected.
+                        </p>
+                        {% if specimen_species %}
+                        <div id="restrictControls" style="display:none;">
+                            <div style="margin-bottom:0.4rem;">
+                                <button type="button" class="btn btn-sm btn-outline" onclick="restrictAll(true)"
+                                        style="font-size:0.72rem; padding:0.1rem 0.4rem;">Select all</button>
+                                <button type="button" class="btn btn-sm btn-outline" onclick="restrictAll(false)"
+                                        style="font-size:0.72rem; padding:0.1rem 0.4rem;">Clear</button>
+                                <span id="restrictCount" style="font-size:0.75rem; color:var(--gray-500); margin-left:0.4rem;"></span>
+                            </div>
+                            <div style="max-height:200px; overflow-y:auto; border:1px solid var(--gray-200);
+                                        border-radius:4px; padding:0.4rem;">
+                                {% for sp in specimen_species %}
+                                <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.8rem;
+                                              font-style:italic; padding:0.1rem 0; cursor:pointer;">
+                                    <input type="checkbox" class="restrict-sp" value="{{ sp|e }}" checked
+                                           style="width:auto;" onchange="updateRestrictCount()">
+                                    {{ sp }}
+                                </label>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% else %}
+                        <p style="font-size:0.8rem; color:var(--danger);">
+                            No specimens in this project yet. Add specimens on the Specimens page first.
+                        </p>
+                        {% endif %}
+                    </fieldset>
                 </div>
             </div>
             <div style="margin-top:1rem; display:flex; align-items:center; gap:1rem;">
@@ -730,10 +769,44 @@ async function safeJSON(resp) {
     throw new Error(`Server error ${resp.status}: ${detail}`);
 }
 
+// ── Limit-to-project-specimens controls ──
+function toggleRestrict() {
+    const on = document.getElementById('restrictToggle').checked;
+    const ctl = document.getElementById('restrictControls');
+    if (ctl) ctl.style.display = on ? 'block' : 'none';
+    updateRestrictCount();
+}
+function restrictAll(state) {
+    document.querySelectorAll('.restrict-sp').forEach(cb => { cb.checked = state; });
+    updateRestrictCount();
+}
+function updateRestrictCount() {
+    const el = document.getElementById('restrictCount');
+    if (!el) return;
+    const all = document.querySelectorAll('.restrict-sp');
+    const sel = document.querySelectorAll('.restrict-sp:checked');
+    el.textContent = `${sel.length} of ${all.length} selected`;
+}
+function selectedRestrictSpecies() {
+    return [...document.querySelectorAll('.restrict-sp:checked')].map(cb => cb.value);
+}
+
 async function createJob(mode) {
     const form = document.getElementById(`form-${mode}-inner`);
     if (!form) { setMsg(`submit-msg-${mode}`, 'Form not found — please reload the page.', 'var(--danger)'); return; }
     const fd   = new FormData(form);
+    // Attach the species filter when "Limit to project specimens" is on (NCBI mode only)
+    if (mode === 'ncbi') {
+        const tgl = document.getElementById('restrictToggle');
+        if (tgl && tgl.checked) {
+            const species = selectedRestrictSpecies();
+            if (!species.length) {
+                setMsg('submit-msg-ncbi', 'Select at least one specimen species, or turn off the limit.', 'var(--danger)');
+                return;
+            }
+            fd.set('restrict_species', JSON.stringify(species));
+        }
+    }
     setMsg(`submit-msg-${mode}`, mode === 'ncbi' ? 'Starting…' : 'Uploading…', 'var(--primary)');
     try {
         const resp = await fetch(`/project/${PROJECT_ID}/phylogeny/create`, {method:'POST', body:fd});
@@ -1577,6 +1650,9 @@ document.getElementById('treeModal').addEventListener('click', function(e) {
 // ── Newick parser ─────────────────────────────────────────────────────────────
 function parseNewick(s) {
     s = s.trim().replace(/;$/, '');
+    // Strip FigTree / NHX comments like [&label=..] or [100] so they don't
+    // corrupt node names or hide support values.
+    s = s.replace(/\[[^\]]*\]/g, '');
     let i = 0;
     function parse() {
         const node = {children: []};
@@ -1689,6 +1765,16 @@ function renderPhylogram(newick, svgEl) {
         svgEl.appendChild(el);
     }
 
+    // Parse a node's support label (bootstrap % or posterior probability).
+    // Returns a display string, or '' if the node carries no numeric support.
+    function supportLabel(node) {
+        if (!node.name) return '';
+        // Support may be "95", "0.99", or "95/0.99" (combined). Take first number.
+        const m = String(node.name).match(/-?\d+(\.\d+)?/);
+        if (!m) return '';
+        return String(node.name).trim();
+    }
+
     // Draw nodes recursively
     function drawNode(node) {
         const nx = xScale(node.x);
@@ -1697,13 +1783,19 @@ function renderPhylogram(newick, svgEl) {
             const yBot = Math.max(...node.children.map(c => c.leafY));
             // Vertical clade bar
             svgLine(nx, yTop, nx, yBot);
-            // Bootstrap value (if node.name is a number)
-            const bs = parseFloat(node.name);
-            if (!isNaN(bs) && node.name !== '') {
-                svgText(nx + 2, node.leafY - 6, node.name, {size: '9', fill: '#888'});
-            }
             node.children.forEach(c => {
                 svgLine(nx, c.leafY, xScale(c.x), c.leafY);
+                // Support value for an internal child, drawn ON the branch
+                // leading into that clade (conventional placement).
+                if (c.children && c.children.length) {
+                    const lbl = supportLabel(c);
+                    if (lbl) {
+                        const cx = xScale(c.x);
+                        const midX = (nx + cx) / 2;
+                        svgText(midX, c.leafY - 4, lbl,
+                                {size: '9.5', fill: '#1a5490', anchor: 'middle'});
+                    }
+                }
                 drawNode(c);
             });
         } else {
@@ -1725,6 +1817,10 @@ function renderPhylogram(newick, svgEl) {
     svgLine(PAD_LEFT + scaleBarW, sbY - 4, PAD_LEFT + scaleBarW, sbY + 4, '#666', 1.5);
     svgText(PAD_LEFT + scaleBarW / 2, sbY - 8, scaleLen.toPrecision(2),
             {size: '9', fill: '#666', anchor: 'middle'});
+
+    // Legend: explain the blue branch numbers
+    svgText(PAD_LEFT, 12, 'blue numbers = branch support (bootstrap / posterior)',
+            {size: '9', fill: '#1a5490'});
 }
 </script>
 {% endblock %}

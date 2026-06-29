@@ -483,6 +483,7 @@ def _migrate_phylogeny_jobs():
         ('best_fit_model',       'VARCHAR(100)'),
         ('mrbayes_lset',         'VARCHAR(300)'),
         ('galaxy_api_key',       'VARCHAR(500)'),
+        ('restrict_species',     'TEXT'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():
