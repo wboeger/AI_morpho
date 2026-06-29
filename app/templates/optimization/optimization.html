@@ -433,6 +433,15 @@ function assignY(node) {
     node._y = (Math.min(...ys) + Math.max(...ys)) / 2;
 }
 
+// ── Branch support helpers (>=70% blue, <70% red; handles 0-100 and 0-1) ──
+function _supportOf(name) {
+    if (!name) return null;
+    const m = String(name).match(/^\s*-?\d+(\.\d+)?\s*$/);
+    return m ? parseFloat(name) : null;
+}
+function _supCol(s) { return ((s <= 1) ? (s >= 0.70) : (s >= 70)) ? '#1a6bad' : '#c0392b'; }
+function _supLbl(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
+
 // ── Color helpers ────────────────────────────────────────────────────────────
 
 function buildColorMap(ch) {
@@ -559,8 +568,15 @@ function renderTree(ch) {
     svgEl.setAttribute('width',  SVG_W);
     svgEl.setAttribute('height', SVG_H);
 
-    assignDepths(tree, 0);
-    const maxD = Math.max(...leaves.map(l => l._d), 1);
+    // Cladogram: ignore branch lengths — position by topological height so all
+    // tips align at the right edge.
+    (function H(n){
+        if (!n.children || !n.children.length) { n._h = 0; return 0; }
+        n._h = 1 + Math.max(...n.children.map(H));
+        return n._h;
+    })(tree);
+    const maxD = tree._h || 1;
+    (function X(n){ n._d = maxD - n._h; (n.children || []).forEach(X); })(tree);
     const xS   = v => X_L + (v / maxD) * (X_R - X_L);
 
     leaves.forEach((lf, i) => { lf._y = PAD_TOP + i * ROW_H + ROW_H / 2; });
@@ -600,6 +616,16 @@ function renderTree(ch) {
                 });
                 draw(c);
             });
+
+            // Branch support (bootstrap %/posterior) for this clade: >=70 blue, <70 red
+            const sup = _supportOf(node.name);
+            if (sup !== null) {
+                svgTxt(_supLbl(sup), {
+                    x: nx - 7, y: ny - 5,
+                    'font-size': 8, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                    fill: _supCol(sup), 'text-anchor': 'end', 'pointer-events': 'none'
+                });
+            }
 
             // Internal node circle
             const fill = node.state ? (colorMap[node.state] || '#ececec') : '#ececec';

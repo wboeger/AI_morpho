@@ -22,7 +22,9 @@ def _norm_name(s):
 
 
 def _parse_newick(s):
+    import re as _re
     s = s.strip().rstrip(';')
+    s = _re.sub(r'\[[^\]]*\]', '', s)   # strip FigTree/NHX [..] comments
     pos = [0]
 
     def parse():

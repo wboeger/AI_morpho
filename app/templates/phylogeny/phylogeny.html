@@ -1765,15 +1765,15 @@ function renderPhylogram(newick, svgEl) {
         svgEl.appendChild(el);
     }
 
-    // Parse a node's support label (bootstrap % or posterior probability).
-    // Returns a display string, or '' if the node carries no numeric support.
-    function supportLabel(node) {
-        if (!node.name) return '';
-        // Support may be "95", "0.99", or "95/0.99" (combined). Take first number.
-        const m = String(node.name).match(/-?\d+(\.\d+)?/);
-        if (!m) return '';
-        return String(node.name).trim();
+    // Numeric branch support from a node label (bootstrap % or posterior).
+    function supportNum(node) {
+        if (!node.name) return null;
+        const m = String(node.name).match(/^\s*-?\d+(\.\d+)?\s*$/);
+        return m ? parseFloat(node.name) : null;
     }
+    // >=70% blue, <70% red (handles 0-100 bootstrap and 0-1 posterior)
+    function supColor(s) { return ((s <= 1) ? (s >= 0.70) : (s >= 70)) ? '#1a6bad' : '#c0392b'; }
+    function supLabel(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
 
     // Draw nodes recursively
     function drawNode(node) {
@@ -1784,17 +1784,13 @@ function renderPhylogram(newick, svgEl) {
             // Vertical clade bar
             svgLine(nx, yTop, nx, yBot);
             node.children.forEach(c => {
-                svgLine(nx, c.leafY, xScale(c.x), c.leafY);
-                // Support value for an internal child, drawn ON the branch
-                // leading into that clade (conventional placement).
-                if (c.children && c.children.length) {
-                    const lbl = supportLabel(c);
-                    if (lbl) {
-                        const cx = xScale(c.x);
-                        const midX = (nx + cx) / 2;
-                        svgText(midX, c.leafY - 4, lbl,
-                                {size: '9.5', fill: '#1a5490', anchor: 'middle'});
-                    }
+                // Color the branch into a clade by its support: >=70 blue, <70 red
+                const s = (c.children && c.children.length) ? supportNum(c) : null;
+                const col = (s !== null) ? supColor(s) : '#444';
+                svgLine(nx, c.leafY, xScale(c.x), c.leafY, col, (s !== null) ? 2 : undefined);
+                if (s !== null) {
+                    const midX = (nx + xScale(c.x)) / 2;
+                    svgText(midX, c.leafY - 4, supLabel(s), {size: '9.5', fill: col, anchor: 'middle'});
                 }
                 drawNode(c);
             });
@@ -1818,9 +1814,10 @@ function renderPhylogram(newick, svgEl) {
     svgText(PAD_LEFT + scaleBarW / 2, sbY - 8, scaleLen.toPrecision(2),
             {size: '9', fill: '#666', anchor: 'middle'});
 
-    // Legend: explain the blue branch numbers
-    svgText(PAD_LEFT, 12, 'blue numbers = branch support (bootstrap / posterior)',
-            {size: '9', fill: '#1a5490'});
+    // Legend: branch support colour key
+    svgText(PAD_LEFT, 12, 'branch support: ', {size: '9', fill: '#555'});
+    svgText(PAD_LEFT + 78, 12, '>=70 blue', {size: '9', fill: '#1a6bad'});
+    svgText(PAD_LEFT + 140, 12, '<70 red', {size: '9', fill: '#c0392b'});
 }
 </script>
 {% endblock %}
