@@ -127,7 +127,8 @@ from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 from app import db
 from app.models import (
-    Project, ProjectMembership, Specimen, Structure, DNASequence, ActivityLog, User
+    Project, ProjectMembership, Specimen, Structure, DNASequence, ActivityLog, User,
+    SpecimenComment
 )
 from app.characters import initialize_project_characters
 
@@ -302,6 +303,61 @@ def remove_synonym(project_id, specimen_id):
     specimen.synonyms = syns
     db.session.commit()
     return jsonify({'status': 'ok', 'synonyms': syns})
+
+
+def _comment_json(c):
+    return {
+        'id': c.id,
+        'body': c.body,
+        'author': c.author.username if c.author else '—',
+        'author_id': c.created_by,
+        'created_at': (c.created_at.strftime('%Y-%m-%d %H:%M')
+                       if c.created_at else ''),
+    }
+
+
+@project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/comments',
+                  methods=['GET'])
+@login_required
+def list_comments(project_id, specimen_id):
+    """List all comments on a specimen, oldest first."""
+    _get_project_or_404(project_id)
+    specimen = Specimen.query.get_or_404(specimen_id)
+    return jsonify({'status': 'ok',
+                    'comments': [_comment_json(c) for c in specimen.comments]})
+
+
+@project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/comments',
+                  methods=['POST'])
+@login_required
+def add_comment(project_id, specimen_id):
+    """Add a comment to a specimen."""
+    _get_project_or_404(project_id)
+    specimen = Specimen.query.get_or_404(specimen_id)
+    body = ((request.get_json() or {}).get('body') or '').strip()
+    if not body:
+        return jsonify({'error': 'Comment text required'}), 400
+    c = SpecimenComment(specimen_id=specimen.id, body=body,
+                        created_by=current_user.id)
+    db.session.add(c)
+    db.session.commit()
+    return jsonify({'status': 'ok', 'comment': _comment_json(c)})
+
+
+@project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/comments/<int:comment_id>',
+                  methods=['DELETE'])
+@login_required
+def delete_comment(project_id, specimen_id, comment_id):
+    """Delete a comment. Only the author or an admin may delete."""
+    _get_project_or_404(project_id)
+    c = SpecimenComment.query.get_or_404(comment_id)
+    if c.specimen_id != specimen_id:
+        return jsonify({'error': 'Comment does not belong to this specimen'}), 403
+    if c.created_by != current_user.id and current_user.role != 'admin':
+        return jsonify({'error': 'Not allowed'}), 403
+    db.session.delete(c)
+    db.session.commit()
+    return jsonify({'status': 'ok'})
 
 
 @project_bp.route('/api/project/<int:project_id>/specimen/<int:specimen_id>/delete', methods=['DELETE'])

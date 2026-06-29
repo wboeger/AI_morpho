@@ -64,6 +64,20 @@ class Specimen(db.Model):
     creator = db.relationship('User')
     structures = db.relationship('Structure', backref='specimen', cascade='all, delete-orphan')
     dna_sequences = db.relationship('DNASequence', backref='specimen', cascade='all, delete-orphan')
+    comments = db.relationship('SpecimenComment', backref='specimen',
+                               cascade='all, delete-orphan',
+                               order_by='SpecimenComment.created_at')
+
+
+class SpecimenComment(db.Model):
+    __tablename__ = 'specimen_comments'
+    id = db.Column(db.Integer, primary_key=True)
+    specimen_id = db.Column(db.Integer, db.ForeignKey('specimens.id'), nullable=False)
+    body = db.Column(db.Text, nullable=False)
+    created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    author = db.relationship('User')
 
 
 class DNASequence(db.Model):

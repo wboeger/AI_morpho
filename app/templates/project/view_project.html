@@ -92,6 +92,7 @@
             <tr>
                 <th>Species</th>
                 <th>Specimen ID</th>
+                <th>Comments</th>
                 <th>Structures</th>
                 <th>DNA</th>
                 <th>Actions</th>
@@ -133,6 +134,13 @@
                     </div>
                 </td>
                 <td><span class="mono tiny muted">{{ s.specimen_id_label or '—' }}</span></td>
+                <td style="white-space:nowrap;">
+                    <button class="btn btn-sm btn-outline" id="cmt-btn-{{ s.id }}"
+                            title="View / add comments"
+                            onclick="openComments({{ s.id }}, '{{ s.species_name|e }}')">
+                        &#128172; <span id="cmt-count-{{ s.id }}">{{ s.comments|length }}</span>
+                    </button>
+                </td>
                 <td>
                     {% set visible_structs = s.structures | selectattr('structure_type', 'in', structure_types) | list %}
                     {% for st in visible_structs %}
@@ -352,6 +360,25 @@
          style="max-width:90vw; max-height:85vh; object-fit:contain; border-radius:6px;
                 box-shadow:0 4px 32px rgba(0,0,0,0.6);">
     <p style="color:#aaa; font-size:0.75rem; margin-top:0.5rem;">click anywhere to close</p>
+</div>
+
+<!-- Comments modal -->
+<div id="commentsModal" class="gyro-modal" style="display:none;">
+    <div class="gyro-modal-box" style="min-width:380px; max-width:540px; max-height:85vh; display:flex; flex-direction:column;">
+        <h3 style="margin:0 0 0.25rem;">Comments</h3>
+        <p id="commentsSpecies" style="font-size:0.85rem; color:var(--gray-500); font-style:italic; margin:0 0 0.75rem;"></p>
+        <div id="commentsList" style="flex:1; overflow-y:auto; margin-bottom:0.75rem; min-height:60px;"></div>
+        <div style="display:flex; gap:0.5rem; align-items:flex-end; border-top:1px solid var(--gray-200); padding-top:0.75rem;">
+            <textarea id="commentInput" rows="2" placeholder="Add a comment…"
+                      style="flex:1; resize:vertical; font-size:0.85rem; padding:0.4rem;
+                             border:1px solid var(--gray-300); border-radius:4px;"
+                      onkeydown="if(event.key==='Enter'&&(event.metaKey||event.ctrlKey))postComment()"></textarea>
+            <button class="btn btn-primary" onclick="postComment()">Post</button>
+        </div>
+        <div style="display:flex; justify-content:flex-end; margin-top:0.6rem;">
+            <button class="btn btn-outline" onclick="closeModal('commentsModal')">Close</button>
+        </div>
+    </div>
 </div>
 
 <!-- Add structure modal -->
@@ -819,6 +846,118 @@ function openImageLightbox(src, caption) {
     document.getElementById('lightboxImg').src = src;
     document.getElementById('lightboxCaption').textContent = caption || '';
     lb.style.display = 'flex';
+}
+
+// ── Comments ──
+const PROJECT_ID = {{ project.id }};
+const CURRENT_USER_ID = {{ current_user.id }};
+const CURRENT_USER_ADMIN = {{ 'true' if current_user.role == 'admin' else 'false' }};
+let _cmtSpecimenId = null;
+
+function _escHtml(s) {
+    const d = document.createElement('div'); d.textContent = s; return d.innerHTML;
+}
+
+async function openComments(specimenId, speciesName) {
+    _cmtSpecimenId = specimenId;
+    document.getElementById('commentsSpecies').textContent = speciesName;
+    document.getElementById('commentInput').value = '';
+    const list = document.getElementById('commentsList');
+    list.innerHTML = '<p style="color:var(--gray-400); font-size:0.85rem;">Loading…</p>';
+    openModal('commentsModal');
+    try {
+        const r = await fetch(`/api/project/${PROJECT_ID}/specimen/${specimenId}/comments`);
+        const d = await r.json();
+        if (d.error) { list.innerHTML = `<p style="color:red;">${d.error}</p>`; return; }
+        _renderComments(d.comments);
+    } catch (e) {
+        list.innerHTML = `<p style="color:red;">Network error: ${e.message}</p>`;
+    }
+    setTimeout(() => document.getElementById('commentInput').focus(), 50);
+}
+
+function _renderComments(comments) {
+    const list = document.getElementById('commentsList');
+    if (!comments.length) {
+        list.innerHTML = '<p style="color:var(--gray-400); font-size:0.85rem;">No comments yet.</p>';
+        return;
+    }
+    list.innerHTML = comments.map(c => {
+        const canDel = (c.author_id === CURRENT_USER_ID) || CURRENT_USER_ADMIN;
+        const delBtn = canDel
+            ? `<button title="Delete" onclick="deleteComment(${c.id}, this)"
+                   style="background:none;border:none;cursor:pointer;color:var(--gray-400);
+                          font-size:0.78rem;padding:0;line-height:1;"
+                   onmouseover="this.style.color='#c0392b'" onmouseout="this.style.color='var(--gray-400)'">&#10005;</button>`
+            : '';
+        return `<div data-cmt="${c.id}" style="border:1px solid var(--gray-200); border-radius:5px;
+                     padding:0.45rem 0.6rem; margin-bottom:0.4rem; background:var(--gray-50,#fafafa);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.2rem;">
+                <span style="font-size:0.76rem; color:var(--gray-500);">
+                    <strong>${_escHtml(c.author)}</strong> · ${c.created_at}</span>
+                ${delBtn}
+            </div>
+            <div style="font-size:0.86rem; white-space:pre-wrap; color:var(--gray-800);">${_escHtml(c.body)}</div>
+        </div>`;
+    }).join('');
+}
+
+function _setCommentCount(specimenId, n) {
+    const el = document.getElementById('cmt-count-' + specimenId);
+    if (el) el.textContent = n;
+}
+
+async function postComment() {
+    const inp = document.getElementById('commentInput');
+    const body = inp.value.trim();
+    if (!body || _cmtSpecimenId == null) return;
+    try {
+        const r = await fetch(`/api/project/${PROJECT_ID}/specimen/${_cmtSpecimenId}/comments`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({body})
+        });
+        const d = await r.json();
+        if (d.error) { alert(d.error); return; }
+        // Append without refetch
+        const list = document.getElementById('commentsList');
+        if (list.querySelector('[data-cmt]') == null) list.innerHTML = '';
+        const c = d.comment;
+        const wrap = document.createElement('div');
+        wrap.innerHTML = `<div data-cmt="${c.id}" style="border:1px solid var(--gray-200); border-radius:5px;
+                     padding:0.45rem 0.6rem; margin-bottom:0.4rem; background:var(--gray-50,#fafafa);">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem; margin-bottom:0.2rem;">
+                <span style="font-size:0.76rem; color:var(--gray-500);">
+                    <strong>${_escHtml(c.author)}</strong> · ${c.created_at}</span>
+                <button title="Delete" onclick="deleteComment(${c.id}, this)"
+                    style="background:none;border:none;cursor:pointer;color:var(--gray-400);
+                           font-size:0.78rem;padding:0;line-height:1;"
+                    onmouseover="this.style.color='#c0392b'" onmouseout="this.style.color='var(--gray-400)'">&#10005;</button>
+            </div>
+            <div style="font-size:0.86rem; white-space:pre-wrap; color:var(--gray-800);">${_escHtml(c.body)}</div>
+        </div>`;
+        list.appendChild(wrap.firstElementChild);
+        list.scrollTop = list.scrollHeight;
+        inp.value = '';
+        const cur = parseInt(document.getElementById('cmt-count-' + _cmtSpecimenId).textContent) || 0;
+        _setCommentCount(_cmtSpecimenId, cur + 1);
+    } catch (e) { alert('Network error: ' + e.message); }
+}
+
+async function deleteComment(commentId, btn) {
+    if (!confirm('Delete this comment?')) return;
+    try {
+        const r = await fetch(`/api/project/${PROJECT_ID}/specimen/${_cmtSpecimenId}/comments/${commentId}`,
+            {method: 'DELETE'});
+        const d = await r.json();
+        if (d.error) { alert(d.error); return; }
+        const node = btn.closest('[data-cmt]');
+        if (node) node.remove();
+        const cur = parseInt(document.getElementById('cmt-count-' + _cmtSpecimenId).textContent) || 1;
+        _setCommentCount(_cmtSpecimenId, Math.max(0, cur - 1));
+        const list = document.getElementById('commentsList');
+        if (list.querySelector('[data-cmt]') == null)
+            list.innerHTML = '<p style="color:var(--gray-400); font-size:0.85rem;">No comments yet.</p>';
+    } catch (e) { alert('Network error: ' + e.message); }
 }
 
 // ── Synonym helpers ──
