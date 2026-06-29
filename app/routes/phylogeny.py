@@ -311,9 +311,24 @@ def _fetch_step(job):
 
 
 def _align_step(job):
-    """MAFFT --auto --adjustdirection."""
-    _set_status(job, 'aligning', 'Running MAFFT alignment…')
+    """MAFFT --auto --adjustdirection (local binary, or Galaxy when unavailable).
+
+    When running on Galaxy, MAFFT + trimAl are done together in one history;
+    both output files are produced here and _trim_step becomes a no-op.
+    """
     aligned_path = os.path.join(job.result_dir, f'{job.marker}_aligned.fa')
+    trimmed_path = os.path.join(job.result_dir, f'{job.marker}_trimmed.fa')
+
+    if _use_galaxy_for_align():
+        _set_status(job, 'aligning', 'Aligning (MAFFT) and trimming (trimAl) on Galaxy…')
+        _galaxy_align_trim(job, job.raw_fasta_path, aligned_path, trimmed_path)
+        job.aligned_fasta_path = aligned_path
+        job.trimmed_fasta_path = trimmed_path        # signals _trim_step to skip
+        n = _count_fasta(aligned_path)
+        _set_status(job, 'aligned', f'Galaxy alignment + trim done ({n} sequences).')
+        return
+
+    _set_status(job, 'aligning', 'Running MAFFT alignment…')
     result = subprocess.run(
         ['mafft', '--auto', '--thread', '-1', '--adjustdirection',
          job.raw_fasta_path],
@@ -329,9 +344,20 @@ def _align_step(job):
 
 
 def _trim_step(job):
-    """trimAl -gappyout."""
-    _set_status(job, 'trimming', 'Running trimAl (-gappyout)…')
+    """trimAl -gappyout (local). On Galaxy the trim already ran in _align_step."""
     trimmed_path = os.path.join(job.result_dir, f'{job.marker}_trimmed.fa')
+
+    # Galaxy path: alignment step already produced the trimmed file.
+    if job.trimmed_fasta_path and os.path.exists(job.trimmed_fasta_path) \
+            and os.path.getsize(job.trimmed_fasta_path):
+        n = _count_fasta(job.trimmed_fasta_path)
+        job.fasta_filename = os.path.basename(job.trimmed_fasta_path)
+        job.n_sequences    = n
+        _set_status(job, 'trimmed',
+                    f'Trimming complete ({n} sequences). Ready to submit to Galaxy.')
+        return
+
+    _set_status(job, 'trimming', 'Running trimAl (-gappyout)…')
     result = subprocess.run(
         ['trimal', '-in', job.aligned_fasta_path,
          '-out', trimmed_path, '-gappyout'],
@@ -493,7 +519,7 @@ def _fetch_marker(job, marker, gene_query, suffix):
 
 
 def _align_marker(raw_path, suffix, job_dir):
-    """MAFFT align one marker file. Returns aligned_path."""
+    """MAFFT align one marker file (local binary). Returns aligned_path."""
     aligned_path = os.path.join(job_dir, f'{suffix}_aligned.fa')
     result = subprocess.run(
         ['mafft', '--auto', '--thread', '-1', '--adjustdirection', raw_path],
@@ -507,7 +533,7 @@ def _align_marker(raw_path, suffix, job_dir):
 
 
 def _trim_marker(aligned_path, suffix, job_dir):
-    """trimAl -gappyout on one marker. Returns trimmed_path."""
+    """trimAl -gappyout on one marker (local binary). Returns trimmed_path."""
     trimmed_path = os.path.join(job_dir, f'{suffix}_trimmed.fa')
     result = subprocess.run(
         ['trimal', '-in', aligned_path, '-out', trimmed_path, '-gappyout'],
@@ -518,6 +544,19 @@ def _trim_marker(aligned_path, suffix, job_dir):
     if not os.path.exists(trimmed_path) or not os.path.getsize(trimmed_path):
         raise RuntimeError(f'trimAl produced empty output for {suffix}.')
     return trimmed_path
+
+
+def _align_trim_marker(job, raw_path, suffix):
+    """Align + trim one marker, on Galaxy when local binaries are unavailable.
+    Returns (aligned_path, trimmed_path)."""
+    if _use_galaxy_for_align():
+        aligned_path = os.path.join(job.result_dir, f'{suffix}_aligned.fa')
+        trimmed_path = os.path.join(job.result_dir, f'{suffix}_trimmed.fa')
+        _galaxy_align_trim(job, raw_path, aligned_path, trimmed_path)
+        return aligned_path, trimmed_path
+    aligned_path = _align_marker(raw_path, suffix, job.result_dir)
+    trimmed_path = _trim_marker(aligned_path, suffix, job.result_dir)
+    return aligned_path, trimmed_path
 
 
 def _concatenated_pipeline_thread(app, job_id):
@@ -543,18 +582,13 @@ def _concatenated_pipeline_thread(app, job_id):
                         f'Fetched {tot18s} 18S + {totITS} ITS sequences. '
                         f'Starting alignment…')
 
-            # Align both
-            _set_status(job, 'aligning', 'Running MAFFT on 18S…')
-            aln18s = _align_marker(raw18s, '18S', job.result_dir)
-            _set_status(job, 'aligning', 'Running MAFFT on ITS…')
-            alnITS = _align_marker(rawITS, 'ITS', job.result_dir)
+            # Align + trim both markers (on Galaxy when local binaries absent)
+            _where = 'Galaxy' if _use_galaxy_for_align() else 'local'
+            _set_status(job, 'aligning', f'Aligning + trimming 18S ({_where})…')
+            aln18s, trm18s = _align_trim_marker(job, raw18s, '18S')
+            _set_status(job, 'aligning', f'Aligning + trimming ITS ({_where})…')
+            alnITS, trmITS = _align_trim_marker(job, rawITS, 'ITS')
             job.aligned_fasta_path = aln18s
-
-            # Trim both
-            _set_status(job, 'trimming', 'Running trimAl on 18S…')
-            trm18s = _trim_marker(aln18s, '18S', job.result_dir)
-            _set_status(job, 'trimming', 'Running trimAl on ITS…')
-            trmITS = _trim_marker(alnITS, 'ITS', job.result_dir)
 
             # Concatenate
             _set_status(job, 'trimming', 'Concatenating alignments…')
@@ -746,6 +780,90 @@ def _galaxy_run_tool(api_key, history_id, tool_id, inputs):
     if not jobs:
         raise RuntimeError(f'Galaxy returned no jobs: {str(data)[:400]}')
     return jobs[0]['id']
+
+
+def _galaxy_job_output_dataset(api_key, job_id):
+    """Return the dataset id of a finished job's first (primary) output."""
+    import requests as _req
+    base = _galaxy_base()
+    r = _req.get(f'{base}/api/jobs/{job_id}/outputs',
+                 headers=_galaxy_headers(api_key), timeout=30)
+    r.raise_for_status()
+    outs = r.json()
+    for out in outs:
+        ds = out.get('dataset') or {}
+        ds_id = ds.get('id') or out.get('id')
+        if ds_id:
+            return ds_id
+    raise RuntimeError('Galaxy job produced no output dataset.')
+
+
+def _galaxy_download_dataset(api_key, ds_id, dest_path):
+    """Download a single Galaxy dataset to a local path."""
+    import requests as _req
+    base = _galaxy_base()
+    dl = _req.get(f'{base}/api/datasets/{ds_id}/display',
+                  headers=_galaxy_headers(api_key), stream=True, timeout=600)
+    dl.raise_for_status()
+    with open(dest_path, 'wb') as fh:
+        for chunk in dl.iter_content(65536):
+            fh.write(chunk)
+    return dest_path
+
+
+def _galaxy_run_chain(api_key, history_id, tool_id, input_key, dataset_id,
+                      extra_params_json, label, max_wait=3600):
+    """Run a single Galaxy tool on an existing dataset, wait, return output ds id."""
+    inputs = {input_key: {'src': 'hda', 'id': dataset_id}}
+    try:
+        extra = json.loads(extra_params_json or '{}')
+        if isinstance(extra, dict):
+            inputs.update(extra)
+    except Exception:
+        pass
+    gjob = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
+    state = _galaxy_wait_for_job(api_key, gjob, max_wait=max_wait)
+    if state != 'ok':
+        raise RuntimeError(f'Galaxy {label} job ended in state "{state}".')
+    return _galaxy_job_output_dataset(api_key, gjob)
+
+
+def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
+    """Align (MAFFT) then trim (trimAl) a FASTA entirely on Galaxy.
+
+    Writes aligned_out and trimmed_out locally. Returns (aligned_out, trimmed_out).
+    """
+    cfg = current_app.config
+    api_key = (job.galaxy_api_key or cfg.get('GALAXY_API_KEY', ''))
+    if not api_key:
+        raise RuntimeError('A Galaxy API key is required to align/trim on Galaxy '
+                           '(set it on the job or GALAXY_API_KEY).')
+    hist = _galaxy_create_history(api_key, 'GyroMorpho_AlignTrim')
+    ds_id, up_job = _galaxy_upload_file(api_key, hist, in_path, 'fasta')
+    if up_job:
+        st = _galaxy_wait_for_job(api_key, up_job, max_wait=600)
+        if st != 'ok':
+            raise RuntimeError(f'Galaxy upload failed (state: {st}).')
+
+    aln_ds = _galaxy_run_chain(
+        api_key, hist, cfg['GALAXY_MAFFT_TOOL_ID'], cfg['GALAXY_MAFFT_INPUT_KEY'],
+        ds_id, cfg['GALAXY_MAFFT_PARAMS'], 'MAFFT')
+    _galaxy_download_dataset(api_key, aln_ds, aligned_out)
+
+    trm_ds = _galaxy_run_chain(
+        api_key, hist, cfg['GALAXY_TRIMAL_TOOL_ID'], cfg['GALAXY_TRIMAL_INPUT_KEY'],
+        aln_ds, cfg['GALAXY_TRIMAL_PARAMS'], 'trimAl')
+    _galaxy_download_dataset(api_key, trm_ds, trimmed_out)
+    return aligned_out, trimmed_out
+
+
+def _use_galaxy_for_align():
+    """True when alignment/trimming should run on Galaxy instead of local binaries."""
+    import shutil as _sh
+    if current_app.config.get('PHYLO_FORCE_GALAXY'):
+        return True
+    # Fall back to Galaxy whenever the local binaries are missing (e.g. Railway)
+    return not (_sh.which('mafft') and _sh.which('trimal'))
 
 
 def _galaxy_check_status(api_key, job_id):

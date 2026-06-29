@@ -56,3 +56,20 @@ class Config:
     GALAXY_MRBAYES_TOOL_ID = os.environ.get(
         'GALAXY_MRBAYES_TOOL_ID',
         'toolshed.g2.bx.psu.edu/repos/iuc/mrbayes/mrbayes/3.2.7.a+galaxy0')
+    # MAFFT alignment + trimAl trimming on Galaxy (so the server needs no local
+    # bioinformatics binaries). Tool IDs / input keys / extra params are all
+    # env-overridable in case usegalaxy.eu updates tool versions.
+    GALAXY_MAFFT_TOOL_ID = os.environ.get(
+        'GALAXY_MAFFT_TOOL_ID',
+        'toolshed.g2.bx.psu.edu/repos/rnateam/mafft/rbc_mafft/7.526+galaxy1')
+    GALAXY_MAFFT_INPUT_KEY = os.environ.get('GALAXY_MAFFT_INPUT_KEY', 'inputSequences')
+    GALAXY_MAFFT_PARAMS = os.environ.get(
+        'GALAXY_MAFFT_PARAMS', '{"cond_flavour|flavourType": "mafft --auto"}')
+    GALAXY_TRIMAL_TOOL_ID = os.environ.get(
+        'GALAXY_TRIMAL_TOOL_ID',
+        'toolshed.g2.bx.psu.edu/repos/iuc/trimal/trimal/1.4.1')
+    GALAXY_TRIMAL_INPUT_KEY = os.environ.get('GALAXY_TRIMAL_INPUT_KEY', 'in')
+    GALAXY_TRIMAL_PARAMS = os.environ.get(
+        'GALAXY_TRIMAL_PARAMS', '{"trimming_mode|mode": "gappyout"}')
+    # Force Galaxy even when local mafft/trimal exist (default on in production)
+    PHYLO_FORCE_GALAXY = os.environ.get('PHYLO_FORCE_GALAXY', '0') in ('1', 'true', 'True')
