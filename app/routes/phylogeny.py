@@ -325,7 +325,9 @@ def _align_step(job):
         job.aligned_fasta_path = aligned_path
         job.trimmed_fasta_path = trimmed_path        # signals _trim_step to skip
         n = _count_fasta(aligned_path)
-        _set_status(job, 'aligned', f'Galaxy alignment + trim done ({n} sequences).')
+        note = ' (trimAl skipped — using untrimmed alignment)' \
+            if getattr(job, '_trim_skipped', False) else ''
+        _set_status(job, 'aligned', f'Galaxy alignment done ({n} sequences).{note}')
         return
 
     _set_status(job, 'aligning', 'Running MAFFT alignment…')
@@ -782,58 +784,6 @@ def _galaxy_run_tool(api_key, history_id, tool_id, inputs):
     return jobs[0]['id']
 
 
-_FASTA_EXTS = {'fasta', 'fa', 'fna', 'align', 'fasta.gz', 'aln'}
-
-
-def _galaxy_dataset_ext(api_key, ds_id):
-    """Return a Galaxy dataset's file extension (e.g. 'fasta', 'html'), or ''."""
-    import requests as _req
-    base = _galaxy_base()
-    try:
-        r = _req.get(f'{base}/api/datasets/{ds_id}',
-                     headers=_galaxy_headers(api_key), timeout=30)
-        r.raise_for_status()
-        d = r.json()
-        return (d.get('extension') or d.get('file_ext') or '').lower()
-    except Exception:
-        return ''
-
-
-def _galaxy_job_output_dataset(api_key, job_id, prefer_fasta=True):
-    """Return the dataset id of a finished job's primary output.
-
-    Tools like trimAl/MAFFT can emit several outputs (e.g. an HTML report
-    alongside the alignment). When prefer_fasta is set, pick the dataset whose
-    extension is FASTA-like; otherwise fall back to the first output.
-    """
-    import requests as _req
-    base = _galaxy_base()
-    r = _req.get(f'{base}/api/jobs/{job_id}/outputs',
-                 headers=_galaxy_headers(api_key), timeout=30)
-    r.raise_for_status()
-    outs = r.json()
-    ids = []
-    for out in outs:
-        ds = out.get('dataset') or {}
-        ds_id = ds.get('id') or out.get('id')
-        name = (out.get('name') or '').lower()
-        if ds_id:
-            ids.append((ds_id, name))
-    if not ids:
-        raise RuntimeError('Galaxy job produced no output dataset.')
-
-    if prefer_fasta:
-        # Prefer by dataset extension
-        for ds_id, _name in ids:
-            if _galaxy_dataset_ext(api_key, ds_id) in _FASTA_EXTS:
-                return ds_id
-        # Else avoid obvious report outputs by name
-        for ds_id, name in ids:
-            if not any(k in name for k in ('html', 'report', 'log', 'summary')):
-                return ds_id
-    return ids[0][0]
-
-
 def _galaxy_download_dataset(api_key, ds_id, dest_path):
     """Download a single Galaxy dataset to a local path."""
     import requests as _req
@@ -849,7 +799,7 @@ def _galaxy_download_dataset(api_key, ds_id, dest_path):
 
 def _galaxy_run_chain(api_key, history_id, tool_id, input_key, dataset_id,
                       extra_params_json, label, max_wait=3600):
-    """Run a single Galaxy tool on an existing dataset, wait, return output ds id."""
+    """Run a single Galaxy tool on an existing dataset, wait, return the job id."""
     inputs = {input_key: {'src': 'hda', 'id': dataset_id}}
     try:
         extra = json.loads(extra_params_json or '{}')
@@ -861,14 +811,53 @@ def _galaxy_run_chain(api_key, history_id, tool_id, input_key, dataset_id,
     state = _galaxy_wait_for_job(api_key, gjob, max_wait=max_wait)
     if state != 'ok':
         raise RuntimeError(f'Galaxy {label} job ended in state "{state}".')
-    return _galaxy_job_output_dataset(api_key, gjob)
+    return gjob
+
+
+def _galaxy_pick_fasta_output(api_key, job_id, dest_path):
+    """Download a finished job's outputs and keep the first that is real FASTA.
+
+    Returns (dataset_id, dest_path) for the FASTA output, or (None, None) if no
+    output parses as FASTA. Content-based — robust to tool output naming/format.
+    """
+    import requests as _req
+    base = _galaxy_base()
+    r = _req.get(f'{base}/api/jobs/{job_id}/outputs',
+                 headers=_galaxy_headers(api_key), timeout=30)
+    r.raise_for_status()
+    cands = []
+    for out in r.json():
+        ds = out.get('dataset') or {}
+        ds_id = ds.get('id') or out.get('id')
+        if ds_id:
+            cands.append((ds_id, (out.get('name') or '').lower()))
+    # Prefer non-report-looking outputs first
+    cands.sort(key=lambda c: any(k in c[1] for k in ('html', 'report', 'log', 'summary')))
+    tmp = dest_path + '.cand'
+    for ds_id, _name in cands:
+        try:
+            _galaxy_download_dataset(api_key, ds_id, tmp)
+        except Exception:
+            continue
+        if os.path.exists(tmp) and _count_fasta(tmp) > 0:
+            os.replace(tmp, dest_path)
+            return ds_id, dest_path
+    if os.path.exists(tmp):
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+    return None, None
 
 
 def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
-    """Align (MAFFT) then trim (trimAl) a FASTA entirely on Galaxy.
+    """Align (MAFFT) then trim (trimAl) a FASTA on Galaxy.
 
+    Trimming is best-effort: if trimAl yields no FASTA output, the untrimmed
+    MAFFT alignment is used so the pipeline can still proceed to tree building.
     Writes aligned_out and trimmed_out locally. Returns (aligned_out, trimmed_out).
     """
+    import shutil as _sh
     cfg = current_app.config
     api_key = (job.galaxy_api_key or cfg.get('GALAXY_API_KEY', ''))
     if not api_key:
@@ -881,21 +870,27 @@ def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
         if st != 'ok':
             raise RuntimeError(f'Galaxy upload failed (state: {st}).')
 
-    aln_ds = _galaxy_run_chain(
+    # MAFFT (required — its output must be FASTA)
+    mafft_job = _galaxy_run_chain(
         api_key, hist, cfg['GALAXY_MAFFT_TOOL_ID'], cfg['GALAXY_MAFFT_INPUT_KEY'],
         ds_id, cfg['GALAXY_MAFFT_PARAMS'], 'MAFFT')
-    _galaxy_download_dataset(api_key, aln_ds, aligned_out)
-    if not (os.path.exists(aligned_out) and _count_fasta(aligned_out) > 0):
-        raise RuntimeError('Galaxy MAFFT output was not FASTA (check '
+    aln_ds, _ = _galaxy_pick_fasta_output(api_key, mafft_job, aligned_out)
+    if not aln_ds:
+        raise RuntimeError('Galaxy MAFFT produced no FASTA output (check '
                            'GALAXY_MAFFT_TOOL_ID / params).')
 
-    trm_ds = _galaxy_run_chain(
-        api_key, hist, cfg['GALAXY_TRIMAL_TOOL_ID'], cfg['GALAXY_TRIMAL_INPUT_KEY'],
-        aln_ds, cfg['GALAXY_TRIMAL_PARAMS'], 'trimAl')
-    _galaxy_download_dataset(api_key, trm_ds, trimmed_out)
-    if not (os.path.exists(trimmed_out) and _count_fasta(trimmed_out) > 0):
-        raise RuntimeError('Galaxy trimAl output was not FASTA (check '
-                           'GALAXY_TRIMAL_TOOL_ID / params).')
+    # trimAl (best-effort — fall back to the alignment if it is not FASTA)
+    try:
+        trim_job = _galaxy_run_chain(
+            api_key, hist, cfg['GALAXY_TRIMAL_TOOL_ID'], cfg['GALAXY_TRIMAL_INPUT_KEY'],
+            aln_ds, cfg['GALAXY_TRIMAL_PARAMS'], 'trimAl')
+        trm_ds, _ = _galaxy_pick_fasta_output(api_key, trim_job, trimmed_out)
+    except Exception:
+        trm_ds = None
+    if not trm_ds:
+        # Use the untrimmed alignment so tree building can still run.
+        _sh.copyfile(aligned_out, trimmed_out)
+        job._trim_skipped = True
     return aligned_out, trimmed_out
 
 
