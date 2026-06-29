@@ -614,6 +614,21 @@ function renderTree(ch) {
                     stroke: c.changed ? '#e53935' : '#c0c0c0',
                     'stroke-width': c.changed ? 2 : 1
                 });
+                // State change on this branch: show "from->to" at the midpoint
+                if (c.changed && node.state != null && c.state != null) {
+                    const midX = (nx + xS(c._d)) / 2;
+                    const txt  = `${node.state}→${c.state}`;
+                    const w    = txt.length * 5.4 + 4;
+                    mk('rect', {
+                        x: midX - w / 2, y: c._y - 12, width: w, height: 11,
+                        rx: 2, fill: '#fff', stroke: '#e53935', 'stroke-width': 0.7
+                    });
+                    svgTxt(txt, {
+                        x: midX, y: c._y - 3.5,
+                        'font-size': 8, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                        fill: '#c62828', 'text-anchor': 'middle', 'pointer-events': 'none'
+                    });
+                }
                 draw(c);
             });
 
