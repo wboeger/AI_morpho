@@ -391,6 +391,7 @@ function loadTree() {
 // ── Newick parser ──────────────────────────────────────────────────────────
 function parseNewick(s) {
     s = s.trim().replace(/;$/, '');
+    s = s.replace(/\[[^\]]*\]/g, '');   // strip FigTree/NHX [..] comments
     let i = 0;
     function parse() {
         const node = {children: []};
@@ -534,9 +535,19 @@ function renderNewickTree(newick) {
     // Measure positions relative to SVG element top
     const svgRect = svgEl.getBoundingClientRect();
 
-    // Assign x (cumulative branch length) to every node
-    assignDepths(tree, 0);
-    const maxDepth = Math.max(...leaves.map(l => l.x)) || 1;
+    // Cladogram: ignore branch lengths. Position nodes by topological height so
+    // all tips align at the right edge.
+    function assignHeights(node) {
+        if (!node.children || !node.children.length) { node._h = 0; return 0; }
+        node._h = 1 + Math.max(...node.children.map(assignHeights));
+        return node._h;
+    }
+    const totalH = assignHeights(tree) || 1;
+    (function assignCladoX(node) {
+        node.x = totalH - node._h;           // root=0, every tip=totalH
+        (node.children || []).forEach(assignCladoX);
+    })(tree);
+    const maxDepth = totalH;
 
     // Build row lookup from the newly reordered DOM rows
     const reorderedNormIndex = new Map();
@@ -591,6 +602,26 @@ function renderNewickTree(newick) {
         if (dash) el.setAttribute('stroke-dasharray', dash);
         svgEl.appendChild(el);
     }
+    function svgText(x, y, content, fill) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        el.setAttribute('x', x.toFixed(1)); el.setAttribute('y', y.toFixed(1));
+        el.setAttribute('font-size', '9'); el.setAttribute('fill', fill || '#333');
+        el.setAttribute('text-anchor', 'end');
+        el.textContent = content;
+        svgEl.appendChild(el);
+    }
+    // Support value from an internal node's label (bootstrap % or posterior).
+    function nodeSupport(node) {
+        if (!node.name) return null;
+        const m = String(node.name).match(/^\s*-?\d+(\.\d+)?\s*$/);
+        return m ? parseFloat(node.name) : null;
+    }
+    // ≥70% blue, <70% red. Handles both 0-100 (bootstrap) and 0-1 (posterior).
+    function supportColor(s) {
+        const high = (s <= 1) ? (s >= 0.70) : (s >= 70);
+        return high ? '#1a6bad' : '#c0392b';
+    }
+    function supportLabel(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
 
     function drawNode(node) {
         const nx = xScale(node.x);
@@ -600,8 +631,15 @@ function renderNewickTree(newick) {
             // Vertical clade bar
             line(nx, yTop, nx, yBot, '#555', 1.2);
             node.children.forEach(c => {
-                // Horizontal branch
-                line(nx, c.leafY, xScale(c.x), c.leafY, '#555', 1.2);
+                // Horizontal branch — colored by the child clade's support
+                let col = '#555', sw = 1.2, s = null;
+                if (c.children && c.children.length) s = nodeSupport(c);
+                if (s !== null) { col = supportColor(s); sw = 2.2; }
+                line(nx, c.leafY, xScale(c.x), c.leafY, col, sw);
+                if (s !== null) {
+                    const midX = (nx + xScale(c.x)) / 2;
+                    svgText(midX + 9, c.leafY - 2, supportLabel(s), col);
+                }
                 drawNode(c);
             });
         } else {
