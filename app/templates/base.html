@@ -97,6 +97,16 @@
     </a>
     {% endif %}
 
+    <div class="nav-section">Help</div>
+    <a href="{{ url_for('project.serve_doc', filename='GyroMorpho_QuickStart_Guide.pdf') }}"
+       class="nav-item" title="Beginner guide (PDF)">
+      <span class="num">?</span><span>Quick-Start Guide</span>
+    </a>
+    <a href="{{ url_for('project.serve_doc', filename='GyroMorpho_v2_Manual.pdf') }}"
+       class="nav-item" title="Full technical manual (PDF)">
+      <span class="num">i</span><span>User Manual</span>
+    </a>
+
     <div class="sidebar-foot">
       <span class="avatar">{{ current_user.username[:2].upper() }}</span>
       <div style="display:flex; flex-direction:column; line-height:1.3; min-width:0;">

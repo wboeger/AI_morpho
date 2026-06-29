@@ -18,6 +18,7 @@ class Config:
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {'connect_args': {'timeout': 30}}
     UPLOAD_FOLDER = os.path.join(DATA_DIR, 'uploads')
+    DOCS_FOLDER = os.path.join(DATA_DIR, 'docs')  # user manuals on the volume
     MAX_CONTENT_LENGTH = 50 * 1024 * 1024  # 50 MB max upload
     UNET_WEIGHTS_DIR = os.path.join(BASE_DIR, 'unet', 'weights')
 

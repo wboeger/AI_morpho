@@ -125,7 +125,7 @@ def _clear_no_image_unknown(structure):
 from flask import Blueprint, render_template, redirect, url_for, flash, request, current_app, jsonify
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
-from app import db
+from app import db, DOC_FILES
 from app.models import (
     Project, ProjectMembership, Specimen, Structure, DNASequence, ActivityLog, User,
     SpecimenComment
@@ -145,6 +145,17 @@ def dashboard():
     member_projects = Project.query.filter(Project.id.in_(member_ids)).all() if member_ids else []
     projects = list({p.id: p for p in owned + member_projects}.values())
     return render_template('project/dashboard.html', projects=projects)
+
+
+@project_bp.route('/docs/<path:filename>')
+@login_required
+def serve_doc(filename):
+    """Download a user manual from the persistent volume (DATA_DIR/docs)."""
+    from flask import send_from_directory, abort
+    if filename not in DOC_FILES:
+        abort(404)
+    return send_from_directory(current_app.config['DOCS_FOLDER'],
+                               filename, as_attachment=True)
 
 
 @project_bp.route('/project/new', methods=['GET', 'POST'])

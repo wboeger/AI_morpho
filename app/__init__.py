@@ -73,6 +73,7 @@ def create_app(config_class=None):
 
     os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
     os.makedirs(app.config.get('UNET_WEIGHTS_DIR', 'unet/weights'), exist_ok=True)
+    _sync_docs(app)
 
     db.init_app(app)
     login_manager.init_app(app)
@@ -141,6 +142,37 @@ def create_app(config_class=None):
         start_backup_scheduler()
 
     return app
+
+
+DOC_FILES = [
+    'GyroMorpho_QuickStart_Guide.pdf',
+    'GyroMorpho_v2_Manual.pdf',
+]
+
+
+def _sync_docs(app):
+    """Copy the bundled PDF manuals from the repo into the persistent volume.
+
+    The PDFs ship inside the image (repo root). We copy them into
+    DATA_DIR/docs on the volume so they survive and are served from there.
+    Re-copies only when the repo file is newer or the volume copy is missing,
+    so manuals regenerated and redeployed get refreshed automatically.
+    """
+    import shutil
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    docs_dir = app.config['DOCS_FOLDER']
+    try:
+        os.makedirs(docs_dir, exist_ok=True)
+        for name in DOC_FILES:
+            src = os.path.join(src_dir, name)
+            dst = os.path.join(docs_dir, name)
+            if not os.path.exists(src):
+                continue
+            if (not os.path.exists(dst) or
+                    os.path.getmtime(src) > os.path.getmtime(dst)):
+                shutil.copy2(src, dst)
+    except Exception as exc:
+        print(f'[docs] sync skipped: {exc}')
 
 
 def _migrate_users():
