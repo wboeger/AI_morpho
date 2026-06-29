@@ -117,7 +117,7 @@ def build_manual():
     pdf.cell(0, 7, 'https://github.com/wboeger/AI_morpho', align='C', new_x='LMARGIN', new_y='NEXT')
     pdf.ln(30)
     pdf.set_font('Helvetica', 'I', 9)
-    pdf.cell(0, 7, 'Version 2.0 - April 2026', align='C', new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(0, 7, 'Version 2.1 - June 2026', align='C', new_x='LMARGIN', new_y='NEXT')
 
     # ── Table of Contents ──
     pdf.add_page()
@@ -138,8 +138,9 @@ def build_manual():
         ('9', 'Step 6: Species Descriptions and Diagnoses'),
         ('10', 'Step 7: Export'),
         ('11', 'How Character States Are Computed'),
-        ('12', 'Data Storage and Backup'),
-        ('13', 'Troubleshooting'),
+        ('12', 'Collaboration: Sharing Projects and Comments'),
+        ('13', 'Data Storage and Backup'),
+        ('14', 'Troubleshooting'),
     ]
     for num, title in toc:
         pdf.set_font('Helvetica', '', 11)
@@ -363,6 +364,8 @@ def build_manual():
     pdf.bullet('Name, description, parts involved, geometric operation, formula.')
     pdf.bullet('States with drag-and-drop reordering, up/down arrows, and delete buttons.')
     pdf.bullet('Each state has: code, name, description, threshold min, threshold max.')
+    pdf.bullet('Manual (gallery-coded) characters: the threshold columns are hidden, leaving a clean '
+               'code / name / description editor. States are fully editable here - change, add, or delete.')
     pdf.bullet('Dependencies: conditions under which the character is inapplicable.')
     pdf.ln(1)
     pdf.subsection_title('Right panel (reference):')
@@ -400,6 +403,10 @@ def build_manual():
     pdf.bullet('Shapes/Images toggle: switch between landmark outlines and uploaded photographs.')
     pdf.bullet('Lightbox: click any thumbnail to zoom in, with state assignment buttons.')
     pdf.bullet('Inline state buttons: assign states directly from the gallery grid.')
+    pdf.bullet('"Edit states" button (top of the gallery): opens a small editor to change, add, or delete '
+               'the character\'s states without leaving the coding workspace. Codes must be unique; '
+               'existing geometric thresholds are preserved by code. The page reloads so the new state '
+               'buttons and badges appear immediately.')
     pdf.ln(2)
     pdf.note_box('Tip: use the gallery to visually compare specimens side by side and assign states for manual characters or correct automatic assignments.')
 
@@ -477,9 +484,50 @@ def build_manual():
         'boundary: farther from boundary = higher confidence.'
     )
 
-    # ── 12. Data Storage ──
+    # ── 12. Collaboration ──
     pdf.add_page()
-    pdf.chapter_title('12', 'Data Storage and Backup')
+    pdf.chapter_title('12', 'Collaboration: Sharing Projects and Comments')
+    pdf.body_text(
+        'GyroMorpho projects can be shared with other registered users, and specimens can carry '
+        'a running thread of comments for team communication.'
+    )
+    pdf.ln(2)
+
+    pdf.section_title('Sharing a Project')
+    pdf.body_text(
+        'On the project page, the "Members & Sharing" panel lists everyone with access. To share:'
+    )
+    pdf.numbered_item(1, 'In the share box, type the other user\'s username or email. An autocomplete '
+                        'list suggests existing users as you type.')
+    pdf.numbered_item(2, 'Choose a role: Annotator (code data), Reviewer (review/confirm), or Admin '
+                        '(full control, including managing members).')
+    pdf.numbered_item(3, 'Click "Share". The project immediately appears on that user\'s dashboard.')
+    pdf.ln(2)
+    pdf.body_text(
+        'Any member can share a project. The project owner and Admin members can also remove members '
+        'with the "Remove" button. The owner is marked with an "owner" badge and cannot be removed. '
+        'Each member is shown with their username, email, and role.'
+    )
+    pdf.ln(2)
+    pdf.note_box('Roles are labels for coordinating teamwork; the owner and Admins manage who has access. '
+                 'Removing a member revokes their access to the project immediately.')
+    pdf.ln(2)
+
+    pdf.section_title('Specimen Comments')
+    pdf.body_text(
+        'On the project (Specimens) page, every specimen row has a comment button showing a speech '
+        'bubble and a count. Use comments to leave notes for collaborators - questions about an image, '
+        'identification doubts, coding decisions, and so on.'
+    )
+    pdf.bullet('Click the comment button to open the thread for that specimen.')
+    pdf.bullet('Type in the box and click "Post" (or press Ctrl/Cmd + Enter). Each comment records its '
+               'author and timestamp.')
+    pdf.bullet('Delete your own comments with the small x; Admins can delete any comment.')
+    pdf.bullet('The count on the button updates live as comments are added or removed.')
+
+    # ── 13. Data Storage ──
+    pdf.add_page()
+    pdf.chapter_title('13', 'Data Storage and Backup')
 
     pdf.section_title('Where Data Lives')
     pdf.bullet('data/db.sqlite - SQLite database containing all structured data: specimens, structures, landmark coordinates, part boundaries, character definitions, character values, DNA sequences, descriptions, diagnoses, and activity logs. This is the single source of truth.')
@@ -497,9 +545,9 @@ def build_manual():
 
     pdf.note_box('Backup tip: periodically copy the data/ folder to a safe location. The db.sqlite file contains everything except the images.')
 
-    # ── 13. Troubleshooting ──
+    # ── 14. Troubleshooting ──
     pdf.add_page()
-    pdf.chapter_title('13', 'Troubleshooting')
+    pdf.chapter_title('14', 'Troubleshooting')
 
     problems = [
         ('"Database is locked" error',
