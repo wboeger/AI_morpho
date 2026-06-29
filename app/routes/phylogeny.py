@@ -844,10 +844,22 @@ def _submit_to_galaxy_mrbayes(nexus_path, api_key, ngen=1000000, nruns=2,
 
 
 def _find_best_tree(results_dir):
-    """Return path to infile.txt.raxml.support, falling back to bestTree."""
-    preferred = os.path.join(results_dir, 'infile.txt.raxml.support')
-    if os.path.exists(preferred):
-        return preferred
+    """Return the best support-bearing RAxML tree, else bestTree.
+
+    Order: RAxML-NG '.support' > RAxML 8 'RAxML_bipartitions.*' (ML tree with
+    bootstrap node labels) > bestTree (no support).
+    """
+    support = os.path.join(results_dir, 'infile.txt.raxml.support')
+    if os.path.exists(support):
+        return support
+    # RAxML 8.2.x classic bootstrap output (node labels = bootstrap %)
+    try:
+        for fname in sorted(os.listdir(results_dir)):
+            low = fname.lower()
+            if 'bipartitions' in low and 'branchlabel' not in low:
+                return os.path.join(results_dir, fname)
+    except OSError:
+        pass
     fallback = os.path.join(results_dir, 'infile.txt.raxml.bestTree')
     if os.path.exists(fallback):
         return fallback
@@ -865,7 +877,12 @@ def _find_mrbayes_tree(results_dir):
 def _find_newick_in_dir(dest_dir):
     """Scan downloaded Galaxy outputs for the best Newick tree file.
 
-    Priority: 'support' > 'bestTree' > 'consensus' > 'con.tre' > any Newick.
+    Prefer trees that carry per-node branch support:
+      RAxML-NG '.support'  > RAxML 8 'bipartitions' (ML tree with bootstrap
+      node labels) > consensus/.con.tre (Bayesian posterior) > bestTree
+      (no support) > any Newick.
+    'bipartitionsBranchLabels' is skipped — it stores support as bracketed
+    branch labels which our viewer does not parse.
     """
     candidates = []
     for fname in sorted(os.listdir(dest_dir)):
@@ -879,11 +896,20 @@ def _find_newick_in_dir(dest_dir):
                 candidates.append((fname.lower(), path))
         except Exception:
             pass
-    for priority in ('support', 'besttree', 'consensus', 'con.tre'):
+
+    def _pick(pred):
         for fname_l, path in candidates:
-            if priority in fname_l:
+            if pred(fname_l):
                 return path
-    return candidates[0][1] if candidates else None
+        return None
+
+    return (
+        _pick(lambda n: 'support' in n)
+        or _pick(lambda n: 'bipartitions' in n and 'branchlabel' not in n)
+        or _pick(lambda n: 'consensus' in n or 'con.tre' in n)
+        or _pick(lambda n: 'besttree' in n)
+        or (candidates[0][1] if candidates else None)
+    )
 
 
 def _model_to_mrbayes_lset(model_str):
@@ -1063,11 +1089,13 @@ outgroup <- grep('{pattern}', tree$tip.label, value=TRUE, ignore.case=TRUE)
 cat(paste('Outgroup tips found:', length(outgroup)), '\\n')
 if (length(outgroup) > 0) {{
   tryCatch({{
-    rooted <- root(tree, outgroup=outgroup, resolve.root=TRUE)
+    # edgelabel=TRUE keeps internal node labels (bootstrap / posterior support)
+    # attached to the correct branches when the tree is re-rooted.
+    rooted <- root(tree, outgroup=outgroup, resolve.root=TRUE, edgelabel=TRUE)
     write.tree(rooted, file='{of}')
     cat('SUCCESS\\n')
   }}, error=function(e) {{
-    rooted <- root(tree, outgroup=outgroup[1], resolve.root=TRUE)
+    rooted <- root(tree, outgroup=outgroup[1], resolve.root=TRUE, edgelabel=TRUE)
     write.tree(rooted, file='{of}')
     cat('FALLBACK\\n')
   }})
