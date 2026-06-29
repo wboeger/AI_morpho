@@ -243,25 +243,54 @@
     </table>
 </div>
 
-<!-- Members -->
+<!-- Members / Sharing -->
 <div class="card">
-    <h3>Members</h3>
+    <h3>Members &amp; Sharing</h3>
     <table>
-        <thead><tr><th>Username</th><th>Role</th></tr></thead>
+        <thead><tr><th>User</th><th>Email</th><th>Role</th><th></th></tr></thead>
         <tbody>
             {% for m in members %}
-            <tr><td>{{ m.user.username }}</td><td>{{ m.role }}</td></tr>
+            <tr>
+                <td>
+                    {{ m.user.username }}
+                    {% if m.user_id == project_owner_id %}
+                    <span style="font-size:0.7rem; background:var(--gray-200,#e5e5e5); color:var(--gray-600,#555);
+                                 border-radius:3px; padding:0.05rem 0.35rem; margin-left:0.3rem;">owner</span>
+                    {% endif %}
+                </td>
+                <td><span class="tiny muted">{{ m.user.email }}</span></td>
+                <td>{{ m.role }}</td>
+                <td style="text-align:right;">
+                    {% if can_manage_members and m.user_id != project_owner_id %}
+                    <form method="POST" style="display:inline;"
+                          action="{{ url_for('project.remove_member', project_id=project.id, user_id=m.user_id) }}"
+                          onsubmit="return confirm('Revoke {{ m.user.username|e }}\'s access to this project?');">
+                        <button type="submit" class="btn btn-sm btn-danger" title="Remove member">Remove</button>
+                    </form>
+                    {% endif %}
+                </td>
+            </tr>
             {% endfor %}
         </tbody>
     </table>
-    <form method="POST" action="{{ url_for('project.add_member', project_id=project.id) }}" style="margin-top:0.5rem; display:flex; gap:0.5rem;">
-        <input type="text" name="username" placeholder="Username" style="width:200px;">
-        <select name="role" style="width:120px;">
+
+    <datalist id="shareUserList">
+        {% for u in shareable_users %}
+        <option value="{{ u.username }}">{{ u.username }} — {{ u.email }}</option>
+        {% endfor %}
+    </datalist>
+
+    <form method="POST" action="{{ url_for('project.add_member', project_id=project.id) }}"
+          style="margin-top:0.6rem; display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap;">
+        <input type="text" name="username" list="shareUserList" required
+               placeholder="username or email" style="width:240px;">
+        <select name="role" style="width:140px;">
             <option value="annotator">Annotator</option>
             <option value="reviewer">Reviewer</option>
             <option value="admin">Admin</option>
         </select>
-        <button type="submit" class="btn btn-sm btn-primary">Add</button>
+        <button type="submit" class="btn btn-sm btn-primary">Share</button>
+        <span class="tiny muted">Any member can share; owner/admins can remove.</span>
     </form>
 </div>
 

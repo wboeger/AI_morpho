@@ -196,6 +196,15 @@ def view_project(project_id):
         specimens = [s for s in specimens if s.id in specimen_ids_with_dna]
 
     members = ProjectMembership.query.filter_by(project_id=project_id).all()
+    member_user_ids = {m.user_id for m in members}
+    # Users not yet on the project — offered for sharing autocomplete
+    shareable_users = (User.query
+                       .filter(User.active == True, ~User.id.in_(member_user_ids or [0]))
+                       .order_by(User.username)
+                       .all())
+    can_manage_members = (project.created_by == current_user.id or
+                          any(m.user_id == current_user.id and m.role == 'admin'
+                              for m in members))
 
     # Compute progress stats
     total_structures = Structure.query.join(Specimen).filter(
@@ -218,7 +227,10 @@ def view_project(project_id):
     return render_template('project/view_project.html',
                            project=project, specimens=specimens,
                            members=members, stats=stats, dna_only=dna_only,
-                           structure_types=structure_types)
+                           structure_types=structure_types,
+                           shareable_users=shareable_users,
+                           can_manage_members=can_manage_members,
+                           project_owner_id=project.created_by)
 
 
 @project_bp.route('/project/<int:project_id>/specimen/new', methods=['GET', 'POST'])
@@ -675,21 +687,58 @@ def bulk_import(project_id):
 @project_bp.route('/project/<int:project_id>/members', methods=['POST'])
 @login_required
 def add_member(project_id):
+    """Share the project with another user, looked up by username or email."""
     _get_project_or_404(project_id)
-    username = request.form.get('username', '').strip()
+    ident = request.form.get('username', '').strip()
     role = request.form.get('role', 'annotator')
+    if role not in ('annotator', 'reviewer', 'admin'):
+        role = 'annotator'
 
-    user = User.query.filter_by(username=username).first()
-    if not user:
+    user = (User.query.filter_by(username=ident).first() or
+            User.query.filter_by(email=ident).first())
+    if not ident:
+        flash('Enter a username or email to share with.', 'error')
+    elif not user:
         flash('User not found.', 'error')
     elif ProjectMembership.query.filter_by(user_id=user.id, project_id=project_id).first():
-        flash('User is already a member.', 'error')
+        flash(f'{user.username} is already a member.', 'error')
     else:
         membership = ProjectMembership(user_id=user.id, project_id=project_id, role=role)
         db.session.add(membership)
-        _log(project_id, f'Added member {username} as {role}')
+        _log(project_id, f'Shared with {user.username} as {role}')
         db.session.commit()
-        flash(f'{username} added as {role}.', 'success')
+        flash(f'Project shared with {user.username} ({role}).', 'success')
+
+    return redirect(url_for('project.view_project', project_id=project_id))
+
+
+@project_bp.route('/project/<int:project_id>/members/<int:user_id>/remove', methods=['POST'])
+@login_required
+def remove_member(project_id, user_id):
+    """Revoke a user's access. Only the owner or an admin member may do this."""
+    project = _get_project_or_404(project_id)
+
+    is_admin = (project.created_by == current_user.id or
+                (ProjectMembership.query
+                 .filter_by(user_id=current_user.id, project_id=project_id, role='admin')
+                 .first() is not None))
+    if not is_admin:
+        flash('Only the owner or an admin can remove members.', 'error')
+        return redirect(url_for('project.view_project', project_id=project_id))
+
+    if user_id == project.created_by:
+        flash('The project owner cannot be removed.', 'error')
+        return redirect(url_for('project.view_project', project_id=project_id))
+
+    m = ProjectMembership.query.filter_by(user_id=user_id, project_id=project_id).first()
+    if not m:
+        flash('User is not a member.', 'error')
+    else:
+        uname = m.user.username if m.user else str(user_id)
+        db.session.delete(m)
+        _log(project_id, f'Removed member {uname}')
+        db.session.commit()
+        flash(f'{uname} removed from project.', 'success')
 
     return redirect(url_for('project.view_project', project_id=project_id))
 

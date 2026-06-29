@@ -104,17 +104,17 @@
                 </div>
             </div>
 
-            <div style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; align-items:center; font-size:0.8rem; color:var(--gray-500); margin-bottom:0.3rem;">
-                <span></span><span>Code</span><span>Name</span><span>Description</span><span>Thresholds</span><span></span>
+            <div id="statesHeader" class="state-grid {% if char.computation_type != 'geometric' %}manual-states{% endif %}" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; align-items:center; font-size:0.8rem; color:var(--gray-500); margin-bottom:0.3rem;">
+                <span></span><span>Code</span><span>Name</span><span>Description</span><span class="state-thresholds">Thresholds</span><span></span>
             </div>
-            <div id="statesContainer">
+            <div id="statesContainer" class="{% if char.computation_type != 'geometric' %}manual-states{% endif %}">
                 {% for s in (char.states_json or []) %}
-                <div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+                <div class="state-row state-grid {% if char.computation_type != 'geometric' %}manual-states{% endif %}" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
                     <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
                     <input type="text" data-field="code" value="{{ s.code }}">
                     <input type="text" data-field="name" value="{{ s.name }}">
                     <input type="text" data-field="desc" value="{{ s.get('description', '') }}">
-                    <div style="display:flex; gap:0.3rem;">
+                    <div class="state-thresholds" style="display:flex; gap:0.3rem;">
                         <input type="number" data-field="threshold_min"
                             value="{{ s.threshold_min if s.threshold_min is not none else '' }}" placeholder="Min" step="any" style="width:80px;">
                         <input type="number" data-field="threshold_max"
@@ -265,6 +265,10 @@ function toggleGeometricFields() {
     const type = document.getElementById('computationTypeSelect').value;
     document.getElementById('geometricFields').style.display =
         type === 'geometric' ? 'block' : 'none';
+    // Hide threshold columns for manual characters (states still fully editable)
+    const manual = type !== 'geometric';
+    document.querySelectorAll('#statesContainer .state-row, #statesContainer, #statesHeader')
+        .forEach(el => el.classList.toggle('manual-states', manual));
 }
 
 let stateCount = {{ (char.states_json or [])|length }};
@@ -277,12 +281,13 @@ let refViewMode = 'shapes';
 const refEntries = {{ entries | tojson }};
 
 function addState() {
-    const html = `<div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+    const manualCls = (document.getElementById('computationTypeSelect').value !== 'geometric') ? ' manual-states' : '';
+    const html = `<div class="state-row state-grid${manualCls}" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
         <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
         <input type="text" data-field="code" placeholder="Code">
         <input type="text" data-field="name" placeholder="Name">
         <input type="text" data-field="desc" placeholder="Description">
-        <div style="display:flex; gap:0.3rem;">
+        <div class="state-thresholds" style="display:flex; gap:0.3rem;">
             <input type="number" data-field="threshold_min" placeholder="Min" step="any" style="width:80px;">
             <input type="number" data-field="threshold_max" placeholder="Max" step="any" style="width:80px;">
         </div>
@@ -712,12 +717,12 @@ function applySuggestion() {
             const tmin = i === 0     ? '' : String(breaks[i-1]);
             const tmax = i === k - 1 ? '' : String(breaks[i]);
             container.insertAdjacentHTML('beforeend', `
-                <div class="state-row" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
+                <div class="state-row state-grid" style="display:grid; grid-template-columns: 30px 60px 1fr 2fr auto auto; gap:0.3rem 0.5rem; margin-bottom:0.4rem; align-items:center;">
                     <span class="state-handle" style="cursor:grab; color:var(--gray-400); font-size:1rem; text-align:center;" title="Drag to reorder">&#x2630;</span>
                     <input type="text" data-field="code" value="${i}">
                     <input type="text" data-field="name" value="state ${i} (edit name)">
                     <input type="text" data-field="desc" placeholder="Description">
-                    <div style="display:flex; gap:0.3rem;">
+                    <div class="state-thresholds" style="display:flex; gap:0.3rem;">
                         <input type="number" data-field="threshold_min" value="${tmin}" placeholder="Min" step="any" style="width:80px;">
                         <input type="number" data-field="threshold_max" value="${tmax}" placeholder="Max" step="any" style="width:80px;">
                     </div>
@@ -754,6 +759,9 @@ document.addEventListener('keydown', e => {
     border: none; cursor: pointer; color: var(--gray-500); line-height: 1;
 }
 .lightbox-close:hover { color: var(--gray-900); }
+/* Manual characters: drop the threshold column entirely */
+.state-grid.manual-states { grid-template-columns: 30px 60px 1fr 2fr auto !important; }
+.state-grid.manual-states .state-thresholds { display: none !important; }
 .state-row[draggable] { transition: opacity 0.2s; }
 .state-row.drag-over { border-top: 2px solid var(--primary); }
 .state-handle:active { cursor: grabbing; }

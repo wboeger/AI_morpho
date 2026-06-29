@@ -251,6 +251,62 @@ def edit_character(project_id, char_id):
                            dep_chars_by_code=dep_chars_by_code)
 
 
+@characters_bp.route('/api/project/<int:project_id>/characters/<int:char_id>/states',
+                     methods=['POST'])
+@login_required
+def update_states(project_id, char_id):
+    """Inline-update a character's state list (code / name / description).
+
+    Used by the gallery so manual states can be changed, added, or deleted
+    without leaving the coding workspace. Thresholds are preserved where the
+    state code is unchanged (geometric characters).
+    """
+    Project.query.get_or_404(project_id)
+    char = CharacterDefinition.query.get_or_404(char_id)
+    payload = request.get_json(silent=True) or {}
+    raw = payload.get('states')
+    if not isinstance(raw, list):
+        return jsonify({'error': 'states must be a list'}), 400
+
+    # Preserve thresholds keyed by existing code
+    old_by_code = {s.get('code'): s for s in (char.states_json or [])}
+
+    states, seen = [], set()
+    for item in raw:
+        code = str(item.get('code', '')).strip()
+        name = str(item.get('name', '')).strip()
+        if not code or not name:
+            return jsonify({'error': 'Every state needs a code and a name'}), 400
+        if code in seen:
+            return jsonify({'error': f'Duplicate state code: {code}'}), 400
+        seen.add(code)
+        state = {'code': code, 'name': name}
+        desc = str(item.get('description', '')).strip()
+        if desc:
+            state['description'] = desc
+        prev = old_by_code.get(code)
+        if prev and ('threshold_min' in prev or 'threshold_max' in prev):
+            state['threshold_min'] = prev.get('threshold_min')
+            state['threshold_max'] = prev.get('threshold_max')
+        states.append(state)
+
+    if not states:
+        return jsonify({'error': 'At least one state is required'}), 400
+
+    char.states_json = states
+    history = char.history_json or []
+    history.append({
+        'user': current_user.id,
+        'action': 'modified',
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'details': f'States edited by {current_user.username}',
+    })
+    char.history_json = history
+    _log(project_id, f'Edited states of character {char.code}')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'states': char.states_json})
+
+
 @characters_bp.route('/project/<int:project_id>/characters/print')
 @login_required
 def print_characters(project_id):

@@ -4,10 +4,32 @@
 <h1>Gallery: {{ char.code }} - {{ char.name }}</h1>
 <p style="color:var(--gray-500); margin-bottom:1rem;">
     {{ char.structure_type.replace('_', ' ').title() }} | {{ char.computation_type }}
-    {% if char.states_json %}
-    | States: {% for s in char.states_json %}{{ s.code }}={{ s.name }}{% if not loop.last %}, {% endif %}{% endfor %}
-    {% endif %}
+    | States: <span id="statesSummary">{% for s in char.states_json %}{{ s.code }}={{ s.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% if not char.states_json %}<em>none</em>{% endif %}</span>
+    <button class="btn btn-sm btn-outline" onclick="openStatesEditor()"
+            style="margin-left:0.5rem; font-size:0.72rem; padding:0.1rem 0.45rem;">&#9998; Edit states</button>
 </p>
+
+<!-- States editor modal -->
+<div class="modal-overlay" id="statesModal" onclick="if(event.target===this)closeStatesEditor()">
+    <div class="modal" style="max-width:560px; width:92%;">
+        <h3 style="margin:0 0 0.25rem;">Edit States — {{ char.code }}</h3>
+        <p style="font-size:0.8rem; color:var(--gray-500); margin:0 0 0.75rem;">
+            Change, add, or delete states. Codes must be unique. Re-coded specimens keep their
+            assigned code; renaming a state updates its label everywhere.
+        </p>
+        <div style="display:grid; grid-template-columns:70px 1fr 1.6fr auto; gap:0.3rem 0.5rem;
+                    font-size:0.75rem; color:var(--gray-500); margin-bottom:0.25rem;">
+            <span>Code</span><span>Name</span><span>Description</span><span></span>
+        </div>
+        <div id="statesEditRows"></div>
+        <button class="btn btn-sm btn-outline" onclick="addStateRow()" style="margin-top:0.4rem;">+ Add State</button>
+        <div id="statesEditMsg" style="font-size:0.8rem; color:#c0392b; margin-top:0.5rem;"></div>
+        <div style="display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem;">
+            <button class="btn btn-outline" onclick="closeStatesEditor()">Cancel</button>
+            <button class="btn btn-primary" id="statesSaveBtn" onclick="saveStates()">Save States</button>
+        </div>
+    </div>
+</div>
 
 <!-- Structure type selector -->
 <div style="margin-bottom:1rem; display:flex; align-items:center; gap:0.75rem; flex-wrap:wrap;">
@@ -96,6 +118,66 @@ const ALL_PARTS = {{ all_parts | tojson }};
 const currentType = '{{ char.structure_type }}';
 const charStates = {{ char.states_json | tojson }};
 let viewMode = {% if char.structure_type not in available_types %}'images'{% else %}'shapes'{% endif %};
+
+// ── States editor ──
+function _escAttr(s) { return String(s == null ? '' : s).replace(/"/g, '&quot;'); }
+
+function _stateRowHtml(code, name, desc) {
+    return `<div class="state-edit-row" style="display:grid; grid-template-columns:70px 1fr 1.6fr auto; gap:0.3rem 0.5rem; margin-bottom:0.3rem; align-items:center;">
+        <input type="text" data-f="code" value="${_escAttr(code)}" placeholder="0" style="text-align:center;">
+        <input type="text" data-f="name" value="${_escAttr(name)}" placeholder="name">
+        <input type="text" data-f="desc" value="${_escAttr(desc)}" placeholder="description (optional)">
+        <button class="btn btn-sm" onclick="this.closest('.state-edit-row').remove()"
+            title="Delete state" style="padding:0.1rem 0.4rem; color:#e74c3c; background:none; border:1px solid #e74c3c;">&times;</button>
+    </div>`;
+}
+
+function openStatesEditor() {
+    const wrap = document.getElementById('statesEditRows');
+    wrap.innerHTML = (charStates || []).map(s =>
+        _stateRowHtml(s.code, s.name, s.description || '')).join('');
+    if (!(charStates || []).length) addStateRow();
+    document.getElementById('statesEditMsg').textContent = '';
+    document.getElementById('statesModal').classList.add('active');
+}
+
+function closeStatesEditor() {
+    document.getElementById('statesModal').classList.remove('active');
+}
+
+function addStateRow() {
+    document.getElementById('statesEditRows').insertAdjacentHTML('beforeend', _stateRowHtml('', '', ''));
+}
+
+async function saveStates() {
+    const rows = [...document.querySelectorAll('#statesEditRows .state-edit-row')];
+    const states = [];
+    for (const r of rows) {
+        const code = r.querySelector('[data-f="code"]').value.trim();
+        const name = r.querySelector('[data-f="name"]').value.trim();
+        const desc = r.querySelector('[data-f="desc"]').value.trim();
+        if (!code && !name) continue;  // skip blank row
+        states.push({code, name, description: desc});
+    }
+    const msg = document.getElementById('statesEditMsg');
+    if (!states.length) { msg.textContent = 'At least one state is required.'; return; }
+    const btn = document.getElementById('statesSaveBtn');
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try {
+        const r = await fetch(`/api/project/${projectId}/characters/${charId}/states`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({states})
+        });
+        const d = await r.json();
+        if (!r.ok || d.error) { msg.textContent = d.error || 'Save failed'; return; }
+        // Reload so state badges + buttons reflect the new definitions
+        location.reload();
+    } catch (e) {
+        msg.textContent = 'Network error: ' + e.message;
+    } finally {
+        btn.disabled = false; btn.textContent = 'Save States';
+    }
+}
 
 const entryData = [
 {% for e in entries %}
