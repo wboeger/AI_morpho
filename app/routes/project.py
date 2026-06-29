@@ -144,7 +144,25 @@ def dashboard():
                   ProjectMembership.query.filter_by(user_id=current_user.id).all()]
     member_projects = Project.query.filter(Project.id.in_(member_ids)).all() if member_ids else []
     projects = list({p.id: p for p in owned + member_projects}.values())
-    return render_template('project/dashboard.html', projects=projects)
+
+    # Per-project sharing info for the dashboard tiles
+    pids = [p.id for p in projects]
+    access = {}
+    if pids:
+        rows = (db.session.query(ProjectMembership, User.username)
+                .join(User, User.id == ProjectMembership.user_id)
+                .filter(ProjectMembership.project_id.in_(pids))
+                .all())
+        for m, uname in rows:
+            access.setdefault(m.project_id, []).append(uname)
+    share_info = {
+        p.id: {
+            'is_owner': p.created_by == current_user.id,
+            'members': sorted(set(access.get(p.id, []))),
+        } for p in projects
+    }
+    return render_template('project/dashboard.html', projects=projects,
+                           share_info=share_info)
 
 
 @project_bp.route('/docs/<path:filename>')

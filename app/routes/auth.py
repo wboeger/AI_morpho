@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, redirect, url_for, flash, request
 from flask_login import login_user, logout_user, login_required, current_user
 from app import db
-from app.models import User
+from app.models import User, Project, ProjectMembership
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -94,7 +94,60 @@ def users():
     if guard:
         return guard
     all_users = User.query.order_by(User.username).all()
-    return render_template('auth/users.html', users=all_users)
+    projects = Project.query.order_by(Project.name).all()
+    proj_by_id = {p.id: p for p in projects}
+    owned_ids = {}      # user_id -> set(project_id) they own
+    for p in projects:
+        owned_ids.setdefault(p.created_by, set()).add(p.id)
+    memberships = {}    # user_id -> list of ProjectMembership
+    for m in ProjectMembership.query.all():
+        memberships.setdefault(m.user_id, []).append(m)
+    return render_template('auth/users.html', users=all_users,
+                           projects=projects, proj_by_id=proj_by_id,
+                           owned_ids=owned_ids, memberships=memberships)
+
+
+@auth_bp.route('/users/<int:user_id>/projects/add', methods=['POST'])
+@login_required
+def grant_membership(user_id):
+    """Admin tool: give a user access to a project (repairs broken shares)."""
+    guard = _require_admin()
+    if guard:
+        return guard
+    user = User.query.get_or_404(user_id)
+    project = Project.query.get_or_404(int(request.form.get('project_id', 0) or 0))
+    role = request.form.get('role', 'annotator')
+    if role not in ('admin', 'annotator', 'reviewer'):
+        role = 'annotator'
+    existing = ProjectMembership.query.filter_by(user_id=user.id, project_id=project.id).first()
+    if existing:
+        flash(f'{user.username} already has access to "{project.name}".', 'error')
+    else:
+        db.session.add(ProjectMembership(user_id=user.id, project_id=project.id, role=role))
+        db.session.commit()
+        flash(f'Granted {user.username} access to "{project.name}" ({role}).', 'success')
+    return redirect(url_for('auth.users'))
+
+
+@auth_bp.route('/users/<int:user_id>/projects/<int:project_id>/remove', methods=['POST'])
+@login_required
+def revoke_membership(user_id, project_id):
+    """Admin tool: remove a user's access to a project."""
+    guard = _require_admin()
+    if guard:
+        return guard
+    project = Project.query.get_or_404(project_id)
+    if user_id == project.created_by:
+        flash('The project owner cannot be removed.', 'error')
+        return redirect(url_for('auth.users'))
+    m = ProjectMembership.query.filter_by(user_id=user_id, project_id=project_id).first()
+    if not m:
+        flash('No such membership.', 'error')
+    else:
+        db.session.delete(m)
+        db.session.commit()
+        flash('Access removed.', 'success')
+    return redirect(url_for('auth.users'))
 
 
 @auth_bp.route('/users/<int:user_id>/role', methods=['POST'])

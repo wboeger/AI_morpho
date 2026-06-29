@@ -13,6 +13,7 @@
         <th style="padding:0.5rem;">User</th>
         <th style="padding:0.5rem;">Role</th>
         <th style="padding:0.5rem;">Status</th>
+        <th style="padding:0.5rem;">Project access</th>
         <th style="padding:0.5rem;">Reset password</th>
         <th style="padding:0.5rem;"></th>
       </tr>
@@ -47,6 +48,60 @@
             </button>
           </form>
           {% endif %}
+        </td>
+
+        <td style="padding:0.5rem; min-width:230px;">
+          {% set owned = owned_ids.get(u.id) or [] %}
+          {% set mems = memberships.get(u.id, []) %}
+          {% set mem_pids = mems | map(attribute='project_id') | list %}
+          <div style="display:flex; flex-wrap:wrap; gap:0.25rem; margin-bottom:0.3rem;">
+            {# Owned projects (always accessible, even without a membership row) #}
+            {% for pid in owned %}
+            {% set p = proj_by_id.get(pid) %}
+            {% if p %}
+            <span style="font-size:0.72rem; background:#eef2ff; border:1px solid #c7d2fe; color:#3730a3;
+                         border-radius:3px; padding:0.05rem 0.35rem;" title="Owner">
+              {{ p.name }} <em>owner</em>
+            </span>
+            {% endif %}
+            {% endfor %}
+            {# Shared memberships #}
+            {% for m in mems %}
+            {% set p = proj_by_id.get(m.project_id) %}
+            {% if p and m.project_id not in owned %}
+            <span style="font-size:0.72rem; background:var(--gray-100,#f1f1f1); border:1px solid var(--gray-300,#ccc);
+                         color:var(--gray-700,#444); border-radius:3px; padding:0.05rem 0.3rem; display:inline-flex; align-items:center; gap:0.2rem;">
+              {{ p.name }} ({{ m.role }})
+              <form method="POST" action="{{ url_for('auth.revoke_membership', user_id=u.id, project_id=m.project_id) }}"
+                    style="display:inline;" onsubmit="return confirm('Remove {{ u.username|e }} from {{ p.name|e }}?');">
+                <button type="submit" title="Remove access"
+                        style="background:none; border:none; cursor:pointer; color:#c0392b; padding:0; line-height:1; font-size:0.75rem;">&times;</button>
+              </form>
+            </span>
+            {% endif %}
+            {% endfor %}
+            {% if not owned and not mems %}
+            <span style="font-size:0.72rem; color:var(--gray-400,#999);">no projects</span>
+            {% endif %}
+          </div>
+          {# Grant access to another project #}
+          <form method="POST" action="{{ url_for('auth.grant_membership', user_id=u.id) }}"
+                style="display:flex; gap:0.25rem; align-items:center;">
+            <select name="project_id" required style="font-size:0.72rem; padding:0.1rem 0.2rem; max-width:120px;">
+              <option value="">+ project…</option>
+              {% for p in projects %}
+              {% if p.id not in mem_pids and p.id not in owned %}
+              <option value="{{ p.id }}">{{ p.name }}</option>
+              {% endif %}
+              {% endfor %}
+            </select>
+            <select name="role" style="font-size:0.72rem; padding:0.1rem 0.2rem;">
+              <option value="annotator">Annotator</option>
+              <option value="reviewer">Reviewer</option>
+              <option value="admin">Admin</option>
+            </select>
+            <button class="btn btn-sm btn-outline" type="submit" style="font-size:0.72rem; padding:0.1rem 0.35rem;">Grant</button>
+          </form>
         </td>
 
         <td style="padding:0.5rem;">

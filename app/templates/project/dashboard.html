@@ -29,6 +29,19 @@
         {% endif %}
         <div class="meta">
             <span>CREATED {{ p.created_at.strftime('%Y-%m-%d') }}</span>
+            {% set si = share_info.get(p.id) %}
+            {% if si %}
+            {% if si.is_owner %}
+            <span title="You own this project" style="margin-left:0.5rem; color:#3730a3;">OWNER</span>
+            {% else %}
+            <span title="Shared with you" style="margin-left:0.5rem; color:#0369a1;">SHARED</span>
+            {% endif %}
+            {% if si.members %}
+            <span title="Has access: {{ si.members|join(', ') }}" style="margin-left:0.5rem;">
+                {{ si.members|length }} member{{ '' if si.members|length == 1 else 's' }}
+            </span>
+            {% endif %}
+            {% endif %}
         </div>
     </a>
     {% endfor %}
