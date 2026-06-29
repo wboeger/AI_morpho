@@ -705,20 +705,28 @@ def add_member(project_id):
     if role not in ('annotator', 'reviewer', 'admin'):
         role = 'annotator'
 
-    user = (User.query.filter_by(username=ident).first() or
-            User.query.filter_by(email=ident).first())
+    # Case-insensitive, whitespace-tolerant lookup by username OR email, so a
+    # share never silently misses because of capitalisation or a stray space.
+    from sqlalchemy import func
+    user = None
+    if ident:
+        key = ident.lower()
+        user = (User.query.filter(func.lower(User.username) == key).first() or
+                User.query.filter(func.lower(User.email) == key).first())
+
     if not ident:
         flash('Enter a username or email to share with.', 'error')
     elif not user:
-        flash('User not found.', 'error')
+        flash(f'No account found for "{ident}". Check the spelling, or ask a site '
+              'admin to create the account (Users page) before sharing.', 'error')
     elif ProjectMembership.query.filter_by(user_id=user.id, project_id=project_id).first():
-        flash(f'{user.username} is already a member.', 'error')
+        flash(f'{user.username} already has access to this project.', 'error')
     else:
         membership = ProjectMembership(user_id=user.id, project_id=project_id, role=role)
         db.session.add(membership)
         _log(project_id, f'Shared with {user.username} as {role}')
         db.session.commit()
-        flash(f'Project shared with {user.username} ({role}).', 'success')
+        flash(f'Project shared with {user.username} ({user.email}) as {role}.', 'success')
 
     return redirect(url_for('project.view_project', project_id=project_id))
 
