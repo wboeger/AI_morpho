@@ -1268,7 +1268,37 @@ def _parse_mrbayes_consensus(con_tre_path):
     return None
 
 
+def _root_tree_python(tree_file, outgroup_genera, output_file):
+    """Root a tree with Biopython when Rscript/ape is unavailable (e.g. Railway).
+
+    Matches outgroup tips by genus (case-insensitive substring) and roots at
+    their MRCA. Returns (success, message). Non-fatal.
+    """
+    try:
+        from Bio import Phylo
+        tree = Phylo.read(tree_file, 'newick')
+        pats = [g.lower() for g in (outgroup_genera or []) if g]
+        og_tips = [t for t in tree.get_terminals()
+                   if any(p in (t.name or '').lower() for p in pats)]
+        if not og_tips:
+            Phylo.write(tree, output_file, 'newick')
+            return os.path.exists(output_file), 'No outgroup tips found (Python); unrooted.'
+        if len(og_tips) == 1:
+            tree.root_with_outgroup(og_tips[0])
+        else:
+            mrca = tree.common_ancestor(og_tips)
+            tree.root_with_outgroup(mrca)
+        Phylo.write(tree, output_file, 'newick')
+        return os.path.exists(output_file), f'Rooted with Biopython ({len(og_tips)} outgroup tips).'
+    except Exception as exc:
+        return False, f'Python rooting failed: {exc}'
+
+
 def _root_tree(tree_file, outgroup_genera, output_file):
+    import shutil as _sh
+    # No R on this host → root with Biopython instead.
+    if not _sh.which('Rscript'):
+        return _root_tree_python(tree_file, outgroup_genera, output_file)
     pattern = '|'.join(re.escape(g) for g in outgroup_genera)
     tf = tree_file.replace('\\', '/').replace("'", "\\'")
     of = output_file.replace('\\', '/').replace("'", "\\'")
@@ -1295,10 +1325,13 @@ if (length(outgroup) > 0) {{
   cat('NO_OUTGROUP\\n')
 }}
 """
-    result = subprocess.run(
-        ['Rscript', '--vanilla', '-e', r_code],
-        capture_output=True, text=True, timeout=120,
-    )
+    try:
+        result = subprocess.run(
+            ['Rscript', '--vanilla', '-e', r_code],
+            capture_output=True, text=True, timeout=120,
+        )
+    except FileNotFoundError:
+        return _root_tree_python(tree_file, outgroup_genera, output_file)
     msg = (result.stdout + result.stderr).strip()
     return result.returncode == 0 and os.path.exists(output_file), msg
 
