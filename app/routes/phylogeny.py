@@ -782,20 +782,56 @@ def _galaxy_run_tool(api_key, history_id, tool_id, inputs):
     return jobs[0]['id']
 
 
-def _galaxy_job_output_dataset(api_key, job_id):
-    """Return the dataset id of a finished job's first (primary) output."""
+_FASTA_EXTS = {'fasta', 'fa', 'fna', 'align', 'fasta.gz', 'aln'}
+
+
+def _galaxy_dataset_ext(api_key, ds_id):
+    """Return a Galaxy dataset's file extension (e.g. 'fasta', 'html'), or ''."""
+    import requests as _req
+    base = _galaxy_base()
+    try:
+        r = _req.get(f'{base}/api/datasets/{ds_id}',
+                     headers=_galaxy_headers(api_key), timeout=30)
+        r.raise_for_status()
+        d = r.json()
+        return (d.get('extension') or d.get('file_ext') or '').lower()
+    except Exception:
+        return ''
+
+
+def _galaxy_job_output_dataset(api_key, job_id, prefer_fasta=True):
+    """Return the dataset id of a finished job's primary output.
+
+    Tools like trimAl/MAFFT can emit several outputs (e.g. an HTML report
+    alongside the alignment). When prefer_fasta is set, pick the dataset whose
+    extension is FASTA-like; otherwise fall back to the first output.
+    """
     import requests as _req
     base = _galaxy_base()
     r = _req.get(f'{base}/api/jobs/{job_id}/outputs',
                  headers=_galaxy_headers(api_key), timeout=30)
     r.raise_for_status()
     outs = r.json()
+    ids = []
     for out in outs:
         ds = out.get('dataset') or {}
         ds_id = ds.get('id') or out.get('id')
+        name = (out.get('name') or '').lower()
         if ds_id:
-            return ds_id
-    raise RuntimeError('Galaxy job produced no output dataset.')
+            ids.append((ds_id, name))
+    if not ids:
+        raise RuntimeError('Galaxy job produced no output dataset.')
+
+    if prefer_fasta:
+        # Prefer by dataset extension
+        for ds_id, _name in ids:
+            if _galaxy_dataset_ext(api_key, ds_id) in _FASTA_EXTS:
+                return ds_id
+        # Else avoid obvious report outputs by name
+        for ds_id, name in ids:
+            if not any(k in name for k in ('html', 'report', 'log', 'summary')):
+                return ds_id
+    return ids[0][0]
 
 
 def _galaxy_download_dataset(api_key, ds_id, dest_path):
@@ -849,11 +885,17 @@ def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
         api_key, hist, cfg['GALAXY_MAFFT_TOOL_ID'], cfg['GALAXY_MAFFT_INPUT_KEY'],
         ds_id, cfg['GALAXY_MAFFT_PARAMS'], 'MAFFT')
     _galaxy_download_dataset(api_key, aln_ds, aligned_out)
+    if not (os.path.exists(aligned_out) and _count_fasta(aligned_out) > 0):
+        raise RuntimeError('Galaxy MAFFT output was not FASTA (check '
+                           'GALAXY_MAFFT_TOOL_ID / params).')
 
     trm_ds = _galaxy_run_chain(
         api_key, hist, cfg['GALAXY_TRIMAL_TOOL_ID'], cfg['GALAXY_TRIMAL_INPUT_KEY'],
         aln_ds, cfg['GALAXY_TRIMAL_PARAMS'], 'trimAl')
     _galaxy_download_dataset(api_key, trm_ds, trimmed_out)
+    if not (os.path.exists(trimmed_out) and _count_fasta(trimmed_out) > 0):
+        raise RuntimeError('Galaxy trimAl output was not FASTA (check '
+                           'GALAXY_TRIMAL_TOOL_ID / params).')
     return aligned_out, trimmed_out
 
 
