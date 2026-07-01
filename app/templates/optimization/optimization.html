@@ -639,13 +639,18 @@ function renderTree(ch) {
             mk('line', { x1: nx, y1: yTop, x2: nx, y2: yBot, stroke: '#c0c0c0', 'stroke-width': 1 });
 
             children.forEach(c => {
+                // A change is only shown when both endpoints have a definite
+                // (non-equivocal, non-missing) state; equivocal reconstructions
+                // are displayed as "?" and not counted as visible transitions.
+                const changeShown = c.changed && !node.equivocal && !c.equivocal
+                                    && node.state != null && c.state != null;
                 mk('line', {
                     x1: nx, y1: c._y, x2: xS(c._d), y2: c._y,
-                    stroke: c.changed ? '#e53935' : '#c0c0c0',
-                    'stroke-width': c.changed ? 2 : 1
+                    stroke: changeShown ? '#e53935' : '#c0c0c0',
+                    'stroke-width': changeShown ? 2 : 1
                 });
                 // State change on this branch: show "from->to" at the midpoint
-                if (c.changed && node.state != null && c.state != null) {
+                if (changeShown) {
                     const midX = (nx + xS(c._d)) / 2;
                     const txt  = `${node.state}→${c.state}`;
                     const w    = txt.length * 5.4 + 4;
@@ -672,16 +677,16 @@ function renderTree(ch) {
                 });
             }
 
-            // Internal node circle
-            const fill = node.state ? (colorMap[node.state] || '#ececec') : '#ececec';
+            // Internal node circle. Equivocal reconstructions (Fitch set not
+            // resolved to a single state) are shown as "?" with a neutral fill.
+            const eq   = node.equivocal || node.state == null;
+            const fill = eq ? '#ececec' : (colorMap[node.state] || '#ececec');
             mk('circle', { cx: nx, cy: ny, r: 5, fill, stroke: '#fff', 'stroke-width': 1 });
-            if (node.state) {
-                svgTxt(node.state, {
-                    x: nx, y: ny + 2.5,
-                    'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
-                    fill: labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
-                });
-            }
+            svgTxt(eq ? '?' : node.state, {
+                x: nx, y: ny + 2.5,
+                'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                fill: eq ? '#999' : labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
+            });
 
         } else {
             const fill    = node.state ? (colorMap[node.state] || '#ccc') : null;

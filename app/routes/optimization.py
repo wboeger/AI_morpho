@@ -121,6 +121,12 @@ def _fitch_parsimony(tree_root, tip_states):
         )
         if node['changed']:
             changes[0] += 1
+        # An internal node is equivocal when the parsimony reconstruction does
+        # not determine a single state (Fitch set has >1 state, or no descendant
+        # data). Such nodes are displayed as "?" rather than a picked state. The
+        # resolved node['state'] is kept for the (unchanged) parsimony score.
+        if not is_leaf:
+            node['equivocal'] = (s is None) or (len(s) > 1)
         node.pop('_s', None)
         # A missing tip has no state of its own; keep flowing the parent state.
         child_state = node['state'] if node['state'] is not None else parent_state
