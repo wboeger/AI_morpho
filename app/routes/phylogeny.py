@@ -747,7 +747,7 @@ def _galaxy_upload_file(api_key, history_id, file_path, file_type='fasta'):
             files={'files_0|file_data': (os.path.basename(file_path), fh)},
             timeout=180,
         )
-    r.raise_for_status()
+    _galaxy_raise_for_status(r, f'upload ({file_type})')
     data = r.json()
     dataset_id    = data['outputs'][0]['id']
     upload_job_id = data['jobs'][0]['id'] if data.get('jobs') else None
@@ -770,6 +770,24 @@ def _galaxy_wait_for_job(api_key, job_id, max_wait=300):
     return 'timeout'
 
 
+def _galaxy_raise_for_status(r, what):
+    """raise_for_status that includes Galaxy's JSON error body (err_msg/err_code).
+
+    Galaxy answers a 400 on /api/tools with a JSON body explaining the cause
+    (unknown tool_id, bad parameter, etc.); the default requests exception
+    hides it, so surface it here.
+    """
+    if r.status_code < 400:
+        return
+    detail = ''
+    try:
+        body = r.json()
+        detail = body.get('err_msg') or body.get('message') or json.dumps(body)
+    except ValueError:
+        detail = (r.text or '')[:500]
+    raise RuntimeError(f'Galaxy {what} failed ({r.status_code}): {detail}')
+
+
 def _galaxy_run_tool(api_key, history_id, tool_id, inputs):
     """Invoke a Galaxy tool. Returns the Galaxy job ID of the first job."""
     import requests as _req
@@ -780,7 +798,7 @@ def _galaxy_run_tool(api_key, history_id, tool_id, inputs):
         json={'tool_id': tool_id, 'history_id': history_id, 'inputs': inputs},
         timeout=60,
     )
-    r.raise_for_status()
+    _galaxy_raise_for_status(r, f'tool run ({tool_id})')
     data = r.json()
     if data.get('err_msg'):
         raise RuntimeError(f'Galaxy tool error: {data["err_msg"]}')
@@ -1268,6 +1286,105 @@ def _parse_mrbayes_consensus(con_tre_path):
     return None
 
 
+def _find_mb_binary():
+    """Locate the MrBayes executable. Env override MRBAYES_BIN wins."""
+    import shutil
+    cfg_bin = current_app.config.get('MRBAYES_BIN')
+    if cfg_bin and os.path.exists(cfg_bin):
+        return cfg_bin
+    for name in ('mb', 'mb-mpi', 'mrbayes'):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
+def _run_local_mrbayes(nexus_path, timeout=None):
+    """Run MrBayes locally on a NEXUS whose embedded block ends with `mcmc; sumt;`.
+
+    The block sets `autoclose=yes nowarn=yes`, so `mb file.nex` runs to
+    completion non-interactively and writes `file.nex.con.tre`. Returns the
+    consensus-tree path. Raises RuntimeError on failure.
+    """
+    import subprocess
+    mb = _find_mb_binary()
+    if not mb:
+        raise RuntimeError('MrBayes binary (mb) not found on server. '
+                           'Install mrbayes or set MRBAYES_BIN.')
+    workdir  = os.path.dirname(nexus_path) or '.'
+    log_path = nexus_path + '.mb.log'
+    if timeout is None:
+        timeout = current_app.config.get('MRBAYES_TIMEOUT', 6 * 3600)
+    with open(log_path, 'w') as log:
+        try:
+            proc = subprocess.run(
+                [mb, os.path.basename(nexus_path)],
+                cwd=workdir, stdout=log, stderr=subprocess.STDOUT,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f'MrBayes timed out after {timeout}s. '
+                               'Reduce ngen or raise MRBAYES_TIMEOUT.')
+    con = nexus_path + '.con.tre'
+    if proc.returncode != 0 or not os.path.exists(con):
+        tail = ''
+        try:
+            with open(log_path) as fh:
+                tail = fh.read()[-1200:]
+        except OSError:
+            pass
+        raise RuntimeError(f'MrBayes failed (rc={proc.returncode}).\n{tail}')
+    return con
+
+
+def _local_mrbayes_thread(app, job_id, params):
+    """Background thread: build NEXUS, run MrBayes locally, root, store tree."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            submit_path = job.trimmed_fasta_path or job.raw_fasta_path
+            results_dir = job.result_dir
+            nexus_path  = submit_path.rsplit('.', 1)[0] + '.nex'
+            _fasta_to_nexus(submit_path, nexus_path,
+                            params['ngen'], params['nruns'], params['nchains'],
+                            params['burninfrac'], lset_cmd=params['lset_cmd'],
+                            partitions=params['partitions'])
+            _set_status(job, 'running', 'MrBayes running locally…')
+
+            con    = _run_local_mrbayes(nexus_path)
+            newick = _parse_mrbayes_consensus(con)
+            if not newick:
+                with open(con) as fh:
+                    newick = fh.read().strip()
+
+            rooted_file = os.path.join(results_dir, 'rooted_tree.tre')
+            tmp_nwk     = os.path.join(results_dir, '_tmp_mb.nwk')
+            with open(tmp_nwk, 'w') as fh:
+                fh.write(newick)
+            success, msg = _root_tree(
+                tmp_nwk, job.outgroup_genera or DEFAULT_OUTGROUP_GENERA, rooted_file
+            )
+            if success:
+                with open(rooted_file) as fh:
+                    newick = fh.read().strip()
+
+            job.tree_newick    = newick
+            job.phylo_method   = 'mrbayes'
+            job.status         = 'tree_ready'
+            job.completed_at   = datetime.now(timezone.utc)
+            job.status_message = (msg if success
+                                  else f'Rooting failed — unrooted stored. ({msg})')
+            db.session.commit()
+        except Exception as exc:
+            import traceback
+            app.logger.error('Local MrBayes error: %s', traceback.format_exc())
+            job.status         = 'failed'
+            job.status_message = str(exc)[:600]
+            db.session.commit()
+
+
 def _root_tree_python(tree_file, outgroup_genera, output_file):
     """Root a tree with Biopython when Rscript/ape is unavailable (e.g. Railway).
 
@@ -1572,15 +1689,19 @@ def submit_cipres(project_id, job_id):
     if not submit_path or not os.path.exists(submit_path):
         return jsonify({'error': 'FASTA file not found on disk.'}), 400
 
-    api_key = (job.galaxy_api_key or current_app.config.get('GALAXY_API_KEY', ''))
-    if not api_key:
-        return jsonify({'error': 'Galaxy API key is required. Set it in the job form or GALAXY_API_KEY env var.'}), 400
-
     body   = request.get_json(silent=True) or {}
     method = body.get('method', 'raxml').lower()
 
+    # MrBayes runs locally (usegalaxy.eu's only MrBayes tool discards the tree
+    # files); RAxML runs on Galaxy and needs an API key.
+    api_key = (job.galaxy_api_key or current_app.config.get('GALAXY_API_KEY', ''))
+    if method != 'mrbayes' and not api_key:
+        return jsonify({'error': 'Galaxy API key is required. Set it in the job form or GALAXY_API_KEY env var.'}), 400
+
     try:
         if method == 'mrbayes':
+            if not _find_mb_binary():
+                return jsonify({'error': 'MrBayes (mb) is not installed on the server.'}), 400
             ngen       = int(body.get('ngen', 1000000))
             nruns      = int(body.get('nruns', 2))
             nchains    = int(body.get('nchains', 4))
@@ -1590,28 +1711,33 @@ def submit_cipres(project_id, job_id):
             lset_cmd   = (body.get('lset_cmd') or '').strip() or \
                          job.mrbayes_lset or 'lset nst=mixed rates=invgamma'
             partitions = job.partition_spec or None
-            nexus_path = submit_path.rsplit('.', 1)[0] + '.nex'
-            _fasta_to_nexus(submit_path, nexus_path, ngen, nruns, nchains,
-                            burninfrac, lset_cmd=lset_cmd, partitions=partitions)
-            history_id, galaxy_job_id = _submit_to_galaxy_mrbayes(
-                nexus_path, api_key, ngen, nruns, nchains, burninfrac
-            )
+
             job.phylo_method   = 'mrbayes'
             job.mrbayes_lset   = lset_cmd
+            job.job_url        = None
+            job.job_handle     = None   # local run — nothing to poll on Galaxy
             if partitions:
                 pnames = ', '.join(p['name'] for p in partitions)
                 model_note = f'per-partition model selection (nst=mixed) on {pnames}'
             else:
                 model_note = f'model: {job.best_fit_model or lset_cmd}'
-            job.status_message = (f'MrBayes submitted to Galaxy (job: {galaxy_job_id}); '
-                                  f'{model_note}')
-        else:
-            history_id, galaxy_job_id = _submit_to_galaxy_raxml(
-                submit_path, api_key, job.n_bootstraps or 1000
-            )
-            job.phylo_method   = 'raxml'
-            job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
+            job.status         = 'running'
+            job.status_message = f'MrBayes running locally; {model_note}'
+            db.session.commit()
 
+            app = current_app._get_current_object()
+            params = {'ngen': ngen, 'nruns': nruns, 'nchains': nchains,
+                      'burninfrac': burninfrac, 'lset_cmd': lset_cmd,
+                      'partitions': partitions}
+            threading.Thread(target=_local_mrbayes_thread,
+                             args=(app, job.id, params), daemon=True).start()
+            return jsonify({'status': 'running', 'message': job.status_message})
+
+        history_id, galaxy_job_id = _submit_to_galaxy_raxml(
+            submit_path, api_key, job.n_bootstraps or 1000
+        )
+        job.phylo_method   = 'raxml'
+        job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
         job.job_url    = history_id    # Galaxy history ID
         job.job_handle = galaxy_job_id  # Galaxy job ID (for polling)
         job.status     = 'submitted'
