@@ -101,7 +101,14 @@ def _fitch_parsimony(tree_root, tip_states):
 
     def top_down(node, parent_state=None):
         s = node.get('_s')
-        if s is None:
+        is_leaf = not node.get('children')
+        if s is None and is_leaf:
+            # Tip scored "?" (no observed state): show it as missing, not the
+            # inherited/estimated state. Propagate the parent state downward so
+            # this tip does not disturb ancestral reconstruction elsewhere.
+            node['state'] = None
+            node['missing'] = True
+        elif s is None:
             node['state'] = parent_state
         elif parent_state is not None and parent_state in s:
             node['state'] = parent_state
@@ -115,8 +122,10 @@ def _fitch_parsimony(tree_root, tip_states):
         if node['changed']:
             changes[0] += 1
         node.pop('_s', None)
+        # A missing tip has no state of its own; keep flowing the parent state.
+        child_state = node['state'] if node['state'] is not None else parent_state
         for child in node.get('children', []):
-            top_down(child, node['state'])
+            top_down(child, child_state)
 
     bottom_up(tree)
     top_down(tree)
@@ -241,6 +250,7 @@ def optimization_view(project_id):
     return render_template('optimization/optimization.html',
                            project=project,
                            characters=chars,
+                           tree_fragments=project.tree_fragments or {},
                            has_tree=bool(project.tree_newick))
 
 

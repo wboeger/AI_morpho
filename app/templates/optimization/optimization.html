@@ -374,6 +374,7 @@
                 </div>
                 <div class="opt-signal-box" id="signalBox"></div>
                 <div class="opt-legend" id="legend"></div>
+                <div id="fragLegend" style="display:none; font-size:0.72rem; color:#666; margin-top:0.25rem;"></div>
             </div>
 
             <!-- Scrollable tree area -->
@@ -445,6 +446,31 @@ function _supCol(s) {
     return pct >= 70 ? '#1a6bad' : (pct >= 40 ? '#e0902b' : '#c0392b');
 }
 function _supLbl(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
+
+// ── DNA fragment (GenBank) tip coloring ──────────────────────────────────────
+// species (normalized) -> '18S+ITS' | '18S' | 'ITS', from the imported job.
+const _tipMarkers = {{ tree_fragments | tojson }};
+const MARKER_COLORS = {'18S+ITS': '#2e7d32', '18S': '#1565c0', 'ITS': '#e65100'};
+function _tipNormName(name) {
+    let s = String(name || '').trim().replace(/^['"]|['"]$/g, '');
+    if (s.includes('|')) s = s.split('|').pop();
+    s = s.replace(/^_R_/i, '');
+    return s.toLowerCase().replace(/_/g, ' ').trim();
+}
+function _fragColor(name) {
+    if (!_tipMarkers) return null;
+    return MARKER_COLORS[_tipMarkers[_tipNormName(name)]] || null;
+}
+function _showFragLegend() {
+    const el = document.getElementById('fragLegend');
+    if (!el || !_tipMarkers || !Object.keys(_tipMarkers).length) return;
+    el.innerHTML =
+        'DNA fragments: ' +
+        `<span style="color:${MARKER_COLORS['18S+ITS']};font-weight:600;">18S+ITS</span> · ` +
+        `<span style="color:${MARKER_COLORS['18S']};font-weight:600;">18S only</span> · ` +
+        `<span style="color:${MARKER_COLORS['ITS']};font-weight:600;">ITS only</span>`;
+    el.style.display = '';
+}
 
 // ── Color helpers ────────────────────────────────────────────────────────────
 
@@ -676,25 +702,32 @@ function renderTree(ch) {
                 ...(missing ? { 'stroke-dasharray': '2,2' } : {})
             });
 
-            // State code inside circle (white or dark depending on fill)
+            // State code inside circle; "?" for tips missing in the matrix
             if (node.state) {
                 svgTxt(node.state, {
                     x: nx, y: ny + 3,
                     'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
                     fill: labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
                 });
+            } else {
+                svgTxt('?', {
+                    x: nx, y: ny + 3,
+                    'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                    fill: '#999', 'text-anchor': 'middle', 'pointer-events': 'none'
+                });
             }
 
-            // Species name (italic, right side)
+            // Species name (italic, right side) — colored by DNA fragment(s)
             svgTxt(node.name || '', {
                 x: X_R + PAD_R + 5, y: ny + 4,
                 'font-size': 11, 'font-family': 'sans-serif',
-                fill: '#333', 'font-style': 'italic'
+                fill: _fragColor(node.name) || '#333', 'font-style': 'italic'
             });
         }
     }
 
     draw(tree);
+    _showFragLegend();
 }
 
 // ── Character list ────────────────────────────────────────────────────────────
