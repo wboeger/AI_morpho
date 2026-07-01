@@ -433,13 +433,17 @@ function assignY(node) {
     node._y = (Math.min(...ys) + Math.max(...ys)) / 2;
 }
 
-// ── Branch support helpers (>=70% blue, <70% red; handles 0-100 and 0-1) ──
+// ── Branch support helpers: high >=70 blue, medium 40-69 amber, poor <40 red
+//    (handles 0-100 bootstrap and 0-1 posterior) ──
 function _supportOf(name) {
     if (!name) return null;
     const m = String(name).match(/^\s*-?\d+(\.\d+)?\s*$/);
     return m ? parseFloat(name) : null;
 }
-function _supCol(s) { return ((s <= 1) ? (s >= 0.70) : (s >= 70)) ? '#1a6bad' : '#c0392b'; }
+function _supCol(s) {
+    const pct = (s <= 1) ? s * 100 : s;
+    return pct >= 70 ? '#1a6bad' : (pct >= 40 ? '#e0902b' : '#c0392b');
+}
 function _supLbl(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
 
 // ── Color helpers ────────────────────────────────────────────────────────────

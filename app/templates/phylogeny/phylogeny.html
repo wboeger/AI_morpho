@@ -1667,8 +1667,12 @@ function renderPhylogram(newick, svgEl) {
         const m = String(node.name).match(/^\s*-?\d+(\.\d+)?\s*$/);
         return m ? parseFloat(node.name) : null;
     }
-    // >=70% blue, <70% red (handles 0-100 bootstrap and 0-1 posterior)
-    function supColor(s) { return ((s <= 1) ? (s >= 0.70) : (s >= 70)) ? '#1a6bad' : '#c0392b'; }
+    // 3-tier support (handles 0-100 bootstrap and 0-1 posterior):
+    // high >=70 blue, medium 40-69 amber, poor <40 red
+    function supColor(s) {
+        const pct = (s <= 1) ? s * 100 : s;
+        return pct >= 70 ? '#1a6bad' : (pct >= 40 ? '#e0902b' : '#c0392b');
+    }
     function supLabel(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
 
     // Draw nodes recursively
@@ -1712,8 +1716,9 @@ function renderPhylogram(newick, svgEl) {
 
     // Legend: branch support colour key
     svgText(PAD_LEFT, 12, 'branch support: ', {size: '9', fill: '#555'});
-    svgText(PAD_LEFT + 78, 12, '>=70 blue', {size: '9', fill: '#1a6bad'});
-    svgText(PAD_LEFT + 140, 12, '<70 red', {size: '9', fill: '#c0392b'});
+    svgText(PAD_LEFT + 78,  12, '>=70 high', {size: '9', fill: '#1a6bad'});
+    svgText(PAD_LEFT + 138, 12, '40-69 med', {size: '9', fill: '#e0902b'});
+    svgText(PAD_LEFT + 200, 12, '<40 low',   {size: '9', fill: '#c0392b'});
 }
 </script>
 {% endblock %}

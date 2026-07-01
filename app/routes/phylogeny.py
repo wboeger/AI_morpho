@@ -310,6 +310,51 @@ def _fetch_step(job):
                 f'Review sequences and click Approve & Align.')
 
 
+def _orient_fasta_by_reference(in_path, k=8):
+    """Reverse-complement sequences that match a reference better in RC orientation.
+
+    MAFFT `--adjustdirection` does this locally, but the Galaxy MAFFT wrapper
+    exposes no such option, so orient the FASTA before uploading. Uses the same
+    idea as MAFFT: k-mer overlap against a reference (the longest sequence).
+    For each sequence the shared-k-mer count is compared forward vs reverse
+    complement and the higher-scoring (lower alignment cost) orientation is kept.
+    Rewrites `in_path` in place only if something flipped. Best-effort: on any
+    error the file is left untouched. Returns in_path.
+    """
+    try:
+        from Bio import SeqIO
+        from Bio.Seq import Seq
+
+        def kmers(s):
+            return {s[i:i + k] for i in range(len(s) - k + 1)}
+
+        records = list(SeqIO.parse(in_path, 'fasta'))
+        if len(records) < 2:
+            return in_path
+        ref = max(records, key=lambda r: len(r.seq))
+        ref_k = kmers(str(ref.seq).upper())
+        if not ref_k:
+            return in_path
+        flipped = 0
+        for rec in records:
+            if rec is ref:
+                continue
+            s = str(rec.seq).upper()
+            if len(s) < k:
+                continue
+            fwd = sum(1 for km in kmers(s) if km in ref_k)
+            rc  = sum(1 for km in kmers(str(Seq(s).reverse_complement())) if km in ref_k)
+            if rc > fwd:
+                rec.seq = rec.seq.reverse_complement()
+                rec.description = ''
+                flipped += 1
+        if flipped:
+            SeqIO.write(records, in_path, 'fasta')
+    except Exception:
+        pass
+    return in_path
+
+
 def _align_step(job):
     """MAFFT --auto --adjustdirection (local binary, or Galaxy when unavailable).
 
@@ -887,6 +932,8 @@ def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
         raise RuntimeError('A Galaxy API key is required to align/trim on Galaxy '
                            '(set it on the job or GALAXY_API_KEY).')
     hist = _galaxy_create_history(api_key, 'GyroMorpho_AlignTrim')
+    # Galaxy MAFFT has no --adjustdirection; orient sequences before upload.
+    _orient_fasta_by_reference(in_path)
     ds_id, up_job = _galaxy_upload_file(api_key, hist, in_path, 'fasta')
     if up_job:
         st = _galaxy_wait_for_job(api_key, up_job, max_wait=600)

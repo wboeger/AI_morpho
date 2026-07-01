@@ -616,10 +616,11 @@ function renderNewickTree(newick) {
         const m = String(node.name).match(/^\s*-?\d+(\.\d+)?\s*$/);
         return m ? parseFloat(node.name) : null;
     }
-    // ≥70% blue, <70% red. Handles both 0-100 (bootstrap) and 0-1 (posterior).
+    // 3-tier: high ≥70 blue, medium 40-69 amber, poor <40 red.
+    // Handles both 0-100 (bootstrap) and 0-1 (posterior).
     function supportColor(s) {
-        const high = (s <= 1) ? (s >= 0.70) : (s >= 70);
-        return high ? '#1a6bad' : '#c0392b';
+        const pct = (s <= 1) ? s * 100 : s;
+        return pct >= 70 ? '#1a6bad' : (pct >= 40 ? '#e0902b' : '#c0392b');
     }
     function supportLabel(s) { return (s <= 1) ? s.toFixed(2) : String(Math.round(s)); }
 
