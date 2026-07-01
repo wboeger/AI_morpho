@@ -484,6 +484,7 @@ def _migrate_phylogeny_jobs():
         ('galaxy_api_key',       'VARCHAR(500)'),
         ('restrict_species',     'TEXT'),
         ('partition_spec',       'TEXT'),
+        ('partition_presence',   'TEXT'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():

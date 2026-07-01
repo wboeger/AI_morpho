@@ -265,6 +265,9 @@ class PhylogenyJob(db.Model):
                                             # ingroup is limited to these (from Specimens page)
     partition_spec = db.Column(db.JSON)     # [{name,start,end}] column ranges per
                                             # fragment for partitioned model selection
+    partition_presence = db.Column(db.JSON)  # {normalized_species: '18S+ITS'|'18S'|
+                                            # 'ITS'} — which markers each taxon had
+                                            # in the concatenation (for tip coloring)
 
     # Sequence counts through pipeline
     n_sequences_raw = db.Column(db.Integer)

@@ -452,11 +452,19 @@ def _nj_step(job):
                     f'Trimming complete. (NJ failed: {exc}) Ready for Galaxy.')
 
 
+def _presence_key(sp):
+    """Normalize a species label to match tip labels in the rendered tree."""
+    s = re.sub(r'^_R_', '', str(sp or ''), flags=re.IGNORECASE)
+    return s.lower().replace('_', ' ').strip()
+
+
 def _concatenate_alignments(path1, marker1, path2, marker2, out_path):
     """Concatenate two trimmed alignments. Taxa missing from one marker get all-gap columns.
 
-    Returns (n_taxa, len1, len2) where len1/len2 are per-marker alignment widths.
-    Species are matched by the label after '|' in the FASTA header.
+    Returns (n_taxa, len1, len2, presence) where len1/len2 are per-marker
+    alignment widths and presence maps normalized species -> which markers it
+    contributed ('18S+ITS', '18S', or 'ITS'). Species are matched by the label
+    after '|' in the FASTA header.
     """
     from Bio import SeqIO
     from Bio.Seq import Seq
@@ -479,15 +487,18 @@ def _concatenate_alignments(path1, marker1, path2, marker2, out_path):
     gap2 = '-' * w2
 
     records = []
+    presence = {}
     for sp in all_sp:
         r1 = by_sp1.get(sp)
         r2 = by_sp2.get(sp)
         seq = (str(r1.seq) if r1 else gap1) + (str(r2.seq) if r2 else gap2)
         rec_id = (r1 or r2).id
         records.append(SR(Seq(seq), id=rec_id, name='', description=''))
+        marks = [m for m, r in ((marker1, r1), (marker2, r2)) if r is not None]
+        presence[_presence_key(sp)] = '+'.join(marks)
 
     _write_fasta(records, out_path)
-    return len(records), w1, w2
+    return len(records), w1, w2, presence
 
 
 def _fetch_marker(job, marker, gene_query, suffix):
@@ -640,7 +651,8 @@ def _concatenated_pipeline_thread(app, job_id):
             # Concatenate
             _set_status(job, 'trimming', 'Concatenating alignments…')
             cat_path = os.path.join(job.result_dir, 'concatenated.fa')
-            n_taxa, w18s, wITS = _concatenate_alignments(trm18s, '18S', trmITS, 'ITS', cat_path)
+            n_taxa, w18s, wITS, presence = _concatenate_alignments(
+                trm18s, '18S', trmITS, 'ITS', cat_path)
             job.trimmed_fasta_path = cat_path
             job.fasta_filename     = 'concatenated.fa'
             job.n_sequences        = n_taxa
@@ -649,6 +661,8 @@ def _concatenated_pipeline_thread(app, job_id):
                 {'name': '18S', 'start': 1, 'end': w18s},
                 {'name': 'ITS', 'start': w18s + 1, 'end': w18s + wITS},
             ]
+            # Which markers each taxon contributed — for coloring tree tips
+            job.partition_presence = presence
             _set_status(job, 'trimmed',
                         f'Concatenation done: {n_taxa} taxa, {w18s}bp 18S + {wITS}bp ITS = '
                         f'{w18s + wITS}bp total. Ready for Galaxy.')
@@ -1707,6 +1721,7 @@ def get_newick(project_id, job_id):
         'newick': job.tree_newick,
         'marker': job.marker,
         'taxon':  job.target_taxon or job.fasta_filename or '',
+        'presence': job.partition_presence or {},
     })
 
 

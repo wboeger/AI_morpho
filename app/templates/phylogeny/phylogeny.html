@@ -1519,11 +1519,18 @@ async function viewTree(jobId) {
     const data = await safeJSON(resp);
     if (!data.newick) { alert('No tree stored for this job.'); return; }
     openTreeModal(jobId, data.newick,
-        `${data.taxon || ''} ${data.marker || ''}`.trim());
+        `${data.taxon || ''} ${data.marker || ''}`.trim(), data.presence || {});
 }
 
-function openTreeModal(jobId, newick, subtitle) {
+// species (lowercase, spaces) -> '18S+ITS' | '18S' | 'ITS'
+let _tipMarkers = {};
+// Colors for which GenBank fragment(s) a taxon contributed to the concatenation.
+const MARKER_COLORS = {'18S+ITS': '#2e7d32', '18S': '#1565c0', 'ITS': '#e65100'};
+function markerColor(m) { return MARKER_COLORS[m] || '#333'; }
+
+function openTreeModal(jobId, newick, subtitle, presence) {
     _modalJobId = jobId;
+    _tipMarkers = presence || {};
     const title = 'Phylogenetic Tree' + (subtitle ? ' — ' + subtitle : '');
     document.getElementById('treeModalTitle').textContent = title;
     document.getElementById('treeModalMsg').textContent   = subtitle || '';
@@ -1701,10 +1708,22 @@ function renderPhylogram(newick, svgEl) {
             const labelX = PAD_LEFT + BRANCH_W + LABEL_GAP;
             svgLine(nx, node.leafY, labelX - 2, node.leafY, '#ccc', 0.7, '2,3');
             const label = formatTipLabel(node.name);
-            svgText(labelX, node.leafY, label, {italic: true, size: '11'});
+            // Color the taxon name by which GenBank fragment(s) it contributed.
+            const mk   = _tipMarkers[label.toLowerCase()];
+            const fill = mk ? markerColor(mk) : '#333';
+            svgText(labelX, node.leafY, label, {italic: true, size: '11', fill: fill});
         }
     }
     drawNode(tree);
+
+    // Legend: fragment colour key (only when concatenation marker info exists)
+    if (_tipMarkers && Object.keys(_tipMarkers).length) {
+        const ly = 26;
+        svgText(PAD_LEFT, ly, 'fragments: ', {size: '9', fill: '#555'});
+        svgText(PAD_LEFT + 56,  ly, '18S+ITS', {size: '9', fill: MARKER_COLORS['18S+ITS']});
+        svgText(PAD_LEFT + 108, ly, '18S only', {size: '9', fill: MARKER_COLORS['18S']});
+        svgText(PAD_LEFT + 162, ly, 'ITS only', {size: '9', fill: MARKER_COLORS['ITS']});
+    }
 
     // Scale bar (10% of max depth)
     const scaleLen  = maxDepth * 0.1;
