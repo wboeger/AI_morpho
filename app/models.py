@@ -276,12 +276,11 @@ class PhylogenyJob(db.Model):
     aligned_fasta_path = db.Column(db.String(500))
     trimmed_fasta_path = db.Column(db.String(500))
 
-    # 'raxml' (default) or 'mrbayes'
+    # Inference method label ('raxml')
     phylo_method = db.Column(db.String(20), default='raxml')
 
     # Model selection (ModelTest-NG)
     best_fit_model = db.Column(db.String(100))   # e.g. "GTR+I+G4"
-    mrbayes_lset   = db.Column(db.String(300))   # e.g. "lset nst=6 rates=invgamma"
 
     project = db.relationship('Project', backref='phylogeny_jobs')
     submitter = db.relationship('User', foreign_keys=[submitted_by])

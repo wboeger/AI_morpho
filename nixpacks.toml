@@ -1,5 +1,0 @@
-# Install MrBayes (provides the `mb` binary) into the Railway image so
-# Bayesian phylogenetic inference runs locally. usegalaxy.eu's only MrBayes
-# tool discards the tree files, so Galaxy cannot be used for MrBayes.
-[phases.setup]
-aptPkgs = ["mrbayes"]

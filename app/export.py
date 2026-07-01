@@ -123,7 +123,7 @@ def export_csv_detailed(project_id: int, **kwargs) -> str:
 
 
 def export_nexus(project_id: int, **kwargs) -> str:
-    """Export matrix in NEXUS format for MrBayes/PAUP*."""
+    """Export matrix in NEXUS format (STANDARD datatype) for PAUP*/TNT/etc."""
     data = build_matrix(project_id, **kwargs)
     n_taxa = len(data['species'])
     n_chars = len(data['characters'])

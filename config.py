@@ -53,12 +53,6 @@ class Config:
     GALAXY_RAXML_TOOL_ID   = os.environ.get(
         'GALAXY_RAXML_TOOL_ID',
         'toolshed.g2.bx.psu.edu/repos/iuc/raxml/raxml/8.2.12+galaxy2')
-    GALAXY_MRBAYES_TOOL_ID = os.environ.get(
-        'GALAXY_MRBAYES_TOOL_ID',
-        'toolshed.g2.bx.psu.edu/repos/iuc/mrbayes/mrbayes/3.2.7.a+galaxy0')
-    # MrBayes runs locally (no public Galaxy tool returns the tree files).
-    MRBAYES_BIN     = os.environ.get('MRBAYES_BIN', '')          # '' → search PATH for mb
-    MRBAYES_TIMEOUT = int(os.environ.get('MRBAYES_TIMEOUT', str(6 * 3600)))
     # MAFFT alignment + trimAl trimming on Galaxy (so the server needs no local
     # bioinformatics binaries). Tool IDs / input keys / extra params are all
     # env-overridable in case usegalaxy.eu updates tool versions.

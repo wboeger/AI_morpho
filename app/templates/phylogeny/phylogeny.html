@@ -37,7 +37,7 @@
             {% if job.aligned_fasta_path %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/aligned">Aligned FASTA</a>{% endif %}
             {% if job.trimmed_fasta_path %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/trimmed">Trimmed Alignment</a>{% endif %}
             {% if job.nj_newick %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/nj_tree">NJ Tree (.nwk)</a>{% endif %}
-            {% if job.tree_newick %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/ml_tree">{{ 'Bayesian' if job.phylo_method == 'mrbayes' else 'ML' }} Tree (.nwk)</a>{% endif %}
+            {% if job.tree_newick %}<a class="dl-item" href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/ml_tree">ML Tree (.nwk)</a>{% endif %}
         </div>
     </div>
     {% endif %}
@@ -371,10 +371,9 @@
                     {% endif %}
                 </td>
                 <td id="model-{{ job.id }}" style="font-size:0.78rem; font-family:monospace; color:var(--gray-600);"
-                    data-model="{{ job.best_fit_model or '' }}"
-                    data-lset="{{ job.mrbayes_lset or '' }}">
+                    data-model="{{ job.best_fit_model or '' }}">
                     {% if job.best_fit_model %}
-                        <span title="{{ job.mrbayes_lset or '' }}">{{ job.best_fit_model }}</span>
+                        <span>{{ job.best_fit_model }}</span>
                     {% else %}
                         <span style="color:var(--gray-400);">—</span>
                     {% endif %}
@@ -443,7 +442,6 @@
 #cipresModal .modal { max-width:460px; }
 #cipresModal label { font-weight:600; font-size:0.85rem; }
 #cipresModal .method-option { display:flex; align-items:center; gap:0.5rem; margin-bottom:0.5rem; cursor:pointer; }
-#cipresModal .mb-params { display:none; margin-top:0.75rem; border-top:1px solid var(--gray-200); padding-top:0.75rem; }
 #cipresModal .form-row { display:grid; grid-template-columns:1fr 1fr; gap:0.75rem; }
 </style>
 
@@ -457,70 +455,14 @@
             <button class="btn btn-sm btn-outline" onclick="closeCipresModal()">&#10005;</button>
         </div>
         <p style="font-size:0.85rem; color:var(--gray-600); margin-bottom:1rem;">
-            Choose the phylogenetic inference method for this job.
+            Maximum-likelihood inference with RAxML-NG on Galaxy.
         </p>
-        <div>
-            <label class="method-option">
-                <input type="radio" name="cipres-method" value="raxml" checked onchange="onMethodChange()">
-                <span><strong>RAxML-NG</strong> — Maximum likelihood (fast, recommended)</span>
-            </label>
-            <label class="method-option">
-                <input type="radio" name="cipres-method" value="mrbayes" onchange="onMethodChange()">
-                <span><strong>MrBayes</strong> — Bayesian MCMC (slower, posterior probabilities)</span>
-            </label>
-        </div>
 
         <!-- RAxML bootstrap field -->
-        <div id="raxml-params" style="margin-top:0.75rem; border-top:1px solid var(--gray-200); padding-top:0.75rem;">
+        <div id="raxml-params" style="margin-top:0.25rem;">
             <div class="form-group" style="margin-bottom:0;">
                 <label>Bootstrap replicates</label>
                 <input type="number" id="cipres-bootstraps" value="1000" min="100" max="5000" style="width:110px;">
-            </div>
-        </div>
-
-        <!-- MrBayes parameters -->
-        <div id="mrbayes-params" class="mb-params">
-            <!-- Auto-detected model banner -->
-            <div id="mb-model-banner" style="display:none; margin-bottom:0.75rem; padding:0.45rem 0.7rem;
-                 background:#e8f5e9; border-radius:5px; font-size:0.8rem; color:#2e7d32;">
-                <strong>Auto-detected model (BIC):</strong> <span id="mb-model-name"></span>
-                <span style="color:#555; margin-left:0.5rem;" id="mb-model-lset-display"></span>
-            </div>
-            <div id="mb-no-model-note" style="display:none; margin-bottom:0.75rem; padding:0.45rem 0.7rem;
-                 background:#fff3cd; border-radius:5px; font-size:0.8rem; color:#856404;">
-                No substitution model has been determined yet.
-                <button class="btn btn-sm btn-outline" style="margin-left:0.5rem; padding:1px 8px; font-size:0.78rem;"
-                        onclick="runModeltestFromModal()">Run ModelTest-NG</button>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Generations (ngen)</label>
-                    <input type="number" id="mb-ngen" value="1000000" min="100000" step="100000">
-                </div>
-                <div class="form-group">
-                    <label>Runs (nruns)</label>
-                    <input type="number" id="mb-nruns" value="2" min="1" max="8">
-                </div>
-            </div>
-            <div class="form-row">
-                <div class="form-group">
-                    <label>Chains (nchains)</label>
-                    <input type="number" id="mb-nchains" value="4" min="1" max="16">
-                </div>
-                <div class="form-group">
-                    <label>Burnin fraction</label>
-                    <input type="number" id="mb-burnin" value="0.25" min="0.1" max="0.5" step="0.05">
-                </div>
-            </div>
-            <div class="form-group" style="margin-bottom:0;">
-                <label style="display:flex; justify-content:space-between;">
-                    <span>MrBayes <code>lset</code> command</span>
-                    <small style="font-weight:normal; color:var(--gray-500);">edit to override</small>
-                </label>
-                <input type="text" id="mb-lset" value="lset nst=6 rates=invgamma"
-                       style="font-family:monospace; font-size:0.82rem;"
-                       placeholder="lset nst=6 rates=invgamma">
-                <small style="color:var(--gray-500);">nst: 1=JC/F81, 2=HKY, 6=GTR · rates: equal, gamma, propinv, invgamma</small>
             </div>
         </div>
 
@@ -876,25 +818,7 @@ let _cipresJobId = null;
 
 function openCipresModal(jobId) {
     _cipresJobId = jobId;
-    document.querySelector('input[name="cipres-method"][value="raxml"]').checked = true;
-    onMethodChange();
-    // Populate model info from the row's data attributes
-    const modelCell = document.getElementById('model-' + jobId);
-    const model = modelCell ? modelCell.dataset.model : '';
-    const lset  = modelCell ? modelCell.dataset.lset  : '';
-    _populateMbModel(model, lset);
     document.getElementById('cipresModal').classList.add('active');
-}
-
-function _populateMbModel(model, lset) {
-    const hasMod = model && model.length > 0;
-    document.getElementById('mb-model-banner').style.display   = hasMod ? '' : 'none';
-    document.getElementById('mb-no-model-note').style.display  = hasMod ? 'none' : '';
-    if (hasMod) {
-        document.getElementById('mb-model-name').textContent         = model;
-        document.getElementById('mb-model-lset-display').textContent = lset ? `(${lset})` : '';
-    }
-    document.getElementById('mb-lset').value = lset || 'lset nst=6 rates=invgamma';
 }
 
 function closeCipresModal() {
@@ -902,41 +826,13 @@ function closeCipresModal() {
     _cipresJobId = null;
 }
 
-function onMethodChange() {
-    const method = document.querySelector('input[name="cipres-method"]:checked')?.value;
-    document.getElementById('raxml-params').style.display    = method === 'raxml'    ? '' : 'none';
-    document.getElementById('mrbayes-params').style.display  = method === 'mrbayes'  ? '' : 'none';
-}
-
-async function runModeltestFromModal() {
-    if (!_cipresJobId) return;
-    const noteEl = document.getElementById('mb-no-model-note');
-    noteEl.innerHTML = 'Running ModelTest-NG… (this may take several minutes)';
-    try {
-        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${_cipresJobId}/run_modeltest`,
-                                 {method: 'POST'});
-        const data = await safeJSON(resp);
-        if (!resp.ok || data.error) { noteEl.innerHTML = 'Error: ' + data.error; return; }
-        noteEl.innerHTML = 'ModelTest-NG running. Close this modal and re-open once the stage message updates.';
-    } catch(err) {
-        noteEl.innerHTML = 'Network error: ' + err.message;
-    }
-}
-
 async function confirmCipresSubmit() {
     if (!_cipresJobId) return;
     const jobId = _cipresJobId;   // capture before closeCipresModal nullifies it
-    const method = document.querySelector('input[name="cipres-method"]:checked')?.value || 'raxml';
-    const body = { method };
-    if (method === 'raxml') {
-        body.n_bootstraps = parseInt(document.getElementById('cipres-bootstraps').value) || 1000;
-    } else {
-        body.ngen       = parseInt(document.getElementById('mb-ngen').value)    || 1000000;
-        body.nruns      = parseInt(document.getElementById('mb-nruns').value)   || 2;
-        body.nchains    = parseInt(document.getElementById('mb-nchains').value) || 4;
-        body.burninfrac = parseFloat(document.getElementById('mb-burnin').value) || 0.25;
-        body.lset_cmd   = document.getElementById('mb-lset').value.trim();
-    }
+    const body = {
+        method: 'raxml',
+        n_bootstraps: parseInt(document.getElementById('cipres-bootstraps').value) || 1000,
+    };
     closeCipresModal();
     await submitCipres(jobId, body);
 }

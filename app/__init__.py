@@ -481,7 +481,6 @@ def _migrate_phylogeny_jobs():
         ('nj_newick',            'TEXT'),
         ('phylo_method',         'VARCHAR(20)'),
         ('best_fit_model',       'VARCHAR(100)'),
-        ('mrbayes_lset',         'VARCHAR(300)'),
         ('galaxy_api_key',       'VARCHAR(500)'),
         ('restrict_species',     'TEXT'),
         ('partition_spec',       'TEXT'),
