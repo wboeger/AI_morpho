@@ -7,6 +7,7 @@
     {% endif %}
     {% if job.status == 'nj_ready' %}
     <button class="btn btn-sm btn-warning" onclick="openNjModal({{ job.id }})">Review NJ Tree</button>
+    <button class="btn btn-sm btn-primary" onclick="openCipresModal({{ job.id }})">Submit to Galaxy</button>
     <button class="btn btn-sm btn-outline" onclick="importNjTreeById({{ job.id }})">Import NJ &#8594; Matrix</button>
     {% endif %}
     {% if job.nj_newick and job.status not in ('nj_ready',) %}
@@ -792,6 +793,7 @@ function buildActions(jobId, status) {
     }
     if (status === 'nj_ready') {
         html += `<button class="btn btn-sm btn-warning" onclick="openNjModal(${jobId})">Review NJ Tree</button> `;
+        html += `<button class="btn btn-sm btn-primary" onclick="openCipresModal(${jobId})">Submit to Galaxy</button> `;
         html += `<button class="btn btn-sm btn-outline" onclick="importNjTreeById(${jobId})">Import NJ &#8594; Matrix</button> `;
     }
     if (status === 'trimmed') {
