@@ -1044,11 +1044,17 @@ def _galaxy_download_results(api_key, job_id, dest_dir):
 # "bipartitionsBranchLabels" stores support as `[95]` branch comments that the
 # parser strips, so it is only a last resort. Files are saved by
 # _galaxy_download_results as "<Galaxy dataset name>.dat".
+# Galaxy names them like "RAxML on dataset 1: Bipartitions" -> the normalized
+# stem is a long string ENDING in the meaningful part, so match with endswith.
+# Order 'bipartitions' before 'bipartitionsbranchlabels' so the plain
+# node-label tree wins (endswith('bipartitions') is false for branchlabels).
 _TREE_NAME_PRIORITY = (
     'bipartitions',              # ML best tree, support as node labels (preferred)
     'support',                   # RAxML-NG .raxml.support (support as node labels)
     'bipartitionsbranchlabels',  # support as [..] branch labels (parser strips these)
+    'bestscoringmltree',         # RAxML 8 "Best-scoring ML Tree" — no support
     'besttree',                  # RAxML-NG best tree (.raxml.bestTree) — no support
+    'mltree',
     'result',                    # RAxML 8 ML best tree (RAxML_result.*) — no support
     'bestmodel',
 )
@@ -1089,9 +1095,10 @@ def _find_best_tree(results_dir):
                         return path
         return None
 
-    # Exact stem match first (so 'bipartitions' is not shadowed by
-    # 'bipartitionsbranchlabels'), then fall back to a substring match.
-    return pick(lambda n, k: n == k) or pick(lambda n, k: k in n)
+    # endswith first (Galaxy prefixes names, e.g. "...bipartitions"); this keeps
+    # 'bipartitions' from matching the 'bipartitionsbranchlabels' file. Fall back
+    # to a looser substring match only if nothing ended cleanly.
+    return pick(lambda n, k: n.endswith(k)) or pick(lambda n, k: k in n)
 
 
 def _find_newick_in_dir(results_dir):
@@ -1118,25 +1125,20 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000):
         if state != 'ok':
             raise RuntimeError(f'Galaxy upload job failed (state: {state})')
     # Rapid bootstrap analysis (-f a): best ML tree + N bootstrap replicates,
-    # with support values drawn onto the best tree (RAxML_bipartitions). The
-    # previous input keys ('input_data'/'analysis') did not match this tool and
-    # were ignored, so RAxML ran a plain ML search (-f d) with no support.
+    # with support values drawn onto the best tree (RAxML_bipartitions).
+    # Conditional/section parameters MUST be passed as flattened '|'-delimited
+    # keys — nested dicts are silently ignored by the tool API, which then runs
+    # a plain ML search (-f d) with no bootstrap and emits no Bipartitions tree.
     inputs = {
         'infile': {'src': 'hda', 'id': ds_id},
-        'search_model_selector': {
-            'model_type': 'nucleotide',
-            'base_model': 'GTRGAMMA',
-        },
+        'search_model_selector|model_type': 'nucleotide',
+        'search_model_selector|base_model': 'GTRGAMMA',
         'random_seed': 1234567890,
-        'selExtraOpts': {
-            'extraOptions': 'full',
-            'search_algorithm': 'a',            # -f a: rapid bootstrap + ML + bipartitions
-            'rapid_bootstrap_random_seed': 12345,
-            'number_of_runs_conditional': {
-                'number_of_runs_selector': 'by_number_of_runs',
-                'number_of_runs': int(n_bootstraps),
-            },
-        },
+        'selExtraOpts|extraOptions': 'full',
+        'selExtraOpts|search_algorithm': 'a',   # -f a: rapid bootstrap + ML + bipartitions
+        'selExtraOpts|rapid_bootstrap_random_seed': 12345,
+        'selExtraOpts|number_of_runs_conditional|number_of_runs_selector': 'by_number_of_runs',
+        'selExtraOpts|number_of_runs_conditional|number_of_runs': int(n_bootstraps),
     }
     job_id = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
     return history_id, job_id
