@@ -307,7 +307,9 @@ def run_optimization(project_id):
             for sp_id in sp_ids:
                 for sid in sp_to_struct_ids.get(sp_id, []):
                     st = struct_states.get(sid, {}).get(char.id)
-                    if st:
+                    # "?" is the absence of a state, not a state. Skip it so
+                    # Fitch treats such tips as missing (no ?-> or ->? changes).
+                    if st and st.strip() != '?':
                         observed.add(st)
             if observed:
                 tip_states[norm_sp] = observed
