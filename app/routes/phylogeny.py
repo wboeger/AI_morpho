@@ -1025,16 +1025,25 @@ def _galaxy_download_results(api_key, job_id, dest_dir):
 
 
 # Galaxy dataset names emitted by the RAxML / RAxML-NG tools, ranked by how
-# useful the tree is for reconstruction. "bipartitions" is the ML best tree
-# WITH bootstrap support values drawn on it — that is what we want to display.
-# Files are saved by _galaxy_download_results as "<Galaxy dataset name>.dat".
+# useful the tree is for display. We want bootstrap support drawn on the tree
+# AS NODE LABELS — "bipartitions" (e.g. `)95:`), which the client parser reads.
+# "bipartitionsBranchLabels" stores support as `[95]` branch comments that the
+# parser strips, so it is only a last resort. Files are saved by
+# _galaxy_download_results as "<Galaxy dataset name>.dat".
 _TREE_NAME_PRIORITY = (
-    'bipartitionsbranchlabels',  # support as branch labels (RAxML 8, -f a)
-    'bipartitions',              # ML best tree WITH bootstrap support (preferred)
-    'besttree',                  # RAxML-NG best tree (.raxml.bestTree)
-    'result',                    # RAxML 8 ML best tree (RAxML_result.*)
+    'bipartitions',              # ML best tree, support as node labels (preferred)
+    'support',                   # RAxML-NG .raxml.support (support as node labels)
+    'bipartitionsbranchlabels',  # support as [..] branch labels (parser strips these)
+    'besttree',                  # RAxML-NG best tree (.raxml.bestTree) — no support
+    'result',                    # RAxML 8 ML best tree (RAxML_result.*) — no support
     'bestmodel',
 )
+
+
+def _norm_ds_name(name):
+    """Normalize a downloaded dataset filename to its comparable stem."""
+    stem = os.path.splitext(name)[0]           # drop the ".dat" suffix
+    return re.sub(r'[^a-z0-9]', '', stem.lower())
 
 
 def _looks_like_newick(path):
@@ -1050,18 +1059,25 @@ def _looks_like_newick(path):
 
 def _find_best_tree(results_dir):
     """Return the best RAxML tree file in results_dir, preferring the tree that
-    carries bootstrap support (bipartitions). Returns a path or None."""
+    carries bootstrap support as node labels (bipartitions). Returns path or None."""
     try:
         names = os.listdir(results_dir)
     except OSError:
         return None
-    for key in _TREE_NAME_PRIORITY:
-        for name in names:
-            if key in name.lower().replace('_', '').replace(' ', ''):
-                path = os.path.join(results_dir, name)
-                if os.path.isfile(path) and _looks_like_newick(path):
-                    return path
-    return None
+    norm = {name: _norm_ds_name(name) for name in names}
+
+    def pick(match):
+        for key in _TREE_NAME_PRIORITY:
+            for name in names:
+                if match(norm[name], key):
+                    path = os.path.join(results_dir, name)
+                    if os.path.isfile(path) and _looks_like_newick(path):
+                        return path
+        return None
+
+    # Exact stem match first (so 'bipartitions' is not shadowed by
+    # 'bipartitionsbranchlabels'), then fall back to a substring match.
+    return pick(lambda n, k: n == k) or pick(lambda n, k: k in n)
 
 
 def _find_newick_in_dir(results_dir):
@@ -1087,12 +1103,25 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000):
         state = _galaxy_wait_for_job(api_key, up_job, max_wait=300)
         if state != 'ok':
             raise RuntimeError(f'Galaxy upload job failed (state: {state})')
+    # Rapid bootstrap analysis (-f a): best ML tree + N bootstrap replicates,
+    # with support values drawn onto the best tree (RAxML_bipartitions). The
+    # previous input keys ('input_data'/'analysis') did not match this tool and
+    # were ignored, so RAxML ran a plain ML search (-f d) with no support.
     inputs = {
-        'input_data': {'values': [{'id': ds_id, 'src': 'hda'}]},
-        'analysis': {
-            'select_analysis': 'all',
-            '__current_case__': 2,
-            'num_replicates': str(n_bootstraps),
+        'infile': {'src': 'hda', 'id': ds_id},
+        'search_model_selector': {
+            'model_type': 'nucleotide',
+            'base_model': 'GTRGAMMA',
+        },
+        'random_seed': 1234567890,
+        'selExtraOpts': {
+            'extraOptions': 'full',
+            'search_algorithm': 'a',            # -f a: rapid bootstrap + ML + bipartitions
+            'rapid_bootstrap_random_seed': 12345,
+            'number_of_runs_conditional': {
+                'number_of_runs_selector': 'by_number_of_runs',
+                'number_of_runs': int(n_bootstraps),
+            },
         },
     }
     job_id = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
