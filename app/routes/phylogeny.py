@@ -1024,6 +1024,59 @@ def _galaxy_download_results(api_key, job_id, dest_dir):
     return downloaded
 
 
+# Galaxy dataset names emitted by the RAxML / RAxML-NG tools, ranked by how
+# useful the tree is for reconstruction. "bipartitions" is the ML best tree
+# WITH bootstrap support values drawn on it — that is what we want to display.
+# Files are saved by _galaxy_download_results as "<Galaxy dataset name>.dat".
+_TREE_NAME_PRIORITY = (
+    'bipartitionsbranchlabels',  # support as branch labels (RAxML 8, -f a)
+    'bipartitions',              # ML best tree WITH bootstrap support (preferred)
+    'besttree',                  # RAxML-NG best tree (.raxml.bestTree)
+    'result',                    # RAxML 8 ML best tree (RAxML_result.*)
+    'bestmodel',
+)
+
+
+def _looks_like_newick(path):
+    """Cheap sniff: first non-space char is '(' and a ')' appears in the head."""
+    try:
+        with open(path, 'r', errors='ignore') as fh:
+            head = fh.read(8192)
+    except OSError:
+        return False
+    head = head.lstrip()
+    return head.startswith('(') and ')' in head
+
+
+def _find_best_tree(results_dir):
+    """Return the best RAxML tree file in results_dir, preferring the tree that
+    carries bootstrap support (bipartitions). Returns a path or None."""
+    try:
+        names = os.listdir(results_dir)
+    except OSError:
+        return None
+    for key in _TREE_NAME_PRIORITY:
+        for name in names:
+            if key in name.lower().replace('_', '').replace(' ', ''):
+                path = os.path.join(results_dir, name)
+                if os.path.isfile(path) and _looks_like_newick(path):
+                    return path
+    return None
+
+
+def _find_newick_in_dir(results_dir):
+    """Fallback: first file in results_dir whose content parses as newick."""
+    try:
+        names = sorted(os.listdir(results_dir))
+    except OSError:
+        return None
+    for name in names:
+        path = os.path.join(results_dir, name)
+        if os.path.isfile(path) and _looks_like_newick(path):
+            return path
+    return None
+
+
 def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000):
     """Upload alignment to Galaxy and submit RAxML-NG. Returns (history_id, job_id)."""
     tool_id    = current_app.config.get('GALAXY_RAXML_TOOL_ID',
