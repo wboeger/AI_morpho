@@ -29,6 +29,9 @@ class Project(db.Model):
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
     tree_newick = db.Column(db.Text)  # reference phylogeny
+    tree_fragments = db.Column(db.JSON)  # {normalized_species: '18S+ITS'|'18S'|
+                                         # 'ITS'} carried from the imported job,
+                                         # for coloring tree tips by DNA fragment
 
     creator = db.relationship('User', backref='owned_projects')
     specimens = db.relationship('Specimen', backref='project', cascade='all, delete-orphan')

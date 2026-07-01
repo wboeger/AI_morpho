@@ -1624,6 +1624,7 @@ def import_tree(project_id, job_id):
         return jsonify({'error': 'No ML tree available. Download results first.'}), 400
     project = Project.query.get_or_404(project_id)
     project.tree_newick = job.tree_newick
+    project.tree_fragments = job.partition_presence or None
     added, existing = _sync_specimens_from_newick(job.tree_newick, project_id)
     db.session.commit()
     msg = 'ML tree imported into project.'
@@ -1641,6 +1642,7 @@ def import_nj_tree(project_id, job_id):
         return jsonify({'error': 'No NJ tree available for this job.'}), 400
     project = Project.query.get_or_404(project_id)
     project.tree_newick = job.nj_newick
+    project.tree_fragments = job.partition_presence or None
     added, existing = _sync_specimens_from_newick(job.nj_newick, project_id)
     db.session.commit()
     msg = 'NJ tree imported into project.'
@@ -1809,6 +1811,7 @@ def upload_tree_as_job(project_id):
         added = 0
         if import_to_project:
             project.tree_newick = newick
+            project.tree_fragments = None   # uploaded tree — no fragment info
             added, _ = _sync_specimens_from_newick(newick, project_id)
 
         db.session.commit()
@@ -2118,6 +2121,7 @@ def upload_tree(project_id):
         if not newick:
             return jsonify({'has_tree': False, 'message': 'No Newick tree found in file.'})
         project.tree_newick = newick
+        project.tree_fragments = None   # uploaded tree — no fragment info
         added, _ = _sync_specimens_from_newick(newick, project_id)
         db.session.commit()
         return jsonify({'has_tree': True, 'specimens_added': added})

@@ -137,6 +137,7 @@ def matrix_view(project_id):
                            dna_only=dna_only, unconfirmed_only=unconfirmed_only,
                            has_tree=bool(ordering_newick),
                            tree_newick=ordering_newick or '',
+                           tree_fragments=project.tree_fragments or {},
                            structure_types=structure_types)
 
 

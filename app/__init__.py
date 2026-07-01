@@ -499,6 +499,14 @@ def _migrate_phylogeny_jobs():
                 conn.execute(text(f'ALTER TABLE phylogeny_jobs ADD COLUMN {col} {typ}'))
         conn.commit()
 
+    # projects: tree_fragments (marker presence for imported-tree tip coloring)
+    if 'projects' in inspector.get_table_names():
+        proj_existing = {c['name'] for c in inspector.get_columns('projects')}
+        if 'tree_fragments' not in proj_existing:
+            with db.engine.connect() as conn:
+                conn.execute(text('ALTER TABLE projects ADD COLUMN tree_fragments TEXT'))
+                conn.commit()
+
 
 def _migrate_structures():
     """Add new columns to structures table without dropping existing data."""
