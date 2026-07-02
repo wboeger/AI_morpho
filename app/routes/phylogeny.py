@@ -406,6 +406,35 @@ def _align_step(job):
     _set_status(job, 'aligned', f'Alignment done ({n} sequences).{note} Trimming…')
 
 
+def _trimal_no_seq_loss(aligned_path, trimmed_path, timeout=600):
+    """Run trimAl without letting it silently drop whole sequences.
+
+    `-gappyout` trims poorly-conserved columns; if that leaves any sequence
+    all-gap, trimAl drops it from the output with no warning. Adding new
+    sequences to an alignment shifts which columns look "gappy" across the
+    combined set, so a previously-safe run can suddenly lose specimens.
+    Retries with the gentler `-automated1` heuristic, then falls back to the
+    untrimmed alignment (copied byte-for-byte) so no sequence is ever lost.
+    Returns (n_sequences, mode_used) where mode_used is 'gappyout',
+    'automated1', or 'untrimmed'.
+    """
+    n_in = _count_fasta(aligned_path)
+    for mode in ('-gappyout', '-automated1'):
+        result = subprocess.run(
+            ['trimal', '-in', aligned_path, '-out', trimmed_path, mode],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode == 0 and os.path.exists(trimmed_path) \
+                and os.path.getsize(trimmed_path):
+            n_out = _count_fasta(trimmed_path)
+            if n_out >= n_in:
+                return n_out, mode.lstrip('-')
+    # Both trimAl modes lost sequences (or failed) — use the untrimmed alignment.
+    import shutil as _sh
+    _sh.copyfile(aligned_path, trimmed_path)
+    return n_in, 'untrimmed'
+
+
 def _trim_step(job):
     """trimAl -gappyout (local). On Galaxy the trim already ran in _align_step."""
     trimmed_path = os.path.join(job.result_dir, f'{job.marker}_trimmed.fa')
@@ -421,21 +450,16 @@ def _trim_step(job):
         return
 
     _set_status(job, 'trimming', 'Running trimAl (-gappyout)…')
-    result = subprocess.run(
-        ['trimal', '-in', job.aligned_fasta_path,
-         '-out', trimmed_path, '-gappyout'],
-        capture_output=True, text=True, timeout=600,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f'trimAl failed: {result.stderr[:400]}')
-    if not os.path.exists(trimmed_path) or not os.path.getsize(trimmed_path):
-        raise RuntimeError('trimAl produced empty output.')
-    n = _count_fasta(trimmed_path)
+    n, mode = _trimal_no_seq_loss(job.aligned_fasta_path, trimmed_path)
+    note = '' if mode == 'gappyout' else \
+        (f' (fell back to -{mode} trimming — gappyout would have dropped '
+         f'sequence(s))' if mode == 'automated1' else
+         ' (trimAl would have dropped sequence(s) — using untrimmed alignment)')
     job.trimmed_fasta_path = trimmed_path
     job.fasta_filename      = os.path.basename(trimmed_path)
     job.n_sequences         = n
     _set_status(job, 'trimmed',
-                f'Trimming complete ({n} sequences). '
+                f'Trimming complete ({n} sequences).{note} '
                 f'Ready to submit to CIPRES.')
 
 
@@ -1035,7 +1059,9 @@ def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
         raise RuntimeError('Galaxy MAFFT produced no FASTA output (check '
                            'GALAXY_MAFFT_TOOL_ID / params).')
 
-    # trimAl (best-effort — fall back to the alignment if it is not FASTA)
+    # trimAl (best-effort — fall back to the alignment if it is not FASTA, or if
+    # it silently drops whole sequences that end up all-gap after trimming).
+    n_aligned = _count_fasta(aligned_out)
     try:
         trim_job = _galaxy_run_chain(
             api_key, hist, cfg['GALAXY_TRIMAL_TOOL_ID'], cfg['GALAXY_TRIMAL_INPUT_KEY'],
@@ -1043,8 +1069,10 @@ def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
         trm_ds, _ = _galaxy_pick_fasta_output(api_key, trim_job, trimmed_out)
     except Exception:
         trm_ds = None
+    if trm_ds and _count_fasta(trimmed_out) < n_aligned:
+        trm_ds = None
     if not trm_ds:
-        # Use the untrimmed alignment so tree building can still run.
+        # Use the untrimmed alignment so no sequence is ever lost.
         _sh.copyfile(aligned_out, trimmed_out)
         job._trim_skipped = True
     return aligned_out, trimmed_out
