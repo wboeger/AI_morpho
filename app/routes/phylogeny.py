@@ -708,8 +708,9 @@ def _align_trim_thread(app, job_id):
             db.session.commit()
 
 
-def _replace_realign_thread(app, job_id, replacements, removals):
+def _replace_realign_thread(app, job_id, replacements, removals, revcomps=None):
     """Fetch replacement sequences, rewrite raw FASTA, re-align → trim → NJ."""
+    revcomps = revcomps or []
     with app.app_context():
         job = db.session.get(PhylogenyJob, job_id)
         if not job:
@@ -730,7 +731,13 @@ def _replace_realign_thread(app, job_id, replacements, removals):
                 return s[3:] if s.startswith('_R_') else s
 
             drop_ids = {_strip_r(r) for r in removals} | {_strip_r(r['old_id']) for r in replacements}
+            revcomp_ids = {_strip_r(r) for r in revcomps}
             kept = [rec for rec in current if _strip_r(rec.id) not in drop_ids]
+
+            # Reverse-complement selected sequences in place
+            for rec in kept:
+                if _strip_r(rec.id) in revcomp_ids:
+                    rec.seq = rec.seq.reverse_complement()
 
             # Fetch and insert replacements
             if replacements:
@@ -1926,11 +1933,12 @@ def replace_and_realign(project_id, job_id):
     data         = request.get_json() or {}
     replacements = data.get('replacements', [])   # [{old_id, new_accession, species}, ...]
     removals     = data.get('removals', [])        # [old_id, ...]
-    if not replacements and not removals:
+    revcomps     = data.get('revcomps', [])         # [old_id, ...]
+    if not replacements and not removals and not revcomps:
         return jsonify({'error': 'No changes specified.'}), 400
     app = current_app._get_current_object()
     t = threading.Thread(target=_replace_realign_thread,
-                         args=(app, job_id, replacements, removals), daemon=True)
+                         args=(app, job_id, replacements, removals, revcomps), daemon=True)
     t.start()
     return jsonify({'status': 'aligning', 'message': 'Applying changes and re-aligning…'})
 

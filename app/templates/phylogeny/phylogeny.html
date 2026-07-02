@@ -1172,13 +1172,17 @@ function _renderNjTable() {
             if (ch.type === 'remove') {
                 rowBg = 'background:#fff0f0;';
                 changeCell = '<span style="color:var(--danger); font-size:0.75rem; font-weight:600;">Remove</span>';
+            } else if (ch.type === 'revcomp') {
+                rowBg = 'background:#eef7ff;';
+                changeCell = '<span style="color:#1a5fb4; font-size:0.75rem; font-weight:600;">Rev-comp</span>';
             } else {
                 rowBg = 'background:#fffbe5;';
                 changeCell = `<span style="color:#856404; font-size:0.72rem; font-weight:600;" title="${escHtml(ch.description||'')}">&#8594; ${escHtml(ch.new_accession)}<br><em style="font-weight:normal;">${ch.length ? ch.length.toLocaleString()+' bp' : ''}</em></span>`;
             }
         }
         const acc = seq.id.includes('|') ? seq.id.split('|')[0] : seq.id;
-        const isRemoved = ch && ch.type === 'remove';
+        const isRemoved  = ch && ch.type === 'remove';
+        const isRevComp  = ch && ch.type === 'revcomp';
 
         const tr = document.createElement('tr');
         tr.id = `njrow-${i}`;
@@ -1191,9 +1195,11 @@ function _renderNjTable() {
             <td style="padding:0.2rem 0.5rem; font-family:monospace; font-size:0.75rem;">${escHtml(acc)}</td>
             <td style="padding:0.2rem 0.5rem; text-align:right;">${seq.length.toLocaleString()}</td>
             <td style="padding:0.2rem 0.5rem; min-width:90px;">${changeCell}</td>
-            <td style="padding:0.2rem 0.4rem;">
+            <td style="padding:0.2rem 0.4rem; white-space:nowrap;">
                 <button class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
                     id="altbtn-${i}" onclick="toggleAlternatives(${i})">Replace &#9660;</button>
+                <button class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.35rem;"
+                    title="Reverse complement this sequence" onclick="toggleNjRevComp(${i})">${isRevComp ? '&#10003; Rev-comp' : '&#8644; Rev-comp'}</button>
             </td>`;
         tbody.appendChild(tr);
 
@@ -1218,6 +1224,18 @@ function toggleNjRemove(i) {
         if (_altOpenIdx === i) _closeAltRow(i);
     } else {
         delete _njChanges[seq.id];
+    }
+    _renderNjTable();
+}
+
+function toggleNjRevComp(i) {
+    const seq = _njSequences[i];
+    const ch  = _njChanges[seq.id];
+    if (ch && ch.type === 'revcomp') {
+        delete _njChanges[seq.id];
+    } else {
+        _njChanges[seq.id] = {type: 'revcomp'};
+        if (_altOpenIdx === i) _closeAltRow(i);
     }
     _renderNjTable();
 }
@@ -1320,9 +1338,12 @@ async function applyNjChanges() {
     if (!_njJobId) return;
     const replacements = [];
     const removals     = [];
+    const revcomps      = [];
     for (const [old_id, ch] of Object.entries(_njChanges)) {
         if (ch.type === 'remove') {
             removals.push(old_id);
+        } else if (ch.type === 'revcomp') {
+            revcomps.push(old_id);
         } else {
             replacements.push({old_id, new_accession: ch.new_accession, species: ch.species});
         }
@@ -1335,7 +1356,7 @@ async function applyNjChanges() {
         const resp = await fetch(
             `/api/project/${PROJECT_ID}/phylogeny/${_njJobId}/replace_and_realign`,
             {method: 'POST', headers: {'Content-Type':'application/json'},
-             body: JSON.stringify({replacements, removals})}
+             body: JSON.stringify({replacements, removals, revcomps})}
         );
         const data = await safeJSON(resp);
         if (!resp.ok || data.error) {
