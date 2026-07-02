@@ -1119,12 +1119,30 @@ async function openNjModal(jobId) {
         _njSequences = data.sequences || [];
         document.getElementById('njSeqSummary').innerHTML =
             `<strong>${_njSequences.length}</strong> sequences &nbsp;·&nbsp; ` +
-            `Check rows to remove or replace before approving for Galaxy.`;
+            `Check rows to remove or replace before approving for Galaxy.` +
+            _njWarningBannerHtml(data);
         _renderNjTable();
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
     } catch(err) {
         document.getElementById('njSeqSummary').textContent = 'Network error: ' + err.message;
     }
+}
+
+function _njWarningBannerHtml(data) {
+    let html = '';
+    const missing = data.missing_specimens || [];
+    const flipped = data.flipped_sequences || [];
+    if (missing.length) {
+        html += `<div style="margin-top:0.4rem; padding:0.4rem 0.6rem; background:#fff0f0; border:1px solid #f5b5b5; border-radius:4px; font-size:0.78rem; color:#a02020;">
+            &#9888; <strong>${missing.length}</strong> specimen(s) missing from the final alignment: ${missing.map(escHtml).join(', ')}.
+        </div>`;
+    }
+    if (flipped.length) {
+        html += `<div style="margin-top:0.4rem; padding:0.4rem 0.6rem; background:#eef7ff; border:1px solid #a8cdf0; border-radius:4px; font-size:0.78rem; color:#1a5fb4;">
+            &#8644; <strong>${flipped.length}</strong> sequence(s) were auto-reversed for direction mismatch (marked below). Verify these look correct.
+        </div>`;
+    }
+    return html;
 }
 
 function closeNjModal() {
@@ -1153,7 +1171,8 @@ async function openNjModalRevise(jobId) {
         _njSequences = data.sequences || [];
         document.getElementById('njSeqSummary').innerHTML =
             `<strong>${_njSequences.length}</strong> sequences from previous run &nbsp;·&nbsp; ` +
-            `Remove or replace sequences, then <strong>Apply &amp; Re-run NJ</strong> → resubmit to Galaxy.`;
+            `Remove or replace sequences, then <strong>Apply &amp; Re-run NJ</strong> → resubmit to Galaxy.` +
+            _njWarningBannerHtml(data);
         _renderNjTable();
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
     } catch(err) {
@@ -1167,7 +1186,9 @@ function _renderNjTable() {
     _njSequences.forEach((seq, i) => {
         const ch  = _njChanges[seq.id];
         let rowBg = '';
-        let changeCell = '<span style="font-size:0.72rem; color:var(--gray-400);">—</span>';
+        let changeCell = seq.flipped
+            ? '<span style="font-size:0.72rem; color:#1a5fb4;" title="Auto-reversed by MAFFT for direction mismatch">&#8644; auto-flipped</span>'
+            : '<span style="font-size:0.72rem; color:var(--gray-400);">—</span>';
         if (ch) {
             if (ch.type === 'remove') {
                 rowBg = 'background:#fff0f0;';
@@ -1179,6 +1200,8 @@ function _renderNjTable() {
                 rowBg = 'background:#fffbe5;';
                 changeCell = `<span style="color:#856404; font-size:0.72rem; font-weight:600;" title="${escHtml(ch.description||'')}">&#8594; ${escHtml(ch.new_accession)}<br><em style="font-weight:normal;">${ch.length ? ch.length.toLocaleString()+' bp' : ''}</em></span>`;
             }
+        } else if (seq.flipped) {
+            rowBg = 'background:#f7fbff;';
         }
         const acc = seq.id.includes('|') ? seq.id.split('|')[0] : seq.id;
         const isRemoved  = ch && ch.type === 'remove';

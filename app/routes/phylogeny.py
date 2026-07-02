@@ -191,6 +191,16 @@ def _count_fasta(path):
     return sum(1 for line in open(path) if line.startswith('>'))
 
 
+def _find_r_flipped_ids(fasta_path):
+    """Return ids of records MAFFT reverse-complemented (`_R_` prefix), with the
+    prefix stripped so they match the original raw-FASTA ids."""
+    ids = []
+    for line in open(fasta_path):
+        if line.startswith('>_R_'):
+            ids.append(line[1:].split()[0][3:])
+    return ids
+
+
 # ── Pipeline steps (run inside background thread) ─────────────────────────────
 
 def _set_status(job, status, message):
@@ -233,6 +243,7 @@ def _fetch_step(job):
             more = '' if len(missing) <= 8 else f' (+{len(missing) - 8} more)'
             msg += f' No NCBI {job.marker} sequence for: {shown}{more}.'
         ingroup = kept
+        job.missing_specimens = [m.replace(' ', '_') for m in missing]
         _set_status(job, 'fetching', msg)
 
     job.n_sequences_deduped = len(ingroup)
@@ -319,8 +330,10 @@ def _orient_fasta_by_reference(in_path, k=8):
     For each sequence the shared-k-mer count is compared forward vs reverse
     complement and the higher-scoring (lower alignment cost) orientation is kept.
     Rewrites `in_path` in place only if something flipped. Best-effort: on any
-    error the file is left untouched. Returns in_path.
+    error the file is left untouched. Returns list of ids that were flipped
+    (empty list on error or if nothing flipped).
     """
+    flipped_ids = []
     try:
         from Bio import SeqIO
         from Bio.Seq import Seq
@@ -330,12 +343,11 @@ def _orient_fasta_by_reference(in_path, k=8):
 
         records = list(SeqIO.parse(in_path, 'fasta'))
         if len(records) < 2:
-            return in_path
+            return flipped_ids
         ref = max(records, key=lambda r: len(r.seq))
         ref_k = kmers(str(ref.seq).upper())
         if not ref_k:
-            return in_path
-        flipped = 0
+            return flipped_ids
         for rec in records:
             if rec is ref:
                 continue
@@ -347,12 +359,12 @@ def _orient_fasta_by_reference(in_path, k=8):
             if rc > fwd:
                 rec.seq = rec.seq.reverse_complement()
                 rec.description = ''
-                flipped += 1
-        if flipped:
+                flipped_ids.append(rec.id)
+        if flipped_ids:
             SeqIO.write(records, in_path, 'fasta')
     except Exception:
-        pass
-    return in_path
+        return []
+    return flipped_ids
 
 
 def _align_step(job):
@@ -387,7 +399,11 @@ def _align_step(job):
         raise RuntimeError(f'MAFFT failed: {result.stderr[:400]}')
     n = _count_fasta(aligned_path)
     job.aligned_fasta_path = aligned_path
-    _set_status(job, 'aligned', f'Alignment done ({n} sequences). Trimming…')
+    flipped = _find_r_flipped_ids(aligned_path)
+    if flipped:
+        job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+    note = f' {len(flipped)} sequence(s) auto-reversed by MAFFT (direction mismatch).' if flipped else ''
+    _set_status(job, 'aligned', f'Alignment done ({n} sequences).{note} Trimming…')
 
 
 def _trim_step(job):
@@ -421,6 +437,34 @@ def _trim_step(job):
     _set_status(job, 'trimmed',
                 f'Trimming complete ({n} sequences). '
                 f'Ready to submit to CIPRES.')
+
+
+def _verify_specimen_coverage(job):
+    """Compare job.restrict_species (Specimens page selection) against the species
+    actually present in the final trimmed alignment. Sets job.missing_specimens
+    and appends a warning to status_message if any specimen has no sequence in
+    the final alignment. Non-fatal — never raises."""
+    if not job.restrict_species or not job.trimmed_fasta_path \
+            or not os.path.exists(job.trimmed_fasta_path):
+        return
+    try:
+        from Bio import SeqIO
+        present = set()
+        for rec in SeqIO.parse(job.trimmed_fasta_path, 'fasta'):
+            rid = rec.id[3:] if rec.id.startswith('_R_') else rec.id
+            sp = rid.split('|')[1] if '|' in rid else rid
+            present.add(_norm_species(sp))
+        allowed = {_norm_species(s): s for s in job.restrict_species if _norm_species(s)}
+        missing = sorted(allowed[n] for n in allowed if n not in present)
+        job.missing_specimens = missing
+        if missing:
+            shown = ', '.join(m.replace(' ', '_') for m in missing[:8])
+            more = '' if len(missing) <= 8 else f' (+{len(missing) - 8} more)'
+            warn = f' ⚠ {len(missing)} specimen(s) missing from final alignment: {shown}{more}.'
+            job.status_message = (job.status_message or '') + warn
+        db.session.commit()
+    except Exception:
+        pass
 
 
 def _nj_step(job):
@@ -613,6 +657,10 @@ def _align_trim_marker(job, raw_path, suffix):
         _galaxy_align_trim(job, raw_path, aligned_path, trimmed_path)
         return aligned_path, trimmed_path
     aligned_path = _align_marker(raw_path, suffix, job.result_dir)
+    flipped = _find_r_flipped_ids(aligned_path)
+    if flipped:
+        job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+        db.session.commit()
     trimmed_path = _trim_marker(aligned_path, suffix, job.result_dir)
     return aligned_path, trimmed_path
 
@@ -666,6 +714,7 @@ def _concatenated_pipeline_thread(app, job_id):
             _set_status(job, 'trimmed',
                         f'Concatenation done: {n_taxa} taxa, {w18s}bp 18S + {wITS}bp ITS = '
                         f'{w18s + wITS}bp total. Ready for Galaxy.')
+            _verify_specimen_coverage(job)
 
             _nj_step(job)
             _modeltest_step(job)
@@ -700,6 +749,7 @@ def _align_trim_thread(app, job_id):
         try:
             _align_step(job)
             _trim_step(job)
+            _verify_specimen_coverage(job)
             _nj_step(job)
             _modeltest_step(job)   # non-fatal; updates model fields if installed
         except Exception as exc:
@@ -740,6 +790,7 @@ def _replace_realign_thread(app, job_id, replacements, removals, revcomps=None):
                     rec.seq = rec.seq.reverse_complement()
 
             # Fetch and insert replacements
+            failed_accs = []
             if replacements:
                 new_accs = [r['new_accession'] for r in replacements]
                 _set_status(job, 'aligning',
@@ -752,6 +803,10 @@ def _replace_realign_thread(app, job_id, replacements, removals, revcomps=None):
                         rec    = fetched[acc]
                         new_id = f"{rec.id}|{species}" if species else rec.id
                         kept.append(BR(rec.seq, id=new_id, name='', description=''))
+                    else:
+                        # NCBI did not return this accession — the specimen would
+                        # otherwise vanish silently (it was already dropped above).
+                        failed_accs.append(acc)
 
             _write_fasta(kept, job.raw_fasta_path)
             job.n_sequences_final = len(kept)
@@ -760,6 +815,13 @@ def _replace_realign_thread(app, job_id, replacements, removals, revcomps=None):
 
             _align_step(job)
             _trim_step(job)
+            _verify_specimen_coverage(job)
+            if failed_accs:
+                warn = (f' ⚠ Failed to fetch replacement accession(s) from NCBI: '
+                        f'{", ".join(failed_accs)} — these specimens are missing '
+                        f'from the alignment.')
+                job.status_message = (job.status_message or '') + warn
+                db.session.commit()
             _nj_step(job)
             _modeltest_step(job)
 
@@ -954,7 +1016,10 @@ def _galaxy_align_trim(job, in_path, aligned_out, trimmed_out):
                            '(set it on the job or GALAXY_API_KEY).')
     hist = _galaxy_create_history(api_key, 'GyroMorpho_AlignTrim')
     # Galaxy MAFFT has no --adjustdirection; orient sequences before upload.
-    _orient_fasta_by_reference(in_path)
+    flipped = _orient_fasta_by_reference(in_path)
+    if flipped:
+        job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+        db.session.commit()
     ds_id, up_job = _galaxy_upload_file(api_key, hist, in_path, 'fasta')
     if up_job:
         st = _galaxy_wait_for_job(api_key, up_job, max_wait=600)
@@ -1880,17 +1945,22 @@ def nj_preview(project_id, job_id):
     if not job.nj_newick:
         return jsonify({'error': 'NJ tree not available.'}), 404
     sequences = []
+    flipped_set = set(job.flipped_sequences or [])
     if job.trimmed_fasta_path and os.path.exists(job.trimmed_fasta_path):
         from Bio import SeqIO
         with open(job.trimmed_fasta_path) as fh:
             for rec in SeqIO.parse(fh, 'fasta'):
                 sp = rec.id.split('|')[1].replace('_', ' ') if '|' in rec.id else rec.id
-                sequences.append({'id': rec.id, 'species': sp, 'length': len(rec.seq)})
+                raw_id = rec.id[3:] if rec.id.startswith('_R_') else rec.id
+                sequences.append({'id': rec.id, 'species': sp, 'length': len(rec.seq),
+                                  'flipped': raw_id in flipped_set or rec.id in flipped_set})
     return jsonify({
         'newick':     job.nj_newick,
         'sequences':  sequences,
         'n_sequences': len(sequences),
         'status_message': job.status_message or '',
+        'flipped_sequences': sorted(flipped_set),
+        'missing_specimens': job.missing_specimens or [],
     })
 
 
@@ -2018,11 +2088,13 @@ def add_sequences(project_id, job_id):
                 current = list(SeqIO.parse(fh, 'fasta'))
         current_ids = {r.id for r in current}
 
-        added = []
+        added  = []
+        failed = []
         for it in items:
             acc     = it['accession']
             species = it.get('species', '').strip()
             if acc not in fetched:
+                failed.append(acc)
                 continue
             rec = fetched[acc]
             if not species:
@@ -2036,11 +2108,14 @@ def add_sequences(project_id, job_id):
                               'length': len(rec.seq)})
 
         if not added:
-            return jsonify({'error': 'No new sequences added (may already be present)'}), 400
+            return jsonify({'error': 'No new sequences added (may already be present)',
+                            'failed': failed}), 400
 
         _write_fasta(current, job.raw_fasta_path)
         job.n_sequences_final = len(current)
         job.n_sequences       = len(current)
+
+        fail_note = f' {len(failed)} accession(s) failed: {", ".join(failed)}.' if failed else ''
 
         if job.status == 'nj_ready':
             # Re-run align→trim→NJ automatically
@@ -2049,11 +2124,12 @@ def add_sequences(project_id, job_id):
             t.start()
             db.session.commit()
             return jsonify({'status': 'aligning',
-                            'message': f'Added {len(added)} sequence(s). Re-aligning…',
-                            'added': added})
+                            'message': f'Added {len(added)} sequence(s).{fail_note} Re-aligning…',
+                            'added': added, 'failed': failed})
 
         db.session.commit()
-        return jsonify({'status': job.status, 'added': added, 'n_sequences': len(current)})
+        return jsonify({'status': job.status, 'added': added, 'failed': failed,
+                        'n_sequences': len(current)})
 
     except Exception as exc:
         return jsonify({'error': str(exc)}), 500

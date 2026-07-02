@@ -485,6 +485,8 @@ def _migrate_phylogeny_jobs():
         ('restrict_species',     'TEXT'),
         ('partition_spec',       'TEXT'),
         ('partition_presence',   'TEXT'),
+        ('flipped_sequences',    'TEXT'),
+        ('missing_specimens',    'TEXT'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():

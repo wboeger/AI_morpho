@@ -271,6 +271,12 @@ class PhylogenyJob(db.Model):
     partition_presence = db.Column(db.JSON)  # {normalized_species: '18S+ITS'|'18S'|
                                             # 'ITS'} — which markers each taxon had
                                             # in the concatenation (for tip coloring)
+    flipped_sequences = db.Column(db.JSON, default=list)   # ids reverse-complemented
+                                            # by MAFFT --adjustdirection / Galaxy
+                                            # orientation heuristic
+    missing_specimens = db.Column(db.JSON, default=list)   # Specimens-page species
+                                            # names with no sequence in the final
+                                            # alignment
 
     # Sequence counts through pipeline
     n_sequences_raw = db.Column(db.Integer)
