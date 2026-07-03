@@ -56,10 +56,19 @@ DEFAULT_OUTGROUP_DEFS = [
 def _ncbi_search(term, email, retmax=10000):
     from Bio import Entrez
     Entrez.email = email
-    h = Entrez.esearch(db='nuccore', term=term, retmax=retmax)
-    result = Entrez.read(h)
-    h.close()
-    return result['IdList'], int(result['Count'])
+    for attempt in range(5):
+        try:
+            h = Entrez.esearch(db='nuccore', term=term, retmax=retmax)
+            result = Entrez.read(h)
+            h.close()
+            time.sleep(0.4)   # respect NCBI rate limit (3 req/s without API key)
+            return result['IdList'], int(result['Count'])
+        except Exception as exc:
+            is_429 = '429' in str(exc) or 'Too Many Requests' in str(exc)
+            if attempt < 4 and (is_429 or attempt < 2):
+                time.sleep(5 * (attempt + 1) if is_429 else 3)
+            else:
+                raise
 
 
 def _ncbi_fetch_batch(ids, email, batch_size=200):
@@ -69,7 +78,7 @@ def _ncbi_fetch_batch(ids, email, batch_size=200):
     records = {}
     for i in range(0, len(ids), batch_size):
         batch = ids[i:i + batch_size]
-        for attempt in range(3):
+        for attempt in range(5):
             try:
                 h = Entrez.efetch(db='nuccore', id=','.join(batch),
                                   rettype='fasta', retmode='text')
@@ -77,9 +86,10 @@ def _ncbi_fetch_batch(ids, email, batch_size=200):
                     records[rec.id] = rec
                 h.close()
                 break
-            except Exception:
-                if attempt < 2:
-                    time.sleep(3)
+            except Exception as exc:
+                is_429 = '429' in str(exc) or 'Too Many Requests' in str(exc)
+                if attempt < 4:
+                    time.sleep(5 * (attempt + 1) if is_429 else 3)
                 else:
                     raise
         time.sleep(0.4)   # respect NCBI rate limit (3 req/s without API key)
