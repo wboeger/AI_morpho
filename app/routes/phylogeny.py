@@ -128,6 +128,51 @@ def _restrict_ingroup(ingroup, restrict_species):
     return kept, matched, missing
 
 
+def _fetch_missing_specimens(missing_norm, restrict_species, email, gene_q, min_length, bad_accessions=None):
+    """Per-species targeted NCBI retry for specimens the bulk taxon-level search
+    missed. Returns (recovered_records, still_missing_norm).
+
+    missing_norm: normalized ('genus species') names from _restrict_ingroup.
+    restrict_species: original species-name strings from the Specimens page,
+    used to recover display casing/underscores and as the search term.
+    """
+    from Bio.SeqRecord import SeqRecord
+
+    orig_by_norm = {}
+    for s in restrict_species:
+        n = _norm_species(s)
+        if n and n not in orig_by_norm:
+            orig_by_norm[n] = s
+
+    recovered = []
+    still_missing = []
+    for n in missing_norm:
+        orig = orig_by_norm.get(n, n)
+        species_query = orig.replace('_', ' ').strip()
+        try:
+            query = f'"{species_query}"[Organism] AND ({gene_q})'
+            ids, _ = _ncbi_search(query, email, retmax=50)
+            if not ids:
+                still_missing.append(n)
+                continue
+            recs = _ncbi_fetch_batch(ids, email)
+            if bad_accessions:
+                recs = {k: v for k, v in recs.items()
+                        if not any(b.strip() in v.description
+                                   for b in bad_accessions if b.strip())}
+            candidates = [r for r in recs.values() if len(r.seq) >= min_length]
+            if not candidates:
+                still_missing.append(n)
+                continue
+            best = max(candidates, key=lambda r: len(r.seq))
+            sp_label = species_query.replace(' ', '_')
+            new_id = f"{best.id}|{sp_label}"
+            recovered.append(SeqRecord(best.seq, id=new_id, name='', description=''))
+        except Exception:
+            still_missing.append(n)
+    return recovered, still_missing
+
+
 def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
     """
     Filter and de-duplicate records, keeping one per species (longest that is
@@ -238,6 +283,24 @@ def _fetch_step(job):
         kept, matched, missing = _restrict_ingroup(ingroup, job.restrict_species)
         msg = (f'Restricted to project specimens: {len(kept)} of {len(ingroup)} '
                f'sequences kept ({len(matched)} species matched).')
+
+        # The one broad taxon-level search can miss a specimen (retmax cutoff,
+        # gene-query wording mismatch, name variant) even though NCBI has a
+        # usable record for it. Retry each missing specimen with its own
+        # targeted per-species search before giving up on it.
+        if missing:
+            _set_status(job, 'fetching',
+                        msg + f' Retrying {len(missing)} missing specimen(s) individually…')
+            recovered, still_missing = _fetch_missing_specimens(
+                missing, job.restrict_species, email, gene_q, min_len, bad_acc)
+            kept.extend(recovered)
+            if recovered:
+                msg = (f'Restricted to project specimens: {len(kept)} of '
+                       f'{len(ingroup) + len(recovered)} sequences kept '
+                       f'({len(matched) + len(recovered)} species matched, '
+                       f'{len(recovered)} recovered via per-species retry).')
+            missing = still_missing
+
         if missing:
             shown = ', '.join(m.replace(' ', '_') for m in missing[:8])
             more = '' if len(missing) <= 8 else f' (+{len(missing) - 8} more)'
@@ -591,9 +654,15 @@ def _fetch_marker(job, marker, gene_query, suffix):
     # Optional: restrict ingroup to project specimen species
     if job.restrict_species:
         kept, matched, missing = _restrict_ingroup(ingroup, job.restrict_species)
+        recovered = []
+        if missing:
+            recovered, missing = _fetch_missing_specimens(
+                missing, job.restrict_species, email, gene_query, min_len, bad_acc)
+            kept.extend(recovered)
         _set_status(job, 'fetching',
                     f'[{marker}] Restricted to project specimens: {len(kept)} of '
-                    f'{len(ingroup)} kept ({len(matched)} species matched'
+                    f'{len(ingroup) + len(recovered)} kept '
+                    f'({len(matched) + len(recovered)} species matched'
                     f'{", " + str(len(missing)) + " missing" if missing else ""}).')
         ingroup = kept
 
