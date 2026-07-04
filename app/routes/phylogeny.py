@@ -909,9 +909,14 @@ def _concatenated_pipeline_thread(app, job_id):
             ]
             # Which markers each taxon contributed — for coloring tree tips
             job.partition_presence = presence
+            n_both  = sum(1 for m in presence.values() if m == '18S+ITS')
+            n_18only = sum(1 for m in presence.values() if m == '18S')
+            n_itsonly = sum(1 for m in presence.values() if m == 'ITS')
             _set_status(job, 'trimmed',
                         f'Concatenation done: {n_taxa} taxa, {w18s}bp 18S + {wITS}bp ITS = '
-                        f'{w18s + wITS}bp total. Ready for Galaxy.')
+                        f'{w18s + wITS}bp total. '
+                        f'{n_both} taxa with both 18S+ITS, {n_18only} with 18S only, '
+                        f'{n_itsonly} with ITS only. Ready for Galaxy.')
             _verify_specimen_coverage(job)
 
             _nj_step(job)
