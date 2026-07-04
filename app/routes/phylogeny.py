@@ -248,6 +248,37 @@ def _quality_orient_records(records, k=8, max_ambiguous_frac=0.05):
     return flipped, low_quality
 
 
+def _flexible_search_candidates(species_query, email, min_length=1, top_n=5, retmax=30):
+    """Broadest possible NCBI search for a species — organism name only, no
+    marker/gene restriction at all. Last-resort rescue when even the relaxed
+    marker-specific query (_fetch_missing_specimens) finds nothing. Results are
+    NOT auto-included — they go into job.pending_candidates for the user to
+    accept or reject before the pipeline proceeds to alignment.
+    Returns a list of {'accession','length','description'} dicts, longest first.
+    """
+    try:
+        ids, _ = _ncbi_search(f'"{species_query}"[Organism]', email, retmax=retmax)
+        if not ids:
+            return []
+        recs = _ncbi_fetch_batch(ids, email)
+        cands = [r for r in recs.values() if len(r.seq) >= min_length]
+        cands.sort(key=lambda r: len(r.seq), reverse=True)
+        return [{'accession': r.id, 'length': len(r.seq),
+                 'description': r.description[:160]} for r in cands[:top_n]]
+    except Exception:
+        return []
+
+
+def _add_pending_candidates(job, suffix, species_norm, species_display, candidates):
+    """Merge newly-found flexible-search candidates into job.pending_candidates,
+    keyed by marker suffix then normalized species name."""
+    pc = dict(job.pending_candidates or {})
+    bucket = dict(pc.get(suffix, {}))
+    bucket[species_norm] = {'display': species_display, 'candidates': candidates}
+    pc[suffix] = bucket
+    job.pending_candidates = pc
+
+
 def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
     """
     Filter and de-duplicate records, keeping one per species (longest that is
@@ -376,10 +407,30 @@ def _fetch_step(job):
                        f'{len(recovered)} recovered via per-species retry).')
             missing = still_missing
 
+        # Last resort for species still missing: a bare organism-name search
+        # with no marker restriction at all. These are NOT auto-included —
+        # they're queued in job.pending_candidates for you to accept/reject
+        # on the Review Sequences screen before the pipeline aligns anything.
+        still_unfound = []
+        if missing:
+            orig_by_norm = {_norm_species(s): s for s in job.restrict_species if _norm_species(s)}
+            for n in missing:
+                orig = orig_by_norm.get(n, n)
+                species_query = orig.replace('_', ' ').strip()
+                cands = _flexible_search_candidates(species_query, email, min_length=1)
+                if cands:
+                    _add_pending_candidates(job, job.marker, n, orig, cands)
+                else:
+                    still_unfound.append(n)
+            n_pending = len(missing) - len(still_unfound)
+            if n_pending:
+                msg += f' {n_pending} specimen(s) need your review (flexible search found candidates).'
+            missing = still_unfound
+
         if missing:
             shown = ', '.join(m.replace(' ', '_') for m in missing[:8])
             more = '' if len(missing) <= 8 else f' (+{len(missing) - 8} more)'
-            msg += f' No NCBI {job.marker} sequence for: {shown}{more}.'
+            msg += f' No NCBI sequence at all for: {shown}{more}.'
         ingroup = kept
         job.missing_specimens = [m.replace(' ', '_') for m in missing]
         _set_status(job, 'fetching', msg)
@@ -757,10 +808,27 @@ def _fetch_marker(job, marker, gene_query, suffix):
             recovered, missing = _fetch_missing_specimens(
                 missing, job.restrict_species, email, gene_query, min_len, bad_acc)
             kept.extend(recovered)
+
+        n_pending = 0
+        if missing:
+            orig_by_norm = {_norm_species(s): s for s in job.restrict_species if _norm_species(s)}
+            still_unfound = []
+            for n in missing:
+                orig = orig_by_norm.get(n, n)
+                species_query = orig.replace('_', ' ').strip()
+                cands = _flexible_search_candidates(species_query, email, min_length=1)
+                if cands:
+                    _add_pending_candidates(job, suffix, n, orig, cands)
+                    n_pending += 1
+                else:
+                    still_unfound.append(n)
+            missing = still_unfound
+
         _set_status(job, 'fetching',
                     f'[{marker}] Restricted to project specimens: {len(kept)} of '
                     f'{len(ingroup) + len(recovered)} kept '
                     f'({len(matched) + len(recovered)} species matched'
+                    f'{", " + str(n_pending) + " need review" if n_pending else ""}'
                     f'{", " + str(len(missing)) + " missing" if missing else ""}).')
         ingroup = kept
 
@@ -863,8 +931,11 @@ def _align_trim_marker(job, raw_path, suffix):
     return aligned_path, trimmed_path
 
 
-def _concatenated_pipeline_thread(app, job_id):
-    """Background thread: full concatenated (18S + ITS) fetch → align → trim → concatenate → NJ."""
+def _concatenated_fetch_thread(app, job_id):
+    """Background thread: fetch both markers (18S + ITS), then stop and wait
+    for the user to review sequences / resolve any pending species candidates
+    — mirrors the single-marker _pipeline_thread. Alignment only starts once
+    the user clicks Approve & Align (see approve_and_align route)."""
     with app.app_context():
         job = db.session.get(PhylogenyJob, job_id)
         if not job:
@@ -875,16 +946,34 @@ def _concatenated_pipeline_thread(app, job_id):
             q18s = queries.get('18S', DEFAULT_GENE_QUERY_18S)
             qITS = queries.get('ITS', DEFAULT_GENE_QUERY_ITS)
 
-            # Fetch both markers
             raw18s, ing18s, tot18s = _fetch_marker(job, '18S', q18s, '18S')
             rawITS, ingITS, totITS = _fetch_marker(job, 'ITS', qITS, 'ITS')
 
             job.raw_fasta_path   = raw18s   # store primary for downloads
             job.n_sequences_raw  = tot18s + totITS
             job.n_sequences_final = tot18s + totITS
+            n_pending = sum(len(v) for v in (job.pending_candidates or {}).values())
+            note = f' {n_pending} specimen(s) need your review before aligning.' if n_pending else ''
             _set_status(job, 'fetched',
-                        f'Fetched {tot18s} 18S + {totITS} ITS sequences. '
-                        f'Starting alignment…')
+                        f'Fetched {tot18s} 18S + {totITS} ITS sequences.{note} '
+                        f'Review sequences and click Approve & Align.')
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = str(exc)
+            db.session.commit()
+
+
+def _concatenated_align_thread(app, job_id):
+    """Background thread: align → trim → concatenate → NJ for a concatenated
+    (18S + ITS) job whose raw FASTAs were already fetched by
+    _concatenated_fetch_thread and approved by the user."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            raw18s = os.path.join(job.result_dir, '18S_raw.fa')
+            rawITS = os.path.join(job.result_dir, 'ITS_raw.fa')
 
             # Align + trim both markers (on Galaxy when local binaries absent)
             _where = 'Galaxy' if _use_galaxy_for_align() else 'local'
@@ -1362,13 +1451,20 @@ def _looks_like_newick(path):
     return head.startswith('(') and ')' in head
 
 
+_TREE_NAMES_WITH_SUPPORT = {'bipartitions', 'support', 'bipartitionsbranchlabels'}
+
+
 def _find_best_tree(results_dir):
-    """Return the best RAxML tree file in results_dir, preferring the tree that
-    carries bootstrap support as node labels (bipartitions). Returns path or None."""
+    """Return (path, has_support) for the best RAxML tree file in results_dir,
+    preferring the tree that carries bootstrap support as node labels
+    (bipartitions). has_support is False when only a no-support fallback tree
+    (bestTree/result/etc.) was found — callers should surface that loudly,
+    since a supportless tree defeats the point of running bootstraps at all.
+    Returns (None, False) if nothing found."""
     try:
         names = os.listdir(results_dir)
     except OSError:
-        return None
+        return None, False
     norm = {name: _norm_ds_name(name) for name in names}
 
     def pick(match):
@@ -1377,13 +1473,16 @@ def _find_best_tree(results_dir):
                 if match(norm[name], key):
                     path = os.path.join(results_dir, name)
                     if os.path.isfile(path) and _looks_like_newick(path):
-                        return path
-        return None
+                        return path, key in _TREE_NAMES_WITH_SUPPORT
+        return None, False
 
     # endswith first (Galaxy prefixes names, e.g. "...bipartitions"); this keeps
     # 'bipartitions' from matching the 'bipartitionsbranchlabels' file. Fall back
     # to a looser substring match only if nothing ended cleanly.
-    return pick(lambda n, k: n.endswith(k)) or pick(lambda n, k: k in n)
+    result = pick(lambda n, k: n.endswith(k))
+    if result[0]:
+        return result
+    return pick(lambda n, k: k in n)
 
 
 def _find_newick_in_dir(results_dir):
@@ -1742,7 +1841,7 @@ def _create_job_inner(project_id):
         # Launch background thread
         app = current_app._get_current_object()
         if marker == 'concatenated':
-            t = threading.Thread(target=_concatenated_pipeline_thread, args=(app, job.id), daemon=True)
+            t = threading.Thread(target=_concatenated_fetch_thread, args=(app, job.id), daemon=True)
         else:
             t = threading.Thread(target=_pipeline_thread, args=(app, job.id), daemon=True)
         t.start()
@@ -1832,7 +1931,10 @@ def download_and_root(project_id, job_id):
         api_key     = (job.galaxy_api_key or current_app.config.get('GALAXY_API_KEY', ''))
         downloaded  = _galaxy_download_results(api_key, job.job_handle, results_dir)
 
-        tree_file = _find_best_tree(results_dir) or _find_newick_in_dir(results_dir)
+        tree_file, has_support = _find_best_tree(results_dir)
+        if not tree_file:
+            tree_file = _find_newick_in_dir(results_dir)
+            has_support = False
         if not tree_file:
             return jsonify({'error': 'No tree file in Galaxy results. Files: ' +
                             ', '.join(downloaded)}), 500
@@ -1847,8 +1949,13 @@ def download_and_root(project_id, job_id):
         job.tree_newick    = newick
         job.status         = 'tree_ready'
         job.status_message = msg if success else f'Rooting failed — unrooted stored. ({msg})'
+        if not has_support:
+            job.status_message += (' ⚠ WARNING: this tree has NO bootstrap support values '
+                                    '— Galaxy did not return a bipartitions/support output. '
+                                    'Check the Galaxy history before using this tree.')
         db.session.commit()
         return jsonify({'status': 'tree_ready', 'rooted': success,
+                        'has_support': has_support,
                         'message': job.status_message,
                         'files_downloaded': len(downloaded),
                         'newick': newick})
@@ -1929,18 +2036,14 @@ def import_tree(project_id, job_id):
                 methods=['POST'])
 @login_required
 def import_nj_tree(project_id, job_id):
-    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
-    if not job.nj_newick:
-        return jsonify({'error': 'No NJ tree available for this job.'}), 400
-    project = Project.query.get_or_404(project_id)
-    project.tree_newick = job.nj_newick
-    project.tree_fragments = job.partition_presence or None
-    added, existing = _sync_specimens_from_newick(job.nj_newick, project_id)
-    db.session.commit()
-    msg = 'NJ tree imported into project.'
-    if added:
-        msg += f' {added} new specimen(s) added to Specimens.'
-    return jsonify({'status': 'ok', 'message': msg, 'specimens_added': added})
+    """Disabled: the rapid NJ tree carries no bootstrap support values, and the
+    project's tree must always come from a bootstrap-supported analysis
+    (Galaxy/RAxML). The NJ tree remains available as a pre-submission sanity
+    check (preview + .nwk download) but can no longer become the project's
+    tree directly."""
+    return jsonify({'error': 'Importing the NJ tree directly is disabled — it has no '
+                    'bootstrap support. Submit to Galaxy for RAxML bootstrap analysis, '
+                    'then import that tree instead.'}), 400
 
 
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/reroot_nj',
@@ -2185,6 +2288,129 @@ def nj_preview(project_id, job_id):
     })
 
 
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/pending_candidates')
+@login_required
+def pending_candidates(project_id, job_id):
+    """Return flexible-search candidates awaiting accept/reject for species the
+    normal + relaxed searches couldn't place. Flattened for the review table:
+    one row per (marker, species)."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    pc = job.pending_candidates or {}
+    rows = []
+    for marker, species_map in pc.items():
+        for species_norm, entry in species_map.items():
+            rows.append({
+                'marker': marker,
+                'species_norm': species_norm,
+                'species_display': entry.get('display', species_norm),
+                'candidates': entry.get('candidates', []),
+            })
+    rows.sort(key=lambda r: (r['marker'], r['species_display']))
+    return jsonify({'pending': rows, 'n_pending': len(rows)})
+
+
+def _raw_fasta_path_for(job, marker):
+    """Path to the raw FASTA a given marker's records live in — the single
+    combined file for a plain job, or the per-marker file for a concatenated
+    (18S+ITS) job."""
+    if job.marker == 'concatenated':
+        return os.path.join(job.result_dir, f'{marker}_raw.fa')
+    return job.raw_fasta_path
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/resolve_candidates',
+                methods=['POST'])
+@login_required
+def resolve_candidates(project_id, job_id):
+    """Apply the user's accept/reject decisions on flexible-search candidates.
+
+    Body: {decisions: [{marker, species_norm, accession}, ...]}
+    accession null/omitted = reject (species stays missing); otherwise the
+    named candidate accession is fetched, quality/direction-checked against
+    the marker's existing raw FASTA, and appended to it.
+    """
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if job.status != 'fetched':
+        return jsonify({'error': f'Job is not in fetched state (current: {job.status})'}), 400
+    data = request.get_json() or {}
+    decisions = data.get('decisions', [])
+    if not decisions:
+        return jsonify({'error': 'No decisions provided.'}), 400
+
+    from Bio import SeqIO
+    from Bio.SeqRecord import SeqRecord
+
+    email = job.ncbi_email or 'user@example.com'
+    pc = dict(job.pending_candidates or {})
+    missing = list(job.missing_specimens or [])
+    accepted_by_marker = {}   # marker -> [(species_norm, species_display, accession)]
+
+    for d in decisions:
+        marker = d.get('marker')
+        sp_norm = d.get('species_norm')
+        if marker not in pc or sp_norm not in pc.get(marker, {}):
+            continue
+        entry = pc[marker].pop(sp_norm)
+        acc = d.get('accession')
+        if acc:
+            accepted_by_marker.setdefault(marker, []).append(
+                (sp_norm, entry.get('display', sp_norm), acc))
+        else:
+            display = entry.get('display', sp_norm).replace(' ', '_')
+            if display not in missing:
+                missing.append(display)
+        if not pc[marker]:
+            del pc[marker]
+
+    added_total = 0
+    for marker, items in accepted_by_marker.items():
+        accs = [acc for _, _, acc in items]
+        try:
+            fetched = _ncbi_fetch_batch(accs, email)
+        except Exception as exc:
+            return jsonify({'error': f'Failed to fetch accepted accession(s): {exc}'}), 500
+
+        raw_path = _raw_fasta_path_for(job, marker)
+        current = []
+        if raw_path and os.path.exists(raw_path):
+            with open(raw_path) as fh:
+                current = list(SeqIO.parse(fh, 'fasta'))
+
+        for sp_norm, display, acc in items:
+            if acc not in fetched:
+                display_u = display.replace(' ', '_')
+                if display_u not in missing:
+                    missing.append(display_u)
+                continue
+            rec = fetched[acc]
+            sp_label = display.replace(' ', '_')
+            new_id = f"{rec.id}|{sp_label}"
+            current.append(SeqRecord(rec.seq, id=new_id, name='', description=''))
+            added_total += 1
+
+        flipped, low_qual = _quality_orient_records(current)
+        if flipped:
+            job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+        if low_qual:
+            job.low_quality_sequences = low_qual
+        _write_fasta(current, raw_path)
+
+    job.pending_candidates = pc
+    job.missing_specimens = missing
+    n_remaining = sum(len(v) for v in pc.values())
+    job.n_sequences_final = (job.n_sequences_final or 0) + added_total
+    job.n_sequences = job.n_sequences_final
+    note = f'{added_total} specimen(s) added from reviewed candidates.'
+    if n_remaining:
+        note += f' {n_remaining} still awaiting review.'
+    else:
+        note += ' All species resolved — ready to Approve & Align.'
+    job.status_message = note
+    db.session.commit()
+    return jsonify({'status': job.status, 'message': note, 'added': added_total,
+                    'n_pending': n_remaining, 'missing_specimens': missing})
+
+
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/fetch_alternatives')
 @login_required
 def fetch_alternatives(project_id, job_id):
@@ -2399,8 +2625,13 @@ def approve_and_align(project_id, job_id):
         return jsonify({'status': job.status, 'message': job.status_message or 'Already processed.'})
     if job.status != 'fetched':
         return jsonify({'error': f'Job is not in fetched state (current: {job.status})'}), 400
+    n_pending = sum(len(v) for v in (job.pending_candidates or {}).values())
+    if n_pending:
+        return jsonify({'error': f'{n_pending} specimen(s) still need review — accept or '
+                        f'reject the flexible-search candidates before aligning.'}), 400
     app = current_app._get_current_object()
-    t = threading.Thread(target=_align_trim_thread, args=(app, job_id), daemon=True)
+    target = _concatenated_align_thread if job.marker == 'concatenated' else _align_trim_thread
+    t = threading.Thread(target=target, args=(app, job_id), daemon=True)
     t.start()
     return jsonify({'status': 'aligning', 'message': 'Alignment started…'})
 

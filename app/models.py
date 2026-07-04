@@ -279,6 +279,12 @@ class PhylogenyJob(db.Model):
                                             # alignment
     low_quality_sequences = db.Column(db.JSON, default=list)  # [{id, reason}, ...]
                                             # flagged for excessive ambiguous bases
+    pending_candidates = db.Column(db.JSON, default=dict)  # {marker_suffix:
+                                            # {norm_species: {display, candidates:
+                                            # [{accession,length,description}]}}}
+                                            # — flexible-search hits awaiting
+                                            # explicit user accept/reject before
+                                            # the pipeline proceeds to alignment
 
     # Sequence counts through pipeline
     n_sequences_raw = db.Column(db.Integer)

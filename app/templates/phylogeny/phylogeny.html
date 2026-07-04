@@ -8,10 +8,6 @@
     {% if job.status == 'nj_ready' %}
     <button class="btn btn-sm btn-warning" onclick="openNjModal({{ job.id }})">Review NJ Tree</button>
     <button class="btn btn-sm btn-primary" onclick="openCipresModal({{ job.id }})">Submit to Galaxy</button>
-    <button class="btn btn-sm btn-outline" onclick="importNjTreeById({{ job.id }})">Import NJ &#8594; Matrix</button>
-    {% endif %}
-    {% if job.nj_newick and job.status not in ('nj_ready',) %}
-    <button class="btn btn-sm btn-outline" onclick="importNjTreeById({{ job.id }})">Import NJ &#8594; Matrix</button>
     {% endif %}
     {% if job.status in ('trimmed',) %}
     <button class="btn btn-sm btn-primary" onclick="openCipresModal({{ job.id }})">Submit to Galaxy</button>
@@ -512,7 +508,6 @@
             <button class="btn btn-warning" id="njApplyBtn" onclick="applyNjChanges()" disabled>Apply Changes &amp; Re-run NJ</button>
             <button class="btn btn-success" onclick="approveForCipres()">Approve &#8594; Galaxy</button>
             <button class="btn btn-outline" onclick="openAddSpeciesModal()">+ Add Species</button>
-            <button class="btn btn-outline" onclick="importNjTree()">Import NJ Tree into Matrix</button>
             <button class="btn btn-outline" onclick="closeNjModal()">Cancel</button>
             <span id="njModalMsg" style="font-size:0.83rem; color:var(--gray-500); margin-left:0.25rem;"></span>
             <!-- Outgroup rooting -->
@@ -596,6 +591,28 @@
             <button class="btn btn-sm btn-outline" onclick="closeFetchModal()">&#10005;</button>
         </div>
         <div style="padding:0.75rem 1rem; background:var(--gray-100); border-bottom:1px solid var(--gray-200); flex-shrink:0;" id="fetchModalSummary"></div>
+        <div id="pendingReviewSection" style="display:none; padding:0.75rem 1rem; background:#fff8e5; border-bottom:1px solid #e8cf7a; flex-shrink:0;">
+            <div style="font-weight:600; font-size:0.85rem; color:#8a6d00; margin-bottom:0.4rem;">
+                &#9888; Species needing review — the normal search couldn't confidently place these;
+                a broader organism-only search found the candidate(s) below. Accept a candidate or reject
+                before continuing to alignment.
+            </div>
+            <table style="font-size:0.8rem; width:100%; border-collapse:collapse;">
+                <thead><tr style="background:var(--gray-200);">
+                    <th style="padding:0.2rem 0.5rem; text-align:left;">Species</th>
+                    <th style="padding:0.2rem 0.5rem; text-align:left;">Marker</th>
+                    <th style="padding:0.2rem 0.5rem; text-align:left;">Candidate</th>
+                    <th style="padding:0.2rem 0.5rem; text-align:right;">bp</th>
+                    <th style="padding:0.2rem 0.5rem; text-align:left;">Description</th>
+                    <th style="padding:0.2rem 0.4rem;">Decision</th>
+                </tr></thead>
+                <tbody id="pendingReviewBody"></tbody>
+            </table>
+            <div style="margin-top:0.5rem;">
+                <button class="btn btn-sm btn-success" id="pendingResolveBtn" onclick="resolvePendingCandidates()">Confirm Decisions</button>
+                <span id="pendingReviewMsg" style="font-size:0.8rem; color:var(--gray-500); margin-left:0.5rem;"></span>
+            </div>
+        </div>
         <div style="overflow:auto; flex:1; padding:0.75rem 1rem;">
             <table id="fetchModalTable" style="font-size:0.82rem; width:100%;">
                 <thead>
@@ -814,7 +831,6 @@ function buildActions(jobId, status) {
     if (status === 'nj_ready') {
         html += `<button class="btn btn-sm btn-warning" onclick="openNjModal(${jobId})">Review NJ Tree</button> `;
         html += `<button class="btn btn-sm btn-primary" onclick="openCipresModal(${jobId})">Submit to Galaxy</button> `;
-        html += `<button class="btn btn-sm btn-outline" onclick="importNjTreeById(${jobId})">Import NJ &#8594; Matrix</button> `;
     }
     if (status === 'trimmed') {
         html += `<button class="btn btn-sm btn-primary" onclick="openCipresModal(${jobId})">Submit to Galaxy</button> `;
@@ -1450,23 +1466,6 @@ async function approveForCipres() {
     }
 }
 
-async function importNjTreeById(jobId) {
-    if (!confirm('Import NJ tree into project? This replaces any existing matrix tree.')) return;
-    try {
-        const resp = await fetch(
-            `/api/project/${PROJECT_ID}/phylogeny/${jobId}/import_nj`, {method: 'POST'}
-        );
-        const data = await safeJSON(resp);
-        if (!resp.ok || data.error) { alert('Error: ' + (data.error || resp.statusText)); return; }
-        alert(data.message || 'NJ tree imported.');
-        location.reload();
-    } catch(err) { alert('Network error: ' + err.message); }
-}
-
-async function importNjTree() {
-    if (_njJobId) await importNjTreeById(_njJobId);
-}
-
 async function rerootNjTree() {
     if (!_njJobId) return;
     const input = document.getElementById('njOutgroupInput');
@@ -1538,8 +1537,88 @@ async function openFetchPreview(jobId) {
                 <td style="padding:0.2rem 0.5rem; text-align:right;">${s.length.toLocaleString()}</td>
             </tr>`
         ).join('');
+        await _loadPendingCandidates(jobId);
     } catch(err) {
         summary.textContent = 'Network error: ' + err.message;
+    }
+}
+
+async function _loadPendingCandidates(jobId) {
+    const section = document.getElementById('pendingReviewSection');
+    const body    = document.getElementById('pendingReviewBody');
+    const approveBtn = document.getElementById('fetchApproveBtn');
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/pending_candidates`);
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error || !data.n_pending) {
+            section.style.display = 'none';
+            approveBtn.disabled = false;
+            approveBtn.title = '';
+            return;
+        }
+        section.style.display = '';
+        approveBtn.disabled = true;
+        approveBtn.title = 'Resolve species review below first';
+        body.innerHTML = data.pending.map((row, ri) => {
+            const radios = row.candidates.map((c, ci) => `
+                <div style="display:flex; align-items:baseline; gap:0.3rem; margin-bottom:0.15rem;">
+                    <input type="radio" name="pend-${ri}" id="pend-${ri}-${ci}" value="${escHtml(c.accession)}"
+                        onchange="_updatePendingRow(${ri})">
+                    <label for="pend-${ri}-${ci}" style="font-family:monospace; font-size:0.75rem;">${escHtml(c.accession)}</label>
+                    <span style="font-size:0.72rem; color:var(--gray-500);">${c.length.toLocaleString()} bp — ${escHtml(c.description)}</span>
+                </div>`).join('');
+            return `<tr style="border-bottom:1px solid var(--gray-200); vertical-align:top;">
+                <td style="padding:0.3rem 0.5rem; font-style:italic;" rowspan="1">${escHtml(row.species_display.replace(/_/g,' '))}</td>
+                <td style="padding:0.3rem 0.5rem;">${escHtml(row.marker)}</td>
+                <td colspan="3" style="padding:0.3rem 0.5rem;">
+                    ${radios}
+                    <div style="margin-top:0.15rem;">
+                        <input type="radio" name="pend-${ri}" id="pend-${ri}-reject" value="" checked onchange="_updatePendingRow(${ri})">
+                        <label for="pend-${ri}-reject" style="font-size:0.75rem; color:var(--gray-500);">Reject (leave missing)</label>
+                    </div>
+                </td>
+                <td style="padding:0.3rem 0.4rem;"></td>
+            </tr>`;
+        }).join('');
+        window._pendingRows = data.pending;
+    } catch(err) {
+        section.style.display = 'none';
+        approveBtn.disabled = false;
+    }
+}
+
+function _updatePendingRow(i) {
+    // No-op hook — decisions are read directly from the radio inputs on submit.
+}
+
+async function resolvePendingCandidates() {
+    if (!_fetchPreviewJobId || !window._pendingRows) return;
+    const msg = document.getElementById('pendingReviewMsg');
+    const btn = document.getElementById('pendingResolveBtn');
+    const decisions = window._pendingRows.map((row, ri) => {
+        const checked = document.querySelector(`input[name="pend-${ri}"]:checked`);
+        return {marker: row.marker, species_norm: row.species_norm,
+                accession: checked ? (checked.value || null) : null};
+    });
+    btn.disabled = true;
+    msg.textContent = 'Applying decisions…';
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_fetchPreviewJobId}/resolve_candidates`,
+            {method: 'POST', headers: {'Content-Type': 'application/json'},
+             body: JSON.stringify({decisions})}
+        );
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) {
+            msg.textContent = 'Error: ' + (data.error || resp.statusText);
+            btn.disabled = false;
+            return;
+        }
+        msg.textContent = data.message || 'Applied.';
+        await openFetchPreview(_fetchPreviewJobId);   // refresh table + pending list
+    } catch(err) {
+        msg.textContent = 'Network error: ' + err.message;
+        btn.disabled = false;
     }
 }
 
