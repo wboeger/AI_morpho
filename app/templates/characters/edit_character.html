@@ -259,6 +259,10 @@
 </div>
 {% endblock %}
 
+{% block head %}
+<script defer src="{{ url_for('static', filename='js/d3.v7.min.js') }}"></script>
+{% endblock %}
+
 {% block scripts %}
 <script>
 function toggleGeometricFields() {
