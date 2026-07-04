@@ -487,6 +487,7 @@ def _migrate_phylogeny_jobs():
         ('partition_presence',   'TEXT'),
         ('flipped_sequences',    'TEXT'),
         ('missing_specimens',    'TEXT'),
+        ('low_quality_sequences', 'TEXT'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():

@@ -1162,6 +1162,12 @@ function _njWarningBannerHtml(data) {
             &#8644; <strong>${flipped.length}</strong> sequence(s) were auto-reversed for direction mismatch (marked below). Verify these look correct.
         </div>`;
     }
+    const lowQual = data.low_quality_sequences || [];
+    if (lowQual.length) {
+        html += `<div style="margin-top:0.4rem; padding:0.4rem 0.6rem; background:#fff8e5; border:1px solid #e8cf7a; border-radius:4px; font-size:0.78rem; color:#8a6d00;">
+            &#9888; <strong>${lowQual.length}</strong> sequence(s) flagged for quality (high ambiguous-base content, marked below): ${lowQual.map(q => escHtml(q.id) + ' (' + escHtml(q.reason) + ')').join(', ')}.
+        </div>`;
+    }
     return html;
 }
 
@@ -1206,7 +1212,9 @@ function _renderNjTable() {
     _njSequences.forEach((seq, i) => {
         const ch  = _njChanges[seq.id];
         let rowBg = '';
-        let changeCell = seq.flipped
+        let changeCell = seq.low_quality
+            ? `<span style="font-size:0.72rem; color:#8a6d00;" title="${escHtml(seq.low_quality)}">&#9888; low quality</span>`
+            : seq.flipped
             ? '<span style="font-size:0.72rem; color:#1a5fb4;" title="Auto-reversed by MAFFT for direction mismatch">&#8644; auto-flipped</span>'
             : '<span style="font-size:0.72rem; color:var(--gray-400);">—</span>';
         if (ch) {
@@ -1220,6 +1228,8 @@ function _renderNjTable() {
                 rowBg = 'background:#fffbe5;';
                 changeCell = `<span style="color:#856404; font-size:0.72rem; font-weight:600;" title="${escHtml(ch.description||'')}">&#8594; ${escHtml(ch.new_accession)}<br><em style="font-weight:normal;">${ch.length ? ch.length.toLocaleString()+' bp' : ''}</em></span>`;
             }
+        } else if (seq.low_quality) {
+            rowBg = 'background:#fffdf0;';
         } else if (seq.flipped) {
             rowBg = 'background:#f7fbff;';
         }

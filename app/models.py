@@ -277,6 +277,8 @@ class PhylogenyJob(db.Model):
     missing_specimens = db.Column(db.JSON, default=list)   # Specimens-page species
                                             # names with no sequence in the final
                                             # alignment
+    low_quality_sequences = db.Column(db.JSON, default=list)  # [{id, reason}, ...]
+                                            # flagged for excessive ambiguous bases
 
     # Sequence counts through pipeline
     n_sequences_raw = db.Column(db.Integer)

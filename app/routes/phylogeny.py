@@ -194,6 +194,60 @@ def _fetch_missing_specimens(missing_norm, restrict_species, email, gene_q, min_
     return recovered, still_missing
 
 
+def _quality_orient_records(records, k=8, max_ambiguous_frac=0.05):
+    """Pre-alignment quality pass, run on every fetched record before MAFFT sees it.
+
+    - Orients each record to match the majority direction (k-mer overlap
+      against the longest record), independent of and prior to MAFFT
+      --adjustdirection / the Galaxy k-mer fallback, so an obviously
+      reverse-complemented sequence doesn't distort the alignment MAFFT builds
+      or get missed on the Galaxy path (which has no adjustdirection option).
+    - Flags (does not remove) sequences with excessive ambiguous IUPAC bases
+      (N and friends) as low quality — these are usually low-confidence base
+      calls that can drag down trimAl/alignment quality around them.
+
+    Mutates records in place (reverse-complementing flipped ones) and returns
+    (flipped_ids, low_quality) where low_quality is a list of
+    {'id':..., 'reason':...} dicts.
+    """
+    from Bio.Seq import Seq
+
+    recs = list(records)
+    flipped, low_quality = [], []
+    ambiguous = set('NRYSWKMBDHV')
+    for rec in recs:
+        s = str(rec.seq).upper()
+        if not s:
+            continue
+        n_amb = sum(1 for c in s if c in ambiguous)
+        frac = n_amb / len(s)
+        if frac > max_ambiguous_frac:
+            low_quality.append({'id': rec.id, 'reason': f'{frac * 100:.1f}% ambiguous bases'})
+
+    if len(recs) < 2:
+        return flipped, low_quality
+
+    def kmers(s):
+        return {s[i:i + k] for i in range(len(s) - k + 1)}
+
+    ref = max(recs, key=lambda r: len(r.seq))
+    ref_k = kmers(str(ref.seq).upper())
+    if not ref_k:
+        return flipped, low_quality
+    for rec in recs:
+        if rec is ref:
+            continue
+        s = str(rec.seq).upper()
+        if len(s) < k:
+            continue
+        fwd = sum(1 for km in kmers(s) if km in ref_k)
+        rc  = sum(1 for km in kmers(str(Seq(s).reverse_complement())) if km in ref_k)
+        if rc > fwd:
+            rec.seq = rec.seq.reverse_complement()
+            flipped.append(rec.id)
+    return flipped, low_quality
+
+
 def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
     """
     Filter and de-duplicate records, keeping one per species (longest that is
@@ -393,15 +447,26 @@ def _fetch_step(job):
             seen_s[s] = True
             final_unique.append(rec)
 
+    flipped, low_qual = _quality_orient_records(final_unique)
+    if flipped:
+        job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+    if low_qual:
+        job.low_quality_sequences = low_qual
+
     job.n_sequences_final = len(final_unique)
     raw_path = os.path.join(job.result_dir, f'{job.marker}_raw.fa')
     _write_fasta(final_unique, raw_path)
     job.raw_fasta_path = raw_path
     job.fasta_filename  = os.path.basename(raw_path)
     job.n_sequences     = len(final_unique)
+    note = ''
+    if flipped:
+        note += f' {len(flipped)} sequence(s) auto-oriented (reverse complement).'
+    if low_qual:
+        note += f' {len(low_qual)} sequence(s) flagged for low quality (high ambiguous-base content).'
     _set_status(job, 'fetched',
                 f'{len(final_unique)} sequences written '
-                f'({len(ingroup)} ingroup + {len(outgroup_records)} outgroup). '
+                f'({len(ingroup)} ingroup + {len(outgroup_records)} outgroup).{note} '
                 f'Review sequences and click Approve & Align.')
 
 
@@ -459,13 +524,20 @@ def _align_step(job):
     """
     aligned_path = os.path.join(job.result_dir, f'{job.marker}_aligned.fa')
     trimmed_path = os.path.join(job.result_dir, f'{job.marker}_trimmed.fa')
+    n_in = _count_fasta(job.raw_fasta_path)
 
     if _use_galaxy_for_align():
         _set_status(job, 'aligning', 'Aligning (MAFFT) and trimming (trimAl) on Galaxy…')
         _galaxy_align_trim(job, job.raw_fasta_path, aligned_path, trimmed_path)
+        n = _count_fasta(aligned_path)
+        if n < n_in:
+            raise RuntimeError(
+                f'Galaxy MAFFT returned {n} sequences from {n_in} input — '
+                f'refusing to continue with a partial alignment. Check the '
+                f'Galaxy history for a job error, or check raw FASTA for '
+                f'duplicate/malformed headers.')
         job.aligned_fasta_path = aligned_path
         job.trimmed_fasta_path = trimmed_path        # signals _trim_step to skip
-        n = _count_fasta(aligned_path)
         note = ' (trimAl skipped — using untrimmed alignment)' \
             if getattr(job, '_trim_skipped', False) else ''
         _set_status(job, 'aligned', f'Galaxy alignment done ({n} sequences).{note}')
@@ -482,6 +554,11 @@ def _align_step(job):
     if result.returncode != 0 or not os.path.getsize(aligned_path):
         raise RuntimeError(f'MAFFT failed: {result.stderr[:400]}')
     n = _count_fasta(aligned_path)
+    if n < n_in:
+        raise RuntimeError(
+            f'MAFFT returned {n} sequences from {n_in} input — refusing to '
+            f'continue with a partial alignment. Check the raw FASTA for '
+            f'duplicate or malformed headers.')
     job.aligned_fasta_path = aligned_path
     flipped = _find_r_flipped_ids(aligned_path)
     if flipped:
@@ -729,6 +806,13 @@ def _fetch_marker(job, marker, gene_query, suffix):
             seen_s[s] = True
             unique.append(rec)
 
+    flipped, low_qual = _quality_orient_records(unique)
+    if flipped:
+        job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+    if low_qual:
+        job.low_quality_sequences = sorted(
+            (job.low_quality_sequences or []) + low_qual, key=lambda d: d['id'])
+
     raw_path = os.path.join(job.result_dir, f'{suffix}_raw.fa')
     _write_fasta(unique, raw_path)
     return raw_path, len(ingroup), len(unique)
@@ -921,6 +1005,12 @@ def _replace_realign_thread(app, job_id, replacements, removals, revcomps=None):
                         # NCBI did not return this accession — the specimen would
                         # otherwise vanish silently (it was already dropped above).
                         failed_accs.append(acc)
+
+            flipped, low_qual = _quality_orient_records(kept)
+            if flipped:
+                job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+            if low_qual:
+                job.low_quality_sequences = low_qual
 
             _write_fasta(kept, job.raw_fasta_path)
             job.n_sequences_final = len(kept)
@@ -2069,6 +2159,7 @@ def nj_preview(project_id, job_id):
         return jsonify({'error': 'NJ tree not available.'}), 404
     sequences = []
     flipped_set = set(job.flipped_sequences or [])
+    low_qual_by_id = {lq['id']: lq['reason'] for lq in (job.low_quality_sequences or [])}
     if job.trimmed_fasta_path and os.path.exists(job.trimmed_fasta_path):
         from Bio import SeqIO
         with open(job.trimmed_fasta_path) as fh:
@@ -2076,7 +2167,8 @@ def nj_preview(project_id, job_id):
                 sp = rec.id.split('|')[1].replace('_', ' ') if '|' in rec.id else rec.id
                 raw_id = rec.id[3:] if rec.id.startswith('_R_') else rec.id
                 sequences.append({'id': rec.id, 'species': sp, 'length': len(rec.seq),
-                                  'flipped': raw_id in flipped_set or rec.id in flipped_set})
+                                  'flipped': raw_id in flipped_set or rec.id in flipped_set,
+                                  'low_quality': low_qual_by_id.get(raw_id) or low_qual_by_id.get(rec.id)})
     return jsonify({
         'newick':     job.nj_newick,
         'sequences':  sequences,
@@ -2084,6 +2176,7 @@ def nj_preview(project_id, job_id):
         'status_message': job.status_message or '',
         'flipped_sequences': sorted(flipped_set),
         'missing_specimens': job.missing_specimens or [],
+        'low_quality_sequences': job.low_quality_sequences or [],
     })
 
 
@@ -2233,6 +2326,12 @@ def add_sequences(project_id, job_id):
         if not added:
             return jsonify({'error': 'No new sequences added (may already be present)',
                             'failed': failed}), 400
+
+        flipped, low_qual = _quality_orient_records(current)
+        if flipped:
+            job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+        if low_qual:
+            job.low_quality_sequences = low_qual
 
         _write_fasta(current, job.raw_fasta_path)
         job.n_sequences_final = len(current)
