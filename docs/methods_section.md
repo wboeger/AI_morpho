@@ -2,7 +2,7 @@
 
 *This document is auto-maintained. Update after any major change to character definitions, measurement algorithms, or pipeline architecture.*
 
-*Last revised: 2026-05-03*
+*Last revised: 2026-07-04*
 
 ---
 
@@ -230,13 +230,46 @@ Similarly, specimen data (images, landmark CSVs, boundary assignments) from anot
 
 ## Phylogenetic Analysis
 
-Molecular phylogenies were estimated from DNA sequence data downloaded from GenBank or supplied by the user. The pipeline on the platform performs the following steps automatically:
+Molecular phylogenies were estimated from DNA sequence data downloaded from GenBank or supplied by the user. The pipeline supports a single marker (18S rRNA, ITS, COI, or a user-defined query) or a concatenated 18S + ITS (ITS1–5.8S–ITS2) analysis, and proceeds through the following automated steps, with two mandatory checkpoints for expert review before any sequence is aligned and before any tree is treated as final.
 
-1. **Sequence retrieval**: NCBI Entrez is queried for the selected marker (18S rRNA, ITS, COI, or user-defined) for each specimen that has a recorded accession number. Sequences are concatenated into a FASTA file.
-2. **Alignment**: Multiple sequence alignment was performed using MAFFT (v7+, `--auto` strategy).
-3. **Trimming**: Ambiguously aligned columns were removed with trimAl (`-automated1`).
-4. **Tree inference**: Maximum-likelihood phylogeny was estimated with RAxML-NG, with automatic substitution model selection (GTR+G default) and 100 bootstrap replicates. A neighbour-joining tree (via BioPython) is also available as a fast alternative.
-5. **Tree import and rooting**: The resulting Newick tree is imported into the matrix view, where the user may select an outgroup for re-rooting. Re-rooting is performed server-side using BioPython `root_with_outgroup` and the updated tree is saved to `Project.tree_newick`. Tip labels in the imported tree are automatically parsed and any new species names are added to the specimen list.
+### 1. Sequence Retrieval
+
+For each marker, ingroup sequences were retrieved from NCBI GenBank (via Entrez) using a tiered search strategy designed to maximize per-specimen recovery from the species selected on the project's Specimens page:
+
+1. **Bulk query**: A single taxon-level Entrez query (`"<Taxon>"[Organism] AND (<marker query>)`) retrieves all candidate ingroup records, which are filtered by minimum length, deduplicated by exact sequence and by species (retaining the longest sequence per species that does not exceed a configurable length-outlier cutoff), and restricted to the species selected on the Specimens page.
+2. **Relaxed per-species retry**: Any selected species not recovered by the bulk query is searched individually. If the marker-specific query still finds nothing, the query's exclusion clauses (`NOT (...)`) are dropped for that retry — this recovers species whose only GenBank record is a combined rDNA cassette (e.g. 18S + ITS1 + 5.8S + ITS2 + 28S in one deposit), which the strict single-marker query would otherwise exclude from *both* the 18S-only and ITS-only searches.
+3. **Human-reviewed flexible search**: Species still unresolved trigger a broad, marker-unrestricted organism-name search. Candidates from this tier are never added automatically — they are presented to the user on the Review Sequences screen (species name, candidate accession, length, description) for an explicit accept/reject decision. The pipeline will not proceed to alignment while any candidate remains undecided. Rejected or genuinely absent species are reported by name so gaps in taxon sampling are always visible rather than silently reducing the ingroup.
+
+Outgroup sequences are retrieved separately per configured outgroup family/genus and are not subject to the Specimens-page restriction.
+
+### 2. Sequence Quality and Direction Check
+
+Before alignment, every retrieved sequence (from the bulk search, either retry tier, or a user-accepted flexible-search candidate) is passed through an automated quality and orientation check, applied independently to each marker:
+
+- **Orientation**: Each sequence is compared, via shared *k*-mer content (*k* = 8), to the longest sequence in its batch. A sequence whose reverse complement shares more *k*-mers with the reference than its as-deposited orientation is reverse-complemented in place. This runs prior to and independently of MAFFT's own `--adjustdirection` reorientation (see below), so a reversed sequence is corrected consistently regardless of whether alignment subsequently runs locally or on the Galaxy platform (which has no equivalent built-in option).
+- **Quality flagging**: Sequences with more than 5% ambiguous IUPAC bases (N and related codes) are flagged for review; they are retained in the alignment but reported to the user rather than silently included.
+
+Sequences reverse-complemented or flagged at this stage, together with any sequence MAFFT itself subsequently reorients, are reported to the user on the sequence review screens.
+
+### 3. Alignment and Trimming
+
+Multiple sequence alignment was performed using MAFFT (v7+, `--auto --adjustdirection`) where a local binary is available, or via the equivalent Galaxy MAFFT tool otherwise (with the pre-alignment orientation check above substituting for `--adjustdirection` on that path). Ambiguously aligned columns were then removed with trimAl (`-gappyout`).
+
+Because column-based trimming can, in rare cases, leave an individual sequence entirely gap-only in the surviving columns — silently dropping it from the trimmed output with no error — the pipeline verifies that the trimmed sequence count matches the aligned sequence count. If trimAl would drop any sequence, trimming is retried with the gentler `-automated1` heuristic, and if that still loses sequences, the unmodified alignment is used in place of a trimmed one. Analogously, if the alignment step itself (MAFFT, local or via Galaxy) returns fewer sequences than were submitted, the job fails explicitly with a diagnostic message rather than continuing silently with a truncated dataset. After trimming, the final sequence set is compared against the full list of species selected on the Specimens page, and any specimen still absent from the final alignment is reported by name.
+
+For the concatenated 18S + ITS mode, each marker is fetched, quality/direction-checked, aligned, and trimmed independently; alignments are then concatenated by species (gap-filling any taxon missing one marker), and the number of taxa represented by both markers, by 18S only, and by ITS only is reported.
+
+### 4. Tree Inference
+
+A rapid neighbour-joining tree (via BioPython, computed from the trimmed alignment) is generated automatically as a **preview only**, allowing a quick sanity check of the sequence set (rooting, obvious misplacements, remaining direction issues) before committing to a full analysis. Because this NJ tree carries no bootstrap support, it cannot be imported into the project directly.
+
+The maximum-likelihood phylogeny with bootstrap support was estimated with RAxML (via the Galaxy `usegalaxy.eu` platform), using rapid bootstrap analysis (`-f a`) with automatic substitution model selection and a user-specified number of bootstrap replicates (default 1000), producing a best-scoring tree with bootstrap support values drawn on as node labels (bipartitions). The pipeline verifies that the tree returned by Galaxy actually carries support values before accepting the run as complete; a run that returns only a no-support tree (e.g. due to a Galaxy configuration issue) is flagged explicitly rather than silently accepted.
+
+### 5. Tree Import and Rooting
+
+The bootstrap-supported RAxML tree is imported into the matrix view, where the user may select an outgroup for re-rooting. Re-rooting is performed server-side using BioPython `root_with_outgroup`, and the updated tree — with bootstrap support values preserved — is saved to `Project.tree_newick`. Tip labels in the imported tree are automatically parsed and any new species names are added to the specimen list. Because only the bootstrap-supported tree can be imported, every tree used downstream in the pipeline (matrix view, taxonomic description context, exports) carries bootstrap support.
+
+Sequences may be revised after an initial run — replaced with an alternative GenBank accession, reverse-complemented, removed, or added — via the Revise & Resubmit interface, which reruns quality/direction checking, alignment, trimming, and NJ preview on the updated sequence set before resubmission to Galaxy.
 
 Phylogenetic job results are written to:
 ```
