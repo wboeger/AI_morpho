@@ -685,6 +685,11 @@ function toggleForm(bodyId, iconId) {
     icon.innerHTML = hidden ? '&#9660;' : '&#9658;';
 }
 
+const GENE_QUERY_DEFAULTS = {
+    '18S': '(small subunit ribosomal RNA[All Fields] OR 18S[All Fields]) NOT (internal transcribed spacer[All Fields])',
+    'ITS': '(internal transcribed spacer[All Fields] OR ITS[All Fields]) NOT (18S[All Fields] OR 28S[All Fields])',
+};
+
 function toggleConcatQueries(marker) {
     const single = document.getElementById('div-gene-query');
     const concat = document.getElementById('div-concat-queries');
@@ -692,6 +697,21 @@ function toggleConcatQueries(marker) {
     const isCat = marker === 'concatenated';
     single.style.display = isCat ? 'none' : '';
     concat.style.display = isCat ? '' : 'none';
+
+    // The single-marker query textarea doesn't auto-update with the marker
+    // dropdown otherwise — e.g. picking "ITS" would silently keep searching
+    // with the 18S query (which explicitly excludes ITS records), returning
+    // zero results. Only auto-fill when the field is empty or still holds a
+    // known default, so a hand-edited query is never overwritten.
+    if (!isCat && GENE_QUERY_DEFAULTS[marker]) {
+        const ta = single.querySelector('textarea[name="gene_query"]');
+        if (ta) {
+            const knownDefaults = Object.values(GENE_QUERY_DEFAULTS);
+            if (!ta.value.trim() || knownDefaults.includes(ta.value.trim())) {
+                ta.value = GENE_QUERY_DEFAULTS[marker];
+            }
+        }
+    }
 }
 
 function setMsg(id, msg, color) {

@@ -1605,6 +1605,11 @@ def _create_job_inner(project_id):
             gene_query = _json.dumps({'18S': q18s, 'ITS': qITS})
         else:
             gene_query = request.form.get('gene_query', DEFAULT_GENE_QUERY_18S).strip()
+            # Safety net: if marker=='ITS' but the query is still the 18S default
+            # (JS should swap it, but guard against a bypassed/stale client),
+            # the 18S query's "NOT ITS" clause would return zero ITS records.
+            if marker == 'ITS' and gene_query == DEFAULT_GENE_QUERY_18S:
+                gene_query = DEFAULT_GENE_QUERY_ITS
 
         job = PhylogenyJob(
             project_id=project_id,
