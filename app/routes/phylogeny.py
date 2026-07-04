@@ -154,6 +154,14 @@ def _fetch_missing_specimens(missing_norm, restrict_species, email, gene_q, min_
         if n and n not in orig_by_norm:
             orig_by_norm[n] = s
 
+    # Fallback query with any "NOT (...)" exclusion clauses stripped. Many
+    # species' only GenBank record is a combined rDNA cassette (e.g. "18S ...
+    # partial sequence; internal transcribed spacer 1 ... ; and 28S ... partial
+    # sequence") which the strict single-marker query's NOT clause excludes
+    # from both the 18S and ITS searches even though the target region is
+    # present. Only used as a rescue for specimens the strict query missed.
+    relaxed_gene_q = re.sub(r'\s*NOT\s*\([^)]*\)', '', gene_q).strip()
+
     recovered = []
     still_missing = []
     for n in missing_norm:
@@ -162,6 +170,9 @@ def _fetch_missing_specimens(missing_norm, restrict_species, email, gene_q, min_
         try:
             query = f'"{species_query}"[Organism] AND ({gene_q})'
             ids, _ = _ncbi_search(query, email, retmax=50)
+            if not ids and relaxed_gene_q != gene_q:
+                query = f'"{species_query}"[Organism] AND ({relaxed_gene_q})'
+                ids, _ = _ncbi_search(query, email, retmax=50)
             if not ids:
                 still_missing.append(n)
                 continue
