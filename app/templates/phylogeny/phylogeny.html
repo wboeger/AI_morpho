@@ -136,6 +136,7 @@
                                 <option value="18S">18S rRNA</option>
                                 <option value="ITS">ITS</option>
                                 <option value="concatenated">18S + ITS (concatenated)</option>
+                                <option value="concat_18s_first">18S → ITS (18S-guided concat)</option>
                                 <option value="COI">COI</option>
                                 <option value="other">Other</option>
                             </select>
@@ -204,6 +205,10 @@
             <div style="margin-top:1rem; display:flex; align-items:center; gap:1rem;">
                 <button type="button" class="btn btn-primary" onclick="createJob('ncbi')">
                     Start Pipeline
+                </button>
+                <button type="button" class="btn btn-outline" onclick="startGuided18sIts()"
+                        title="Fetch all unique 18S sequences (one per species) first, then fetch ITS1-5.8S-ITS2 only for those species, concatenate, and continue.">
+                    18S &#8594; ITS (18S-guided)
                 </button>
                 <span id="submit-msg-ncbi" style="font-size:0.9rem; color:var(--gray-500);"></span>
             </div>
@@ -711,7 +716,7 @@ function toggleConcatQueries(marker) {
     const single = document.getElementById('div-gene-query');
     const concat = document.getElementById('div-concat-queries');
     if (!single || !concat) return;
-    const isCat = marker === 'concatenated';
+    const isCat = marker === 'concatenated' || marker === 'concat_18s_first';
     single.style.display = isCat ? 'none' : '';
     concat.style.display = isCat ? '' : 'none';
 
@@ -769,6 +774,15 @@ function updateRestrictCount() {
 }
 function selectedRestrictSpecies() {
     return [...document.querySelectorAll('.restrict-sp:checked')].map(cb => cb.value);
+}
+
+// 18S-guided concatenated run: select the mode so the 18S/ITS query fields are
+// used, then submit the normal NCBI form. 18S is fetched first (one seq per
+// species); ITS is then fetched only for the species 18S recovered.
+function startGuided18sIts() {
+    const sel = document.getElementById('ncbi-marker-select');
+    if (sel) { sel.value = 'concat_18s_first'; toggleConcatQueries('concat_18s_first'); }
+    createJob('ncbi');
 }
 
 async function createJob(mode) {

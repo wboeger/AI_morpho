@@ -50,6 +50,12 @@ DEFAULT_OUTGROUP_DEFS = [
     {'family': 'Oogyrodactylidae', 'mode': 'each_genus', 'n': 2},
 ]
 
+# Markers that produce a concatenated 18S+ITS alignment (per-marker raw files,
+# concatenated align/trim pipeline). 'concat_18s_first' fetches 18S first and
+# pins the ITS ingroup to the species 18S recovered; 'concatenated' searches
+# both markers independently against the same specimen list.
+CONCAT_MARKERS = ('concatenated', 'concat_18s_first')
+
 
 # ── NCBI helpers ──────────────────────────────────────────────────────────────
 
@@ -781,8 +787,15 @@ def _concatenate_alignments(path1, marker1, path2, marker2, out_path):
     return len(records), w1, w2, presence
 
 
-def _fetch_marker(job, marker, gene_query, suffix):
-    """Run NCBI fetch for one marker, return path to raw FASTA. Non-destructive to job fields."""
+def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
+    """Run NCBI fetch for one marker, return path to raw FASTA. Non-destructive to job fields.
+
+    restrict_override, when given, replaces job.restrict_species as the ingroup
+    filter for this marker only (used by the 18S-guided flow to pin the ITS
+    ingroup to exactly the species 18S recovered). An empty list means "no
+    species survived 18S" and is honored as such (fetch nothing); None falls
+    back to job.restrict_species.
+    """
     from Bio.SeqRecord import SeqRecord
     email      = job.ncbi_email or 'user@example.com'
     taxon      = job.target_taxon or 'Gyrodactylidae'
@@ -790,6 +803,7 @@ def _fetch_marker(job, marker, gene_query, suffix):
     max_factor = job.max_length_factor if job.max_length_factor is not None else 2.0
     bad_acc    = job.bad_accessions or []
     og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
+    restrict   = restrict_override if restrict_override is not None else job.restrict_species
 
     query = f'"{taxon}"[Organism] AND ({gene_query})'
     _set_status(job, 'fetching', f'[{marker}] Searching NCBI: {query}')
@@ -800,18 +814,19 @@ def _fetch_marker(job, marker, gene_query, suffix):
     records = _ncbi_fetch_batch(ids, email)
     ingroup = _process_records(records, bad_acc, min_len, max_factor)
 
-    # Optional: restrict ingroup to project specimen species
-    if job.restrict_species:
-        kept, matched, missing = _restrict_ingroup(ingroup, job.restrict_species)
+    # Optional: restrict ingroup to project specimen species (or, in the
+    # 18S-guided flow, to the species 18S recovered — passed via restrict_override)
+    if restrict:
+        kept, matched, missing = _restrict_ingroup(ingroup, restrict)
         recovered = []
         if missing:
             recovered, missing = _fetch_missing_specimens(
-                missing, job.restrict_species, email, gene_query, min_len, bad_acc)
+                missing, restrict, email, gene_query, min_len, bad_acc)
             kept.extend(recovered)
 
         n_pending = 0
         if missing:
-            orig_by_norm = {_norm_species(s): s for s in job.restrict_species if _norm_species(s)}
+            orig_by_norm = {_norm_species(s): s for s in restrict if _norm_species(s)}
             still_unfound = []
             for n in missing:
                 orig = orig_by_norm.get(n, n)
@@ -956,6 +971,71 @@ def _concatenated_fetch_thread(app, job_id):
             note = f' {n_pending} specimen(s) need your review before aligning.' if n_pending else ''
             _set_status(job, 'fetched',
                         f'Fetched {tot18s} 18S + {totITS} ITS sequences.{note} '
+                        f'Review sequences and click Approve & Align.')
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = str(exc)
+            db.session.commit()
+
+
+def _species_labels_in_fasta(path):
+    """Unique species labels present in a raw FASTA, in first-seen order.
+    Reads the 'Genus_species' token after '|' in each header (MAFFT _R_ prefix
+    stripped), returns them space-separated ('Genus species') for reuse as NCBI
+    organism search terms / restrict lists."""
+    from Bio import SeqIO
+    labels, seen = [], set()
+    if not path or not os.path.exists(path):
+        return labels
+    for rec in SeqIO.parse(path, 'fasta'):
+        rid = rec.id[3:] if rec.id.startswith('_R_') else rec.id
+        sp = rid.split('|')[1] if '|' in rid else rid
+        key = _norm_species(sp)
+        if key and key not in seen:
+            seen.add(key)
+            labels.append(sp.replace('_', ' '))
+    return labels
+
+
+def _concat_18s_first_fetch_thread(app, job_id):
+    """18S-guided concatenated fetch.
+
+    Unlike _concatenated_fetch_thread (which searches both markers
+    independently against the same specimen list), this fetches all unique 18S
+    sequences first — one per species — and lets that recovered set *define*
+    which species the ITS search targets. ITS is then fetched only for the
+    species 18S actually produced, so the two markers concatenate over a single
+    18S-anchored species set. Stops at 'fetched' for user review, exactly like
+    the parallel concatenated flow; alignment reuses _concatenated_align_thread."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            import json as _json
+            queries = _json.loads(job.gene_query) if job.gene_query else {}
+            q18s = queries.get('18S', DEFAULT_GENE_QUERY_18S)
+            qITS = queries.get('ITS', DEFAULT_GENE_QUERY_ITS)
+
+            # 1. 18S first — this defines the species set (one seq per species).
+            raw18s, ing18s, tot18s = _fetch_marker(job, '18S', q18s, '18S')
+
+            # 2. ITS restricted to exactly the species 18S recovered.
+            species_18s = _species_labels_in_fasta(raw18s)
+            _set_status(job, 'fetching',
+                        f'18S done: {tot18s} sequences ({len(species_18s)} species). '
+                        f'Fetching ITS for those species…')
+            rawITS, ingITS, totITS = _fetch_marker(
+                job, 'ITS', qITS, 'ITS', restrict_override=species_18s)
+
+            job.raw_fasta_path    = raw18s   # primary for downloads
+            job.n_sequences_raw   = tot18s + totITS
+            job.n_sequences_final = tot18s + totITS
+            n_pending = sum(len(v) for v in (job.pending_candidates or {}).values())
+            note = f' {n_pending} specimen(s) need your review before aligning.' if n_pending else ''
+            _set_status(job, 'fetched',
+                        f'Fetched {tot18s} 18S + {totITS} ITS sequences '
+                        f'({len(species_18s)} species anchored on 18S).{note} '
                         f'Review sequences and click Approve & Align.')
         except Exception as exc:
             job.status = 'failed'
@@ -1803,8 +1883,8 @@ def _create_job_inner(project_id):
         if not ncbi_email:
             return jsonify({'error': 'NCBI email is required.'}), 400
 
-        # Concatenated mode: store both gene queries as JSON
-        if marker == 'concatenated':
+        # Concatenated modes: store both gene queries as JSON
+        if marker in CONCAT_MARKERS:
             q18s = request.form.get('gene_query_18s', DEFAULT_GENE_QUERY_18S).strip()
             qITS = request.form.get('gene_query_its', DEFAULT_GENE_QUERY_ITS).strip()
             gene_query = _json.dumps({'18S': q18s, 'ITS': qITS})
@@ -1840,7 +1920,9 @@ def _create_job_inner(project_id):
 
         # Launch background thread
         app = current_app._get_current_object()
-        if marker == 'concatenated':
+        if marker == 'concat_18s_first':
+            t = threading.Thread(target=_concat_18s_first_fetch_thread, args=(app, job.id), daemon=True)
+        elif marker == 'concatenated':
             t = threading.Thread(target=_concatenated_fetch_thread, args=(app, job.id), daemon=True)
         else:
             t = threading.Thread(target=_pipeline_thread, args=(app, job.id), daemon=True)
@@ -2313,7 +2395,7 @@ def _raw_fasta_path_for(job, marker):
     """Path to the raw FASTA a given marker's records live in — the single
     combined file for a plain job, or the per-marker file for a concatenated
     (18S+ITS) job."""
-    if job.marker == 'concatenated':
+    if job.marker in CONCAT_MARKERS:
         return os.path.join(job.result_dir, f'{marker}_raw.fa')
     return job.raw_fasta_path
 
@@ -2630,7 +2712,7 @@ def approve_and_align(project_id, job_id):
         return jsonify({'error': f'{n_pending} specimen(s) still need review — accept or '
                         f'reject the flexible-search candidates before aligning.'}), 400
     app = current_app._get_current_object()
-    target = _concatenated_align_thread if job.marker == 'concatenated' else _align_trim_thread
+    target = _concatenated_align_thread if job.marker in CONCAT_MARKERS else _align_trim_thread
     t = threading.Thread(target=target, args=(app, job_id), daemon=True)
     t.start()
     return jsonify({'status': 'aligning', 'message': 'Alignment started…'})
