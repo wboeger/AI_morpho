@@ -42,8 +42,7 @@ DEFAULT_GENE_QUERY_ITS = (
 
 DEFAULT_OUTGROUP_GENERA = [
     'Aglaiogyrodactylus', 'Onychogyrodactylus', 'Phanerothecium',
-    'Tresuncinidactylus', 'Mormyrogyrodactylus', 'Diplogyrodactylus',
-    'Hyperopletes', 'Oogyrodactylus',
+    'Oogyrodactylus',
 ]
 
 DEFAULT_OUTGROUP_DEFS = [
