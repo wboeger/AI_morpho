@@ -624,20 +624,33 @@ def _align_step(job):
     _set_status(job, 'aligned', f'Alignment done ({n} sequences).{note} Trimming…')
 
 
-def _trimal_no_seq_loss(aligned_path, trimmed_path, timeout=600):
-    """Run trimAl without letting it silently drop whole sequences.
+TRIM_MODES = ('gappyout', 'automated1', 'none')
+
+
+def _trimal_no_seq_loss(aligned_path, trimmed_path, trim_mode='gappyout', timeout=600):
+    """Run trimAl without ever silently dropping a whole sequence.
 
     `-gappyout` trims poorly-conserved columns; if that leaves any sequence
     all-gap, trimAl drops it from the output with no warning. Adding new
     sequences to an alignment shifts which columns look "gappy" across the
     combined set, so a previously-safe run can suddenly lose specimens.
-    Retries with the gentler `-automated1` heuristic, then falls back to the
-    untrimmed alignment (copied byte-for-byte) so no sequence is ever lost.
+
+    trim_mode controls how aggressive to be, but the no-loss guarantee always
+    holds — if the chosen heuristic would drop a sequence the untrimmed
+    alignment is used instead:
+      'gappyout'   — try -gappyout, then -automated1, then untrimmed
+      'automated1' — try -automated1, then untrimmed
+      'none'       — skip trimAl entirely, keep the full alignment
     Returns (n_sequences, mode_used) where mode_used is 'gappyout',
     'automated1', or 'untrimmed'.
     """
+    import shutil as _sh
     n_in = _count_fasta(aligned_path)
-    for mode in ('-gappyout', '-automated1'):
+    if trim_mode == 'none':
+        _sh.copyfile(aligned_path, trimmed_path)
+        return n_in, 'untrimmed'
+    modes = ('-gappyout', '-automated1') if trim_mode == 'gappyout' else ('-automated1',)
+    for mode in modes:
         result = subprocess.run(
             ['trimal', '-in', aligned_path, '-out', trimmed_path, mode],
             capture_output=True, text=True, timeout=timeout,
@@ -647,15 +660,15 @@ def _trimal_no_seq_loss(aligned_path, trimmed_path, timeout=600):
             n_out = _count_fasta(trimmed_path)
             if n_out >= n_in:
                 return n_out, mode.lstrip('-')
-    # Both trimAl modes lost sequences (or failed) — use the untrimmed alignment.
-    import shutil as _sh
+    # The chosen trimAl mode(s) lost sequences (or failed) — use untrimmed.
     _sh.copyfile(aligned_path, trimmed_path)
     return n_in, 'untrimmed'
 
 
 def _trim_step(job):
-    """trimAl -gappyout (local). On Galaxy the trim already ran in _align_step."""
+    """trimAl (local, mode from job.trim_mode). On Galaxy the trim already ran in _align_step."""
     trimmed_path = os.path.join(job.result_dir, f'{job.marker}_trimmed.fa')
+    trim_mode = job.trim_mode or 'gappyout'
 
     # Galaxy path: alignment step already produced the trimmed file.
     if job.trimmed_fasta_path and os.path.exists(job.trimmed_fasta_path) \
@@ -667,12 +680,15 @@ def _trim_step(job):
                     f'Trimming complete ({n} sequences). Ready to submit to Galaxy.')
         return
 
-    _set_status(job, 'trimming', 'Running trimAl (-gappyout)…')
-    n, mode = _trimal_no_seq_loss(job.aligned_fasta_path, trimmed_path)
-    note = '' if mode == 'gappyout' else \
-        (f' (fell back to -{mode} trimming — gappyout would have dropped '
-         f'sequence(s))' if mode == 'automated1' else
-         ' (trimAl would have dropped sequence(s) — using untrimmed alignment)')
+    label = 'skipping trimAl (keep full alignment)' if trim_mode == 'none' \
+        else f'Running trimAl (-{trim_mode})…'
+    _set_status(job, 'trimming', label)
+    n, mode = _trimal_no_seq_loss(job.aligned_fasta_path, trimmed_path, trim_mode)
+    note = '' if mode == trim_mode else \
+        (f' (fell back to -{mode} — -{trim_mode} would have dropped sequence(s))'
+         if mode == 'automated1' else
+         (' (trimAl kept as full alignment per your setting)' if trim_mode == 'none'
+          else ' (trimAl would have dropped sequence(s) — using untrimmed alignment)'))
     job.trimmed_fasta_path = trimmed_path
     job.fasta_filename      = os.path.basename(trimmed_path)
     job.n_sequences         = n
@@ -915,18 +931,15 @@ def _align_marker(raw_path, suffix, job_dir):
     return aligned_path
 
 
-def _trim_marker(aligned_path, suffix, job_dir):
-    """trimAl -gappyout on one marker (local binary). Returns trimmed_path."""
+def _trim_marker(aligned_path, suffix, job_dir, trim_mode='gappyout'):
+    """trimAl on one marker (local binary), with the same no-loss guarantee as
+    the single-marker path — a marker's trimAl step can never silently drop a
+    sequence before concatenation. Returns (trimmed_path, mode_used)."""
     trimmed_path = os.path.join(job_dir, f'{suffix}_trimmed.fa')
-    result = subprocess.run(
-        ['trimal', '-in', aligned_path, '-out', trimmed_path, '-gappyout'],
-        capture_output=True, text=True, timeout=600,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f'trimAl failed for {suffix}: {result.stderr[:400]}')
+    n, mode = _trimal_no_seq_loss(aligned_path, trimmed_path, trim_mode)
     if not os.path.exists(trimmed_path) or not os.path.getsize(trimmed_path):
         raise RuntimeError(f'trimAl produced empty output for {suffix}.')
-    return trimmed_path
+    return trimmed_path, mode
 
 
 def _align_trim_marker(job, raw_path, suffix):
@@ -942,7 +955,8 @@ def _align_trim_marker(job, raw_path, suffix):
     if flipped:
         job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
         db.session.commit()
-    trimmed_path = _trim_marker(aligned_path, suffix, job.result_dir)
+    trimmed_path, _mode = _trim_marker(aligned_path, suffix, job.result_dir,
+                                       job.trim_mode or 'gappyout')
     return aligned_path, trimmed_path
 
 
@@ -1851,6 +1865,9 @@ def _create_job_inner(project_id):
         target_taxon = request.form.get('target_taxon', 'Gyrodactylidae').strip()
         min_length        = max(100, int(request.form.get('min_length', 400) or 400))
         max_length_factor = max(1.0, float(request.form.get('max_length_factor', 2.0) or 2.0))
+        trim_mode         = request.form.get('trim_mode', 'gappyout').strip()
+        if trim_mode not in TRIM_MODES:
+            trim_mode = 'gappyout'
         bad_acc     = [s.strip() for s in request.form.get('bad_accessions', '').splitlines() if s.strip()]
 
         # Optional: restrict ingroup to selected project specimens.
@@ -1908,6 +1925,7 @@ def _create_job_inner(project_id):
             gene_query=gene_query,
             min_length=min_length,
             max_length_factor=max_length_factor,
+            trim_mode=trim_mode,
             bad_accessions=bad_acc,
             outgroup_definitions=og_defs,
             restrict_species=restrict_species,
@@ -2350,19 +2368,34 @@ def nj_preview(project_id, job_id):
     sequences = []
     flipped_set = set(job.flipped_sequences or [])
     low_qual_by_id = {lq['id']: lq['reason'] for lq in (job.low_quality_sequences or [])}
+    presence = job.partition_presence or {}   # {norm species: '18S+ITS'|'18S'|'ITS'}
+    n_empty = 0
     if job.trimmed_fasta_path and os.path.exists(job.trimmed_fasta_path):
         from Bio import SeqIO
         with open(job.trimmed_fasta_path) as fh:
             for rec in SeqIO.parse(fh, 'fasta'):
                 sp = rec.id.split('|')[1].replace('_', ' ') if '|' in rec.id else rec.id
                 raw_id = rec.id[3:] if rec.id.startswith('_R_') else rec.id
-                sequences.append({'id': rec.id, 'species': sp, 'length': len(rec.seq),
-                                  'flipped': raw_id in flipped_set or rec.id in flipped_set,
-                                  'low_quality': low_qual_by_id.get(raw_id) or low_qual_by_id.get(rec.id)})
+                s = str(rec.seq).upper()
+                nongap = sum(1 for c in s if c not in '-.?N')
+                empty = nongap == 0
+                if empty:
+                    n_empty += 1
+                sequences.append({
+                    'id': rec.id, 'species': sp,
+                    'length': len(rec.seq),           # aligned width (with gaps)
+                    'nongap_length': nongap,          # real (non-gap) bases
+                    'empty': empty,                   # row is all gaps — no sequence
+                    'partition': presence.get(_presence_key(sp)),  # which markers, if concat
+                    'flipped': raw_id in flipped_set or rec.id in flipped_set,
+                    'low_quality': low_qual_by_id.get(raw_id) or low_qual_by_id.get(rec.id)})
     return jsonify({
         'newick':     job.nj_newick,
         'sequences':  sequences,
         'n_sequences': len(sequences),
+        'n_empty':    n_empty,
+        'trim_mode':  job.trim_mode or 'gappyout',
+        'is_concat':  job.marker in CONCAT_MARKERS,
         'status_message': job.status_message or '',
         'flipped_sequences': sorted(flipped_set),
         'missing_specimens': job.missing_specimens or [],

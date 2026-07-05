@@ -489,6 +489,8 @@ def _migrate_phylogeny_jobs():
         ('missing_specimens',    'TEXT'),
         ('low_quality_sequences', 'TEXT'),
         ('pending_candidates',   'TEXT'),
+        ('trim_mode',            'VARCHAR(20)'),
+        ('sequences_removed',    'TEXT'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():

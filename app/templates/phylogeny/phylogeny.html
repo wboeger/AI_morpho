@@ -104,6 +104,23 @@
                         </div>
                     </div>
                     <div class="form-group">
+                        <label>Alignment Trimming (trimAl)
+                            <span style="font-weight:normal; color:var(--gray-500); font-size:0.8rem;">
+                                — controls column trimming &amp; sequence dropping
+                            </span>
+                        </label>
+                        <select name="trim_mode">
+                            <option value="gappyout">Standard (gappyout) — trim gappy columns</option>
+                            <option value="automated1">Gentle (automated1) — trim less</option>
+                            <option value="none">None — keep the full alignment (never drop)</option>
+                        </select>
+                        <small style="color:var(--gray-500);">
+                            A sequence is never silently dropped: if trimming would remove one, the
+                            untrimmed alignment is kept. Choose <em>None</em> to skip trimAl entirely.
+                            You still review and keep/drop every sequence on the NJ Tree screen.
+                        </small>
+                    </div>
+                    <div class="form-group">
                         <label>Bad Accessions to Exclude (one per line)</label>
                         <textarea name="bad_accessions" rows="4" placeholder="EU186159.1&#10;AY490406.1"></textarea>
                     </div>
@@ -1198,7 +1215,33 @@ function _njWarningBannerHtml(data) {
             &#9888; <strong>${lowQual.length}</strong> sequence(s) flagged for quality (high ambiguous-base content, marked below): ${lowQual.map(q => escHtml(q.id) + ' (' + escHtml(q.reason) + ')').join(', ')}.
         </div>`;
     }
+    if (data.n_empty) {
+        html += `<div style="margin-top:0.4rem; padding:0.4rem 0.6rem; background:#fff0f0; border:1px solid #f5b5b5; border-radius:4px; font-size:0.78rem; color:#a02020;">
+            &#9888; <strong>${data.n_empty}</strong> taxon(s) have an <strong>all-gap row</strong> — present in the alignment but with no sequence data (e.g. a concatenated taxon that has one marker but not the other). Marked below; keep or remove each as you wish.
+        </div>`;
+    }
+    const trimNote = {gappyout:'Standard (gappyout)', automated1:'Gentle (automated1)', untrimmed:'None (full alignment)', none:'None (full alignment)'}[data.trim_mode] || data.trim_mode;
+    if (trimNote) {
+        html += `<div style="margin-top:0.4rem; font-size:0.75rem; color:var(--gray-500);">
+            Trimming mode: <strong>${escHtml(trimNote)}</strong>. No sequence is removed unless you check it below.
+        </div>`;
+    }
     return html;
+}
+
+// Small badges shown next to each sequence: partition membership (concat) and
+// all-gap/empty flag. Empty = the row has no real bases (all gaps).
+function _njSeqBadges(seq) {
+    let b = '';
+    if (seq.partition && seq.partition !== '18S+ITS') {
+        b += ` <span style="font-size:0.66rem; background:#fff3cd; color:#856404; border-radius:8px; padding:0 0.4rem; white-space:nowrap;" title="This taxon only has the ${escHtml(seq.partition)} marker; the other marker is all gaps.">${escHtml(seq.partition)} only</span>`;
+    } else if (seq.partition === '18S+ITS') {
+        b += ` <span style="font-size:0.66rem; background:#e6f4ea; color:#1e7e34; border-radius:8px; padding:0 0.4rem;" title="Has both markers.">18S+ITS</span>`;
+    }
+    if (seq.empty) {
+        b += ` <span style="font-size:0.66rem; background:#f8d7da; color:#a02020; border-radius:8px; padding:0 0.4rem; white-space:nowrap;" title="All-gap row — no sequence data.">empty</span>`;
+    }
+    return b;
 }
 
 function closeNjModal() {
@@ -1258,6 +1301,8 @@ function _renderNjTable() {
                 rowBg = 'background:#fffbe5;';
                 changeCell = `<span style="color:#856404; font-size:0.72rem; font-weight:600;" title="${escHtml(ch.description||'')}">&#8594; ${escHtml(ch.new_accession)}<br><em style="font-weight:normal;">${ch.length ? ch.length.toLocaleString()+' bp' : ''}</em></span>`;
             }
+        } else if (seq.empty) {
+            rowBg = 'background:#fff5f5;';
         } else if (seq.low_quality) {
             rowBg = 'background:#fffdf0;';
         } else if (seq.flipped) {
@@ -1266,6 +1311,9 @@ function _renderNjTable() {
         const acc = seq.id.includes('|') ? seq.id.split('|')[0] : seq.id;
         const isRemoved  = ch && ch.type === 'remove';
         const isRevComp  = ch && ch.type === 'revcomp';
+        const lenCell = (seq.nongap_length != null && seq.nongap_length !== seq.length)
+            ? `${seq.nongap_length.toLocaleString()} <span style="color:var(--gray-400);" title="aligned width incl. gaps">/ ${seq.length.toLocaleString()}</span>`
+            : seq.length.toLocaleString();
 
         const tr = document.createElement('tr');
         tr.id = `njrow-${i}`;
@@ -1274,9 +1322,9 @@ function _renderNjTable() {
             <td style="padding:0.2rem 0.4rem; text-align:center;">
                 <input type="checkbox" ${isRemoved ? 'checked' : ''} onchange="toggleNjRemove(${i})" title="Remove this sequence">
             </td>
-            <td style="padding:0.2rem 0.5rem; font-style:italic;">${escHtml(seq.species)}</td>
+            <td style="padding:0.2rem 0.5rem; font-style:italic;">${escHtml(seq.species)}${_njSeqBadges(seq)}</td>
             <td style="padding:0.2rem 0.5rem; font-family:monospace; font-size:0.75rem;">${escHtml(acc)}</td>
-            <td style="padding:0.2rem 0.5rem; text-align:right;">${seq.length.toLocaleString()}</td>
+            <td style="padding:0.2rem 0.5rem; text-align:right; white-space:nowrap;">${lenCell}</td>
             <td style="padding:0.2rem 0.5rem; min-width:90px;">${changeCell}</td>
             <td style="padding:0.2rem 0.4rem; white-space:nowrap;">
                 <button class="btn btn-sm btn-outline" style="font-size:0.7rem; padding:0.1rem 0.35rem;"

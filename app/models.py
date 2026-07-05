@@ -261,6 +261,11 @@ class PhylogenyJob(db.Model):
     gene_query = db.Column(db.Text)
     min_length = db.Column(db.Integer, default=400)
     max_length_factor = db.Column(db.Float, default=2.0)
+    trim_mode = db.Column(db.String(20), default='gappyout')  # trimAl behaviour:
+                                            # 'gappyout' (standard, no-loss fallback),
+                                            # 'automated1' (gentler, no-loss fallback),
+                                            # or 'none' (skip trimAl — keep full
+                                            # alignment, never drop a column/sequence)
     nj_newick = db.Column(db.Text)                       # rapid NJ tree Newick
     outgroup_definitions = db.Column(db.JSON)   # [{family, mode, n}, ...]
     bad_accessions = db.Column(db.JSON, default=list)
