@@ -56,6 +56,31 @@ DEFAULT_OUTGROUP_DEFS = [
 # both markers independently against the same specimen list.
 CONCAT_MARKERS = ('concatenated', 'concat_18s_first')
 
+# ── Multi-fragment mode ───────────────────────────────────────────────────────
+# Fragment codes the Multi-fragment pipeline can discover, align, and concatenate.
+DEFAULT_GENE_QUERY_28S = (
+    '(large subunit ribosomal RNA[All Fields] OR 28S[All Fields]) '
+    'NOT (internal transcribed spacer[All Fields])'
+)
+DEFAULT_GENE_QUERY_COI = (
+    '(cytochrome c oxidase subunit 1[All Fields] OR '
+    'cytochrome oxidase subunit I[All Fields] OR COI[All Fields] OR COX1[All Fields])'
+)
+DEFAULT_GENE_QUERY_COII = (
+    '(cytochrome c oxidase subunit 2[All Fields] OR '
+    'cytochrome oxidase subunit II[All Fields] OR COII[All Fields] OR COX2[All Fields])'
+)
+
+# code -> (default NCBI query, default min length)
+FRAGMENT_DEFAULTS = {
+    '18S':  (DEFAULT_GENE_QUERY_18S,  400),
+    'ITS':  (DEFAULT_GENE_QUERY_ITS,  300),
+    '28S':  (DEFAULT_GENE_QUERY_28S,  400),
+    'COI':  (DEFAULT_GENE_QUERY_COI,  200),
+    'COII': (DEFAULT_GENE_QUERY_COII, 200),
+}
+FRAGMENT_CODES = tuple(FRAGMENT_DEFAULTS.keys())
+
 
 # ── NCBI helpers ──────────────────────────────────────────────────────────────
 
@@ -1223,6 +1248,468 @@ def _replace_realign_thread(app, job_id, replacements, removals, revcomps=None):
             db.session.commit()
 
 
+# ── Multi-fragment pipeline ───────────────────────────────────────────────────
+
+def _fragment_queries_from_job(job):
+    """Return {code: query} for the fragments chosen in this job, falling back to
+    the built-in default query for any code without a stored override."""
+    try:
+        stored = json.loads(job.gene_query) if job.gene_query else {}
+    except Exception:
+        stored = {}
+    codes = job.fragments or list(stored.keys()) or []
+    out = {}
+    for c in codes:
+        default_q = FRAGMENT_DEFAULTS.get(c, (DEFAULT_GENE_QUERY_18S, 400))[0]
+        out[c] = (stored.get(c) or default_q).strip()
+    return out
+
+
+def _fragment_min_length(job, code):
+    """Per-fragment minimum length: job.min_length override if set, else the
+    fragment's built-in default (rRNA ≈400, protein-coding COI/COII ≈200)."""
+    if job.min_length:
+        return job.min_length
+    return FRAGMENT_DEFAULTS.get(code, (DEFAULT_GENE_QUERY_18S, 400))[1]
+
+
+def _discover_fragment(job, code, query, email, taxon, min_len, cap=12):
+    """Whole-taxon NCBI search for one fragment. Returns
+    {norm_species: {'display': 'Genus species',
+                    'candidates': [{accession,length,description}, …]}}.
+    Every record ≥ min_len is kept as a candidate (longest first, capped)."""
+    result = {}
+    q = f'"{taxon}"[Organism] AND ({query})'
+    _set_status(job, 'discovering', f'[{code}] Searching NCBI: {q}')
+    ids, count = _ncbi_search(q, email)
+    _set_status(job, 'discovering', f'[{code}] Found {count} records. Downloading {len(ids)}…')
+    recs = _ncbi_fetch_batch(ids, email)
+    for acc, rec in recs.items():
+        if len(rec.seq) < min_len:
+            continue
+        sp_disp = _parse_species_name(rec.description).replace('_', ' ').strip()
+        norm = _norm_species(sp_disp)
+        if not norm:
+            continue
+        entry = result.setdefault(norm, {'display': sp_disp, 'candidates': []})
+        entry['candidates'].append({
+            'accession': rec.id.split('|')[0],
+            'length': len(rec.seq),
+            'description': rec.description[:160],
+        })
+    for entry in result.values():
+        entry['candidates'].sort(key=lambda c: c['length'], reverse=True)
+        entry['candidates'] = entry['candidates'][:cap]
+    return result
+
+
+def _discovery_thread(app, job_id):
+    """Background thread for Multi-fragment mode: search the whole target taxon
+    for every chosen fragment, add per-species retries for any Specimens species
+    the bulk search missed, and assemble the species × fragment matrix. Stops at
+    'discovered' for the user to build the matrix in the UI."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            email = job.ncbi_email or 'user@example.com'
+            taxon = job.target_taxon or 'Gyrodactylidae'
+            queries = _fragment_queries_from_job(job)
+            specimen_norms = {_norm_species(s): s
+                              for s in (job.restrict_species or []) if _norm_species(s)}
+
+            # matrix: norm_species -> {display, in_specimens, fragments:{code:{candidates}}}
+            matrix = {}
+
+            def _ensure(norm, display, in_spec):
+                m = matrix.get(norm)
+                if m is None:
+                    m = {'display': display, 'in_specimens': in_spec, 'fragments': {}}
+                    matrix[norm] = m
+                elif in_spec:
+                    m['in_specimens'] = True
+                return m
+
+            for code, query in queries.items():
+                min_len = _fragment_min_length(job, code)
+                found = _discover_fragment(job, code, query, email, taxon, min_len)
+
+                # Retry Specimens species this fragment's bulk search missed, so a
+                # species is never silently dropped (relaxed + per-species search).
+                missing = [n for n in specimen_norms if n not in found]
+                if missing:
+                    _set_status(job, 'discovering',
+                                f'[{code}] Retrying {len(missing)} missing specimen(s)…')
+                    recovered, _still = _fetch_missing_specimens(
+                        missing, list(specimen_norms.values()), email, query, min_len,
+                        job.bad_accessions or [])
+                    for rec in recovered:
+                        sp = rec.id.split('|')[1] if '|' in rec.id else rec.id
+                        disp = sp.replace('_', ' ')
+                        norm = _norm_species(disp)
+                        found.setdefault(norm, {'display': disp, 'candidates': []})
+                        found[norm]['candidates'].append({
+                            'accession': rec.id.split('|')[0],
+                            'length': len(rec.seq),
+                            'description': f'{disp} (per-species retry)',
+                        })
+                    # Last resort: organism-only flexible search for anything still gone.
+                    still = [n for n in missing if n not in found]
+                    for n in still:
+                        orig = specimen_norms.get(n, n)
+                        cands = _flexible_search_candidates(orig.replace('_', ' '), email,
+                                                            min_length=1)
+                        if cands:
+                            found.setdefault(n, {'display': orig.replace('_', ' '),
+                                                 'candidates': []})
+                            found[n]['candidates'].extend(cands)
+
+                for norm, entry in found.items():
+                    in_spec = norm in specimen_norms
+                    disp = specimen_norms.get(norm, entry['display'])
+                    disp = disp.replace('_', ' ')
+                    m = _ensure(norm, disp, in_spec)
+                    m['fragments'][code] = {'candidates': entry['candidates']}
+
+            # Every Specimens species must appear, even with zero candidates.
+            for norm, orig in specimen_norms.items():
+                _ensure(norm, orig.replace('_', ' '), True)
+
+            job.fragment_matrix = matrix
+            n_spec = sum(1 for m in matrix.values() if m['in_specimens'])
+            n_new = len(matrix) - n_spec
+            _set_status(job, 'discovered',
+                        f'Discovery done: {len(matrix)} species across '
+                        f'{len(queries)} fragment(s) — {n_spec} from Specimens, '
+                        f'{n_new} additional in GenBank. Build the fragment matrix.')
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = str(exc)
+            db.session.commit()
+
+
+def _fetch_fragment_outgroups(job, query, min_len, seen_species):
+    """Fetch outgroup records for one fragment using the job's outgroup
+    definitions, excluding anything whose species is already in seen_species.
+    Returns list of SeqRecord. Mirrors the outgroup block of _fetch_marker."""
+    email      = job.ncbi_email or 'user@example.com'
+    taxon      = job.target_taxon or 'Gyrodactylidae'
+    max_factor = job.max_length_factor if job.max_length_factor is not None else 2.0
+    bad_acc    = job.bad_accessions or []
+    og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
+    og_records = []
+    for od in og_defs:
+        family = od.get('family', '').strip()
+        mode   = od.get('mode', 'each_genus')
+        n      = int(od.get('n', 2))
+        if not family:
+            continue
+        _set_status(job, job.status, f'Fetching outgroup family: {family}…')
+        fq = f'"{family}"[Organism] AND ({query})'
+        fids, _ = _ncbi_search(fq, email)
+        frecs   = _ncbi_fetch_batch(fids, email)
+        cands   = _process_records(frecs, bad_acc, min_len, max_factor)
+        cands   = [r for r in cands
+                   if taxon.lower() not in r.description.lower()
+                   and ('|' not in r.id or r.id.split('|')[1] not in seen_species)]
+        if mode == 'each_genus':
+            by_g = {}
+            for rec in cands:
+                sp = rec.id.split('|')[1] if '|' in rec.id else rec.id
+                by_g.setdefault(sp.split('_')[0], []).append(rec)
+            sel = []
+            for grecs in by_g.values():
+                grecs.sort(key=lambda r: len(r.seq), reverse=True)
+                sel.extend(grecs[:n])
+        else:
+            cands.sort(key=lambda r: len(r.seq), reverse=True)
+            sel = cands[:n]
+        og_records.extend(sel)
+        for r in sel:
+            seen_species.add(r.id.split('|')[1] if '|' in r.id else r.id)
+    return og_records
+
+
+def _build_fragment_fastas(job):
+    """From job.fragment_selection, fetch the chosen accession for each
+    (species, fragment) cell and write one raw FASTA per fragment, labelled with
+    the (possibly renamed) species. Adds per-fragment outgroups. Returns the list
+    of fragment codes that ended up with sequences."""
+    from Bio.SeqRecord import SeqRecord
+    email = job.ncbi_email or 'user@example.com'
+    sel = job.fragment_selection or {}
+    matrix = job.fragment_matrix or {}
+    queries = _fragment_queries_from_job(job)
+    concat_frags = sel.get('_concat_fragments') or list(queries.keys())
+
+    # Collect accessions per fragment: {code: [(accession, species_label), …]}
+    per_frag = {c: [] for c in concat_frags}
+    for norm, row in sel.items():
+        if norm == '_concat_fragments':
+            continue
+        if not row.get('include', True):
+            continue
+        display = (row.get('rename') or
+                   matrix.get(norm, {}).get('display', norm)).strip()
+        label = display.replace(' ', '_')
+        for code, acc in (row.get('fragments') or {}).items():
+            if code in per_frag and acc:
+                per_frag[code].append((acc, label))
+
+    built = []
+    for code in concat_frags:
+        items = per_frag.get(code) or []
+        if not items:
+            continue
+        min_len = _fragment_min_length(job, code)
+        accs = [a for a, _ in items]
+        _set_status(job, 'building', f'[{code}] Fetching {len(accs)} selected sequence(s)…')
+        fetched = _ncbi_fetch_batch(accs, email)
+        recs = []
+        seen_species = set()
+        for acc, label in items:
+            rec = fetched.get(acc)
+            if rec is None:
+                continue
+            recs.append(SeqRecord(rec.seq, id=f'{acc}|{label}', name='', description=''))
+            seen_species.add(label)
+        if not recs:
+            continue
+        # Outgroups for this fragment
+        recs.extend(_fetch_fragment_outgroups(job, queries[code], min_len, seen_species))
+        flipped, low_qual = _quality_orient_records(recs)
+        if flipped:
+            job.flipped_sequences = sorted(set((job.flipped_sequences or []) + flipped))
+        if low_qual:
+            job.low_quality_sequences = sorted(
+                (job.low_quality_sequences or []) + low_qual, key=lambda d: d['id'])
+        raw_path = os.path.join(job.result_dir, f'{code}_raw.fa')
+        _write_fasta(recs, raw_path)
+        built.append(code)
+    return built
+
+
+def _modeltest_file(path, result_dir, tag):
+    """Run ModelTest-NG on one alignment file; return the BIC-best model name or
+    None (also None when modeltest-ng is not installed). Non-fatal."""
+    import shutil as _sh
+    if not _sh.which('modeltest-ng') or not path or not os.path.exists(path):
+        return None
+    try:
+        prefix = os.path.join(result_dir, f'modeltest_{tag}')
+        result = subprocess.run(
+            ['modeltest-ng', '-i', path, '-t', 'mp', '-d', 'nt', '-o', prefix, '--force'],
+            capture_output=True, text=True, timeout=1800,
+        )
+        return _parse_modeltest_bic(result.stdout + result.stderr, prefix)
+    except Exception:
+        return None
+
+
+def _concatenate_many(frag_paths, out_path):
+    """Concatenate N trimmed alignments (list of (path, fragment_code)). Taxa
+    missing a fragment get all-gap columns. Returns (n_taxa, partition_spec,
+    presence) where partition_spec is [{name,start,end}] (1-based inclusive) and
+    presence maps normalized species -> '+'.join(fragments it contributed)."""
+    from Bio import SeqIO
+    from Bio.Seq import Seq
+    from Bio.SeqRecord import SeqRecord as SR
+
+    loaded = []   # (code, {species: rec}, width)
+    for path, code in frag_paths:
+        by_sp = {}
+        for r in SeqIO.parse(path, 'fasta'):
+            sp = r.id.split('|')[1] if '|' in r.id else r.id
+            by_sp[sp] = r
+        width = len(next(iter(by_sp.values())).seq) if by_sp else 0
+        loaded.append((code, by_sp, width))
+
+    all_sp = sorted({sp for _, by_sp, _ in loaded for sp in by_sp})
+    records, presence = [], {}
+    for sp in all_sp:
+        seq_parts, marks, rec_id = [], [], None
+        for code, by_sp, width in loaded:
+            r = by_sp.get(sp)
+            if r is not None:
+                seq_parts.append(str(r.seq))
+                marks.append(code)
+                rec_id = rec_id or r.id
+            else:
+                seq_parts.append('-' * width)
+        records.append(SR(Seq(''.join(seq_parts)), id=rec_id or sp, name='', description=''))
+        presence[_presence_key(sp)] = '+'.join(marks)
+
+    _write_fasta(records, out_path)
+    spec, cursor = [], 1
+    for code, _by_sp, width in loaded:
+        spec.append({'name': code, 'start': cursor, 'end': cursor + width - 1})
+        cursor += width
+    return len(records), spec, presence
+
+
+# Model-corrected NJ distance helpers.
+def _p_distance_correction(model):
+    """Map a ModelTest-NG model name to a distance-correction family used by the
+    NJ step: 'JC' (Jukes-Cantor) for simple models, 'K80' (Kimura-2P) when the
+    model distinguishes transitions/transversions (HKY/K80/TN/GTR). Defaults JC."""
+    if not model:
+        return 'JC'
+    m = model.upper()
+    if any(t in m for t in ('K80', 'K2P', 'HKY', 'TN', 'TIM', 'TVM', 'GTR', 'SYM')):
+        return 'K80'
+    return 'JC'
+
+
+_PURINES = set('AG')
+
+
+def _corrected_pair_distance(si, sj, fam):
+    """Model-corrected pairwise distance (JC69 or Kimura-2P) between two aligned
+    strings over their comparable (non-gap, unambiguous ACGT) columns. Returns
+    (distance, n_sites). Distance is capped at a large finite value on saturation."""
+    import math
+    sites = ts = tv = 0
+    for a, b in zip(si, sj):
+        if a not in 'ACGT' or b not in 'ACGT':
+            continue
+        sites += 1
+        if a == b:
+            continue
+        if (a in _PURINES) == (b in _PURINES):
+            ts += 1
+        else:
+            tv += 1
+    if sites == 0:
+        return 0.0, 0
+    if fam == 'K80':
+        P, Q = ts / sites, tv / sites
+        try:
+            d = -0.5 * math.log(1 - 2 * P - Q) - 0.25 * math.log(1 - 2 * Q)
+        except ValueError:
+            d = 2.0
+    else:   # JC69
+        p = (ts + tv) / sites
+        try:
+            d = -0.75 * math.log(1 - 4 / 3 * p)
+        except ValueError:
+            d = 2.0
+    if not (d == d) or d < 0:   # NaN / negative
+        d = 2.0
+    return d, sites
+
+
+def _nj_model_step(job, cat_path, partition_spec, partition_models):
+    """Build an NJ tree from the concatenated alignment using model-corrected
+    distances computed per partition (column ranges in partition_spec, model per
+    fragment in partition_models) and combined weighted by comparable sites.
+    Tip labels are the concatenated record ids (accession|species), matching the
+    RAxML path. Falls back silently if anything goes wrong. Sets job.nj_newick."""
+    _set_status(job, 'nj_running', 'Computing model-corrected NJ tree…')
+    try:
+        from Bio import AlignIO, Phylo
+        from Bio.Phylo.TreeConstruction import DistanceMatrix, DistanceTreeConstructor
+        import io as _io
+
+        aln = AlignIO.read(cat_path, 'fasta')
+        ids = [rec.id for rec in aln]
+        seqs = [str(rec.seq).upper() for rec in aln]
+        n = len(ids)
+        # Per-partition correction family + column slice.
+        parts = []
+        for p in (partition_spec or []):
+            fam = _p_distance_correction((partition_models or {}).get(p['name']))
+            parts.append((p['start'] - 1, p['end'], fam))
+        if not parts:
+            parts = [(0, len(seqs[0]) if seqs else 0, 'JC')]
+
+        matrix = [[0.0] * (i + 1) for i in range(n)]
+        for i in range(n):
+            for j in range(i):
+                dacc = wacc = 0.0
+                for s0, s1, fam in parts:
+                    d, w = _corrected_pair_distance(seqs[i][s0:s1], seqs[j][s0:s1], fam)
+                    dacc += d * w
+                    wacc += w
+                matrix[i][j] = (dacc / wacc) if wacc else 1.0
+        dm = DistanceMatrix(ids, matrix)
+        nj_tree = DistanceTreeConstructor().nj(dm)
+        buf = _io.StringIO()
+        Phylo.write(nj_tree, buf, 'newick')
+        newick = buf.getvalue().strip()
+        with open(os.path.join(job.result_dir, 'nj_tree.nwk'), 'w') as f:
+            f.write(newick)
+        job.nj_newick = newick
+        models_note = ', '.join(f'{p["name"]}:{(partition_models or {}).get(p["name"], "?")}'
+                                for p in (partition_spec or []))
+        _set_status(job, 'nj_ready',
+                    f'Model-corrected NJ tree ready ({n} taxa). Partition models: '
+                    f'{models_note}. Review tree, then approve for Galaxy/RAxML.')
+    except Exception as exc:
+        # Fall back to plain identity NJ so the user still gets a preview tree.
+        try:
+            _nj_step(job)
+        except Exception:
+            job.nj_newick = None
+            _set_status(job, 'trimmed',
+                        f'Concatenation complete. (Model NJ failed: {exc}) Ready for Galaxy.')
+
+
+def _multifragment_align_thread(app, job_id):
+    """Align each chosen fragment (MAFFT), select the best model per fragment
+    (ModelTest-NG), concatenate the user-selected fragments/species, and build a
+    model-corrected NJ tree. Started after _build_fragment_fastas."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            sel = job.fragment_selection or {}
+            queries = _fragment_queries_from_job(job)
+            concat_frags = sel.get('_concat_fragments') or list(queries.keys())
+
+            frag_trimmed = []      # [(trimmed_path, code)]
+            partition_models = {}
+            for code in concat_frags:
+                raw_path = os.path.join(job.result_dir, f'{code}_raw.fa')
+                if not os.path.exists(raw_path):
+                    continue
+                _where = 'Galaxy' if _use_galaxy_for_align() else 'local'
+                _set_status(job, 'aligning', f'[{code}] Aligning + trimming ({_where})…')
+                _aln, trimmed = _align_trim_marker(job, raw_path, code)
+                frag_trimmed.append((trimmed, code))
+                _set_status(job, 'aligning', f'[{code}] Selecting best-fit model…')
+                model = _modeltest_file(trimmed, job.result_dir, code)
+                if model:
+                    partition_models[code] = model
+
+            if not frag_trimmed:
+                raise RuntimeError('No fragments had sequences to align.')
+
+            job.partition_models = partition_models
+
+            _set_status(job, 'trimming', 'Concatenating alignments…')
+            cat_path = os.path.join(job.result_dir, 'concatenated.fa')
+            n_taxa, spec, presence = _concatenate_many(frag_trimmed, cat_path)
+            job.trimmed_fasta_path = cat_path
+            job.fasta_filename = 'concatenated.fa'
+            job.aligned_fasta_path = frag_trimmed[0][0]
+            job.n_sequences = n_taxa
+            job.partition_spec = spec
+            job.partition_presence = presence
+            total_bp = spec[-1]['end'] if spec else 0
+            parts = ', '.join(f'{s["name"]} {s["end"] - s["start"] + 1}bp' for s in spec)
+            _set_status(job, 'trimmed',
+                        f'Concatenation done: {n_taxa} taxa, {total_bp}bp ({parts}). '
+                        f'Ready for Galaxy.')
+            _verify_specimen_coverage(job)
+            _nj_model_step(job, cat_path, spec, partition_models)
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = str(exc)
+            db.session.commit()
+
+
 # ── Galaxy helpers (usegalaxy.eu REST API) ────────────────────────────────────
 
 def _galaxy_base():
@@ -1592,8 +2079,23 @@ def _find_newick_in_dir(results_dir):
     return None
 
 
-def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000):
-    """Upload alignment to Galaxy and submit RAxML-NG. Returns (history_id, job_id)."""
+def _write_partition_file(partition_spec, out_path):
+    """Write a RAxML partition file from partition_spec ([{name,start,end}]).
+    One 'DNA, <name> = <start>-<end>' line per fragment. Returns out_path or None."""
+    lines = [f'DNA, {p["name"]} = {p["start"]}-{p["end"]}'
+             for p in (partition_spec or []) if p.get('end', 0) >= p.get('start', 1)]
+    if len(lines) < 2:
+        return None   # partitioning only meaningful with ≥2 fragments
+    with open(out_path, 'w') as fh:
+        fh.write('\n'.join(lines) + '\n')
+    return out_path
+
+
+def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000, partition_spec=None):
+    """Upload alignment to Galaxy and submit RAxML-NG. Returns (history_id, job_id).
+
+    When partition_spec has ≥2 fragments, a partition file is uploaded and passed
+    so each fragment gets its own model parameters under GTRGAMMA."""
     tool_id    = current_app.config.get('GALAXY_RAXML_TOOL_ID',
                      'toolshed.g2.bx.psu.edu/repos/iuc/raxml/raxml/8.2.12+galaxy2')
     history_id = _galaxy_create_history(api_key, 'GyroMorpho_RAxML')
@@ -1602,6 +2104,15 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000):
         state = _galaxy_wait_for_job(api_key, up_job, max_wait=300)
         if state != 'ok':
             raise RuntimeError(f'Galaxy upload job failed (state: {state})')
+
+    part_ds_id = None
+    part_path = os.path.join(os.path.dirname(fasta_path), 'partitions.txt')
+    if _write_partition_file(partition_spec, part_path):
+        part_ds_id, part_job = _galaxy_upload_file(api_key, history_id, part_path, 'txt')
+        if part_job:
+            state = _galaxy_wait_for_job(api_key, part_job, max_wait=300)
+            if state != 'ok':
+                raise RuntimeError(f'Galaxy partition upload failed (state: {state})')
     # Rapid bootstrap analysis (-f a): best ML tree + N bootstrap replicates,
     # with support values drawn onto the best tree (RAxML_bipartitions).
     # Conditional/section parameters MUST be passed as flattened '|'-delimited
@@ -1618,6 +2129,8 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000):
         'selExtraOpts|number_of_runs_conditional|number_of_runs_selector': 'by_number_of_runs',
         'selExtraOpts|number_of_runs_conditional|number_of_runs': int(n_bootstraps),
     }
+    if part_ds_id:
+        inputs['partition'] = {'src': 'hda', 'id': part_ds_id}
     job_id = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
     return history_id, job_id
 
@@ -1863,7 +2376,12 @@ def _create_job_inner(project_id):
         import json as _json
         ncbi_email  = request.form.get('ncbi_email', '').strip()
         target_taxon = request.form.get('target_taxon', 'Gyrodactylidae').strip()
-        min_length        = max(100, int(request.form.get('min_length', 400) or 400))
+        _min_raw = request.form.get('min_length', '').strip()
+        # Multi-fragment: blank min length → per-fragment defaults (None).
+        if request.form.get('marker', '').strip() == 'multi_fragment' and not _min_raw:
+            min_length = None
+        else:
+            min_length = max(100, int(_min_raw or 400))
         max_length_factor = max(1.0, float(request.form.get('max_length_factor', 2.0) or 2.0))
         trim_mode         = request.form.get('trim_mode', 'gappyout').strip()
         if trim_mode not in TRIM_MODES:
@@ -1900,8 +2418,23 @@ def _create_job_inner(project_id):
         if not ncbi_email:
             return jsonify({'error': 'NCBI email is required.'}), 400
 
+        # Multi-fragment mode: store the chosen fragments + per-fragment queries.
+        fragments = None
+        if marker == 'multi_fragment':
+            fragments = [f.strip() for f in request.form.getlist('fragments') if f.strip()]
+            if not fragments:
+                fragments = [f.strip() for f in
+                             request.form.get('fragments', '').split(',') if f.strip()]
+            fragments = [f for f in fragments if f in FRAGMENT_CODES]
+            if not fragments:
+                return jsonify({'error': 'Select at least one fragment.'}), 400
+            fq = {}
+            for code in fragments:
+                default_q = FRAGMENT_DEFAULTS[code][0]
+                fq[code] = request.form.get(f'gene_query_{code}', default_q).strip() or default_q
+            gene_query = _json.dumps(fq)
         # Concatenated modes: store both gene queries as JSON
-        if marker in CONCAT_MARKERS:
+        elif marker in CONCAT_MARKERS:
             q18s = request.form.get('gene_query_18s', DEFAULT_GENE_QUERY_18S).strip()
             qITS = request.form.get('gene_query_its', DEFAULT_GENE_QUERY_ITS).strip()
             gene_query = _json.dumps({'18S': q18s, 'ITS': qITS})
@@ -1930,6 +2463,8 @@ def _create_job_inner(project_id):
             outgroup_definitions=og_defs,
             restrict_species=restrict_species,
             galaxy_api_key=galaxy_api_key,
+            fragments=fragments,
+            phylo_inference=request.form.get('phylo_inference', 'nj').strip() or 'nj',
             status='created',
             status_message='Starting NCBI retrieval…',
         )
@@ -1938,7 +2473,10 @@ def _create_job_inner(project_id):
 
         # Launch background thread
         app = current_app._get_current_object()
-        if marker == 'concat_18s_first':
+        if marker == 'multi_fragment':
+            _set_status(job, 'discovering', 'Starting fragment discovery…')
+            t = threading.Thread(target=_discovery_thread, args=(app, job.id), daemon=True)
+        elif marker == 'concat_18s_first':
             t = threading.Thread(target=_concat_18s_first_fetch_thread, args=(app, job.id), daemon=True)
         elif marker == 'concatenated':
             t = threading.Thread(target=_concatenated_fetch_thread, args=(app, job.id), daemon=True)
@@ -1946,7 +2484,8 @@ def _create_job_inner(project_id):
             t = threading.Thread(target=_pipeline_thread, args=(app, job.id), daemon=True)
         t.start()
 
-        return jsonify({'job_id': job.id, 'status': 'fetching',
+        status = 'discovering' if marker == 'multi_fragment' else 'fetching'
+        return jsonify({'job_id': job.id, 'status': status,
                         'message': 'Pipeline started. Polling for updates…'})
 
 
@@ -1981,6 +2520,10 @@ def job_status(project_id, job_id):
         'n_sequences_deduped': job.n_sequences_deduped,
         'n_sequences_final':  job.n_sequences_final,
         'n_sequences':        job.n_sequences,
+        'marker':             job.marker,
+        'fragments':          job.fragments or [],
+        'partition_models':   job.partition_models or {},
+        'phylo_inference':    job.phylo_inference or 'nj',
     })
 
 
@@ -2004,7 +2547,8 @@ def submit_cipres(project_id, job_id):
 
     try:
         history_id, galaxy_job_id = _submit_to_galaxy_raxml(
-            submit_path, api_key, job.n_bootstraps or 1000
+            submit_path, api_key, job.n_bootstraps or 1000,
+            partition_spec=job.partition_spec,
         )
         job.phylo_method   = 'raxml'
         job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
@@ -2331,6 +2875,17 @@ def download_file(project_id, job_id, filetype):
         'aligned': (job.aligned_fasta_path, 'aligned.fasta',           'text/plain'),
         'trimmed': (job.trimmed_fasta_path, 'trimmed_alignment.fasta', 'text/plain'),
     }
+
+    # Per-fragment downloads (multi-fragment mode): raw_<code>, aligned_<code>,
+    # trimmed_<code> → <code>_{raw,aligned,trimmed}.fa in result_dir.
+    if '_' in filetype:
+        stage, _, code = filetype.partition('_')
+        if stage in ('raw', 'aligned', 'trimmed') and code in FRAGMENT_CODES:
+            path = os.path.join(job.result_dir or '', f'{code}_{stage}.fa')
+            if not os.path.exists(path):
+                return jsonify({'error': f'{code} {stage} file not found.'}), 404
+            return send_file(path, as_attachment=True,
+                             download_name=f'{code}_{stage}.fasta', mimetype='text/plain')
 
     if filetype in file_map:
         path, download_name, mimetype = file_map[filetype]
@@ -2749,6 +3304,153 @@ def approve_and_align(project_id, job_id):
     t = threading.Thread(target=target, args=(app, job_id), daemon=True)
     t.start()
     return jsonify({'status': 'aligning', 'message': 'Alignment started…'})
+
+
+# ── Multi-fragment matrix routes ──────────────────────────────────────────────
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/fragment_matrix')
+@login_required
+def fragment_matrix(project_id, job_id):
+    """Return the discovery matrix + current selection for a multi-fragment job.
+
+    Rows are flattened for the UI: Specimens species first, GenBank-only
+    suggestions after, each alphabetical. Every cell carries its candidate
+    accessions so the client can render a dropdown per (species, fragment)."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    matrix = job.fragment_matrix or {}
+    frags = job.fragments or []
+    rows = []
+    for norm, m in matrix.items():
+        rows.append({
+            'norm': norm,
+            'display': m.get('display', norm),
+            'in_specimens': bool(m.get('in_specimens')),
+            'fragments': {c: (m.get('fragments', {}).get(c, {}) or {}).get('candidates', [])
+                          for c in frags},
+        })
+    rows.sort(key=lambda r: (not r['in_specimens'], r['display'].lower()))
+    return jsonify({
+        'fragments': frags,
+        'rows': rows,
+        'selection': job.fragment_selection or {},
+        'phylo_inference': job.phylo_inference or 'nj',
+        'status': job.status,
+    })
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/fragment_matrix',
+                methods=['POST'])
+@login_required
+def save_fragment_matrix(project_id, job_id):
+    """Persist the user's matrix decisions (per-cell accession, per-row rename +
+    include, concat fragment list, NJ/RAxML choice)."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    data = request.get_json() or {}
+    selection = data.get('selection')
+    if not isinstance(selection, dict):
+        return jsonify({'error': 'selection object required'}), 400
+    job.fragment_selection = selection
+    if data.get('phylo_inference') in ('nj', 'raxml'):
+        job.phylo_inference = data['phylo_inference']
+    db.session.commit()
+    return jsonify({'status': 'ok'})
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/build_fragments',
+                methods=['POST'])
+@login_required
+def build_fragments(project_id, job_id):
+    """Fetch chosen sequences into per-fragment FASTAs, then align → model →
+    concatenate → NJ. Accepts an optional selection payload to save first."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if job.status not in ('discovered', 'trimmed', 'nj_ready', 'failed'):
+        return jsonify({'error': f'Cannot build in state: {job.status}'}), 400
+    data = request.get_json() or {}
+    if isinstance(data.get('selection'), dict):
+        job.fragment_selection = data['selection']
+    if data.get('phylo_inference') in ('nj', 'raxml'):
+        job.phylo_inference = data['phylo_inference']
+    if not job.fragment_selection:
+        return jsonify({'error': 'No selection saved yet.'}), 400
+    db.session.commit()
+
+    app = current_app._get_current_object()
+
+    def _run(app, job_id):
+        with app.app_context():
+            j = db.session.get(PhylogenyJob, job_id)
+            try:
+                _set_status(j, 'building', 'Fetching selected sequences…')
+                built = _build_fragment_fastas(j)
+                if not built:
+                    j.status = 'failed'
+                    j.status_message = 'No sequences selected to build.'
+                    db.session.commit()
+                    return
+                db.session.commit()
+                _multifragment_align_thread(app, job_id)
+            except Exception as exc:
+                j.status = 'failed'
+                j.status_message = str(exc)
+                db.session.commit()
+
+    threading.Thread(target=_run, args=(app, job_id), daemon=True).start()
+    return jsonify({'status': 'building', 'message': 'Building fragments…'})
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/rename_species',
+                methods=['POST'])
+@login_required
+def rename_species(project_id, job_id):
+    """Rename species labels in the raw FASTA(s) and re-run align→concat→NJ.
+
+    Body: {renames: {old_label: new_label, …}} where labels are 'Genus species'
+    or 'Genus_species'. Applies to every per-fragment raw FASTA (multi-fragment)
+    or the single raw FASTA (other modes)."""
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    renames = (request.get_json() or {}).get('renames') or {}
+    if not renames:
+        return jsonify({'error': 'No renames provided.'}), 400
+    from Bio import SeqIO
+    from Bio.SeqRecord import SeqRecord
+
+    def _norm_map(d):
+        return {_norm_species(k): str(v).strip().replace(' ', '_') for k, v in d.items()}
+    rmap = _norm_map(renames)
+
+    if job.marker == 'multi_fragment':
+        paths = [os.path.join(job.result_dir, f'{c}_raw.fa') for c in (job.fragments or [])]
+    else:
+        paths = [job.raw_fasta_path]
+    changed = 0
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        recs = list(SeqIO.parse(path, 'fasta'))
+        out = []
+        for r in recs:
+            rid = r.id[3:] if r.id.startswith('_R_') else r.id
+            acc, _, label = rid.partition('|')
+            new = rmap.get(_norm_species(label))
+            if new and label:
+                rid = f'{acc}|{new}'
+                changed += 1
+            out.append(SeqRecord(r.seq, id=rid, name='', description=''))
+        _write_fasta(out, path)
+    if not changed:
+        return jsonify({'error': 'No matching labels found to rename.'}), 400
+
+    app = current_app._get_current_object()
+    if job.marker == 'multi_fragment':
+        threading.Thread(target=_multifragment_align_thread, args=(app, job_id),
+                         daemon=True).start()
+    elif job.marker in CONCAT_MARKERS:
+        threading.Thread(target=_concatenated_align_thread, args=(app, job_id),
+                         daemon=True).start()
+    else:
+        threading.Thread(target=_align_trim_thread, args=(app, job_id), daemon=True).start()
+    return jsonify({'status': 'aligning',
+                    'message': f'Renamed {changed} sequence label(s). Re-aligning…'})
 
 
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/delete',

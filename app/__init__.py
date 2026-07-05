@@ -491,6 +491,11 @@ def _migrate_phylogeny_jobs():
         ('pending_candidates',   'TEXT'),
         ('trim_mode',            'VARCHAR(20)'),
         ('sequences_removed',    'TEXT'),
+        ('fragments',            'TEXT'),
+        ('fragment_matrix',      'TEXT'),
+        ('fragment_selection',   'TEXT'),
+        ('partition_models',     'TEXT'),
+        ('phylo_inference',      'VARCHAR(20)'),
     ]
     # character_definitions migration
     if 'character_definitions' in inspector.get_table_names():

@@ -91,6 +91,35 @@
                         </div>
                         <small style="color:var(--gray-500);">Each marker fetched, aligned, and trimmed separately; taxa missing one marker get gap columns in the concatenated alignment.</small>
                     </div>
+                    <!-- Multi-fragment mode: pick fragments + per-fragment queries -->
+                    <div id="div-multifragment">
+                        <div class="form-group">
+                            <label>Fragments to Discover <span style="color:var(--danger);">*</span></label>
+                            <div id="fragmentChecks" style="border:1px solid var(--gray-200); border-radius:4px; padding:0.5rem;">
+                                {% for fc in ['18S','ITS','28S','COI','COII'] %}
+                                <div style="margin-bottom:0.35rem;">
+                                    <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; font-weight:600;">
+                                        <input type="checkbox" class="frag-check" value="{{ fc }}"
+                                               {% if fc in ['18S','ITS'] %}checked{% endif %}
+                                               style="width:auto;" onchange="toggleFragQuery('{{ fc }}')">
+                                        {{ fc }}
+                                    </label>
+                                    <textarea id="fragq-{{ fc }}" data-frag="{{ fc }}" rows="2"
+                                              style="font-size:0.72rem; margin-top:0.2rem;"
+                                              {% if fc not in ['18S','ITS'] %}disabled{% endif %}></textarea>
+                                </div>
+                                {% endfor %}
+                            </div>
+                            <small style="color:var(--gray-500);">Whole target taxon is searched per fragment; species not on the Specimens page are surfaced as suggestions. Leave Min Length blank for per-fragment defaults.</small>
+                        </div>
+                        <div class="form-group">
+                            <label>Inference Method</label>
+                            <select name="phylo_inference" id="phyloInferenceSelect">
+                                <option value="nj">NJ — model-corrected distances (fast, local)</option>
+                                <option value="raxml">RAxML — partitioned ML on Galaxy (per-partition models)</option>
+                            </select>
+                        </div>
+                    </div>
                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:0.75rem;">
                         <div class="form-group">
                             <label>Min Sequence Length (bp)</label>
@@ -150,11 +179,12 @@
                         <div class="form-group">
                             <label>Marker</label>
                             <select name="marker" id="ncbi-marker-select" onchange="toggleConcatQueries(this.value)">
-                                <option value="18S">18S rRNA</option>
-                                <option value="ITS">ITS</option>
-                                <option value="concatenated">18S + ITS (concatenated)</option>
-                                <option value="concat_18s_first">18S → ITS (18S-guided concat)</option>
-                                <option value="COI">COI</option>
+                                <option value="multi_fragment">Multi-fragment (18S/ITS/28S/COI/COII)</option>
+                                <option value="18S">18S rRNA (legacy)</option>
+                                <option value="ITS">ITS (legacy)</option>
+                                <option value="concatenated">18S + ITS (concatenated, legacy)</option>
+                                <option value="concat_18s_first">18S → ITS (18S-guided concat, legacy)</option>
+                                <option value="COI">COI (legacy)</option>
                                 <option value="other">Other</option>
                             </select>
                         </div>
@@ -391,7 +421,11 @@
                 </td>
                 <td id="model-{{ job.id }}" style="font-size:0.78rem; font-family:monospace; color:var(--gray-600);"
                     data-model="{{ job.best_fit_model or '' }}">
-                    {% if job.best_fit_model %}
+                    {% if job.partition_models %}
+                        {% for frag, mdl in job.partition_models.items() %}
+                        <div><span style="color:var(--gray-400);">{{ frag }}:</span> {{ mdl }}</div>
+                        {% endfor %}
+                    {% elif job.best_fit_model %}
                         <span>{{ job.best_fit_model }}</span>
                     {% else %}
                         <span style="color:var(--gray-400);">—</span>
@@ -428,6 +462,9 @@
     letter-spacing: 0.03em;
 }
 .stage-created    { background: var(--gray-200); color: var(--gray-700); }
+.stage-discovering { background: #d1ecf1; color: #0c5460; animation: pulse 1.5s infinite; }
+.stage-discovered  { background: #d1ecf1; color: #0c5460; }
+.stage-building    { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
 .stage-fetching   { background: #cce5ff; color: #004085; animation: pulse 1.5s infinite; }
 .stage-fetched    { background: #cce5ff; color: #004085; }
 .stage-aligning   { background: #fff3cd; color: #856404; animation: pulse 1.5s infinite; }
@@ -657,6 +694,44 @@
     </div>
 </div>
 
+<!-- ── Fragment matrix modal (multi-fragment mode) ────────────────────────── -->
+<div class="modal-overlay" id="matrixModal">
+    <div class="modal" style="max-width:92vw; width:92vw; max-height:92vh; display:flex; flex-direction:column; padding:0;">
+        <div style="padding:0.75rem 1rem; border-bottom:1px solid var(--gray-200); display:flex; align-items:center; gap:1rem; flex-shrink:0;">
+            <h3 style="margin:0; flex:1;">Fragment Matrix — choose sequences, rename, concatenate</h3>
+            <button class="btn btn-sm btn-outline" onclick="closeMatrixModal()">&#10005;</button>
+        </div>
+        <div style="padding:0.5rem 1rem; background:var(--gray-100); border-bottom:1px solid var(--gray-200); flex-shrink:0; font-size:0.82rem;" id="matrixSummary"></div>
+        <div style="padding:0.4rem 1rem; border-bottom:1px solid var(--gray-200); flex-shrink:0; display:flex; gap:1rem; align-items:center; flex-wrap:wrap;">
+            <span style="font-size:0.8rem; font-weight:600;">Concatenate fragments:</span>
+            <span id="matrixConcatToggles" style="display:flex; gap:0.75rem; flex-wrap:wrap;"></span>
+            <label style="font-size:0.8rem; display:flex; align-items:center; gap:0.3rem;">
+                <input type="checkbox" id="matrixOnlySpecimens" style="width:auto;" onchange="renderMatrix()">
+                Hide GenBank-only suggestions
+            </label>
+        </div>
+        <div style="overflow:auto; flex:1; padding:0.5rem 1rem;">
+            <table id="matrixTable" style="font-size:0.8rem; width:100%; border-collapse:collapse;">
+                <thead id="matrixHead"></thead>
+                <tbody id="matrixBody"></tbody>
+            </table>
+        </div>
+        <div style="padding:0.75rem 1rem; border-top:1px solid var(--gray-200); display:flex; gap:0.75rem; align-items:center; flex-shrink:0;">
+            <label style="font-size:0.82rem; display:flex; align-items:center; gap:0.4rem;">
+                Inference:
+                <select id="matrixInference" style="font-size:0.8rem; padding:0.15rem 0.3rem;">
+                    <option value="nj">NJ (model-corrected)</option>
+                    <option value="raxml">RAxML (partitioned, Galaxy)</option>
+                </select>
+            </label>
+            <button class="btn btn-outline btn-sm" onclick="saveMatrix(true)">Save</button>
+            <button class="btn btn-success" onclick="buildFragments()">Build &amp; Align</button>
+            <button class="btn btn-outline" onclick="closeMatrixModal()">Cancel</button>
+            <span id="matrixMsg" style="font-size:0.83rem; color:var(--gray-500); margin-left:0.5rem;"></span>
+        </div>
+    </div>
+</div>
+
 <!-- ── Tree viewer modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="treeModal">
     <div class="modal" style="max-width:92vw; width:92vw; max-height:90vh; display:flex; flex-direction:column; padding:0;">
@@ -678,7 +753,7 @@
 const PROJECT_ID = {{ project.id }};
 
 // Active jobs that need polling
-const activeStages = new Set(['created','fetching','aligning','trimming','submitted','running','nj_running']);
+const activeStages = new Set(['created','fetching','aligning','trimming','submitted','running','nj_running','discovering','building']);
 let pollTimers = {};
 let _fetchPreviewJobId = null;
 
@@ -727,15 +802,33 @@ function toggleForm(bodyId, iconId) {
 const GENE_QUERY_DEFAULTS = {
     '18S': '(small subunit ribosomal RNA[All Fields] OR 18S[All Fields]) NOT (internal transcribed spacer[All Fields])',
     'ITS': '(internal transcribed spacer[All Fields] OR ITS[All Fields]) NOT (18S[All Fields] OR 28S[All Fields])',
+    '28S': '(large subunit ribosomal RNA[All Fields] OR 28S[All Fields]) NOT (internal transcribed spacer[All Fields])',
+    'COI': '(cytochrome c oxidase subunit 1[All Fields] OR cytochrome oxidase subunit I[All Fields] OR COI[All Fields] OR COX1[All Fields])',
+    'COII': '(cytochrome c oxidase subunit 2[All Fields] OR cytochrome oxidase subunit II[All Fields] OR COII[All Fields] OR COX2[All Fields])',
 };
+
+function toggleFragQuery(code) {
+    const cb = document.querySelector(`.frag-check[value="${code}"]`);
+    const ta = document.getElementById(`fragq-${code}`);
+    if (!cb || !ta) return;
+    ta.disabled = !cb.checked;
+    if (cb.checked && !ta.value.trim()) ta.value = GENE_QUERY_DEFAULTS[code] || '';
+}
 
 function toggleConcatQueries(marker) {
     const single = document.getElementById('div-gene-query');
     const concat = document.getElementById('div-concat-queries');
+    const multi  = document.getElementById('div-multifragment');
     if (!single || !concat) return;
+    const isMulti = marker === 'multi_fragment';
     const isCat = marker === 'concatenated' || marker === 'concat_18s_first';
-    single.style.display = isCat ? 'none' : '';
+    if (multi) multi.style.display = isMulti ? '' : 'none';
+    single.style.display = (isCat || isMulti) ? 'none' : '';
     concat.style.display = isCat ? '' : 'none';
+    if (isMulti) {
+        ['18S','ITS','28S','COI','COII'].forEach(toggleFragQuery);
+        return;
+    }
 
     // The single-marker query textarea doesn't auto-update with the marker
     // dropdown otherwise — e.g. picking "ITS" would silently keep searching
@@ -808,8 +901,26 @@ async function createJob(mode) {
     const fd   = new FormData(form);
     // Attach the species filter when "Limit to project specimens" is on (NCBI mode only)
     if (mode === 'ncbi') {
+        const marker = (document.getElementById('ncbi-marker-select') || {}).value;
         const tgl = document.getElementById('restrictToggle');
-        if (tgl && tgl.checked) {
+        if (marker === 'multi_fragment') {
+            // Multi-fragment: gather chosen fragments + per-fragment queries.
+            const frags = [...document.querySelectorAll('.frag-check:checked')].map(cb => cb.value);
+            if (!frags.length) {
+                setMsg('submit-msg-ncbi', 'Select at least one fragment.', 'var(--danger)');
+                return;
+            }
+            frags.forEach(f => {
+                fd.append('fragments', f);
+                const ta = document.getElementById(`fragq-${f}`);
+                fd.set(`gene_query_${f}`, (ta && ta.value.trim()) || GENE_QUERY_DEFAULTS[f] || '');
+            });
+            // Pass Specimens species so discovery flags them and retries any missed.
+            const specimens = tgl && tgl.checked
+                ? selectedRestrictSpecies()
+                : [...document.querySelectorAll('.restrict-sp')].map(cb => cb.value);
+            if (specimens.length) fd.set('restrict_species', JSON.stringify(specimens));
+        } else if (tgl && tgl.checked) {
             const species = selectedRestrictSpecies();
             if (!species.length) {
                 setMsg('submit-msg-ncbi', 'Select at least one specimen species, or turn off the limit.', 'var(--danger)');
@@ -856,6 +967,9 @@ function updateRow(jobId, data) {
 
 function buildActions(jobId, status) {
     let html = '';
+    if (status === 'discovered') {
+        html += `<button class="btn btn-sm btn-success" onclick="openMatrixModal(${jobId})">Build Fragment Matrix</button> `;
+    }
     if (status === 'fetched') {
         html += `<button class="btn btn-sm btn-success" onclick="openFetchPreview(${jobId})">Review Sequences</button> `;
     }
@@ -938,6 +1052,7 @@ async function checkStatus(jobId) {
         } else {
             clearPoll(jobId);
             // Auto-open modals on stage transitions
+            if (data.status === 'discovered' && prevStatus !== 'discovered') openMatrixModal(jobId);
             if (data.status === 'fetched' && prevStatus !== 'fetched') openFetchPreview(jobId);
             if (data.status === 'nj_ready' && prevStatus !== 'nj_ready') openNjModal(jobId);
         }
@@ -999,11 +1114,171 @@ async function deleteJob(jobId) {
 
 // Auto-poll any job that is in an active stage on page load
 document.addEventListener('DOMContentLoaded', () => {
+    const mk = document.getElementById('ncbi-marker-select');
+    if (mk) toggleConcatQueries(mk.value);   // init fragment panel / query visibility
     {% for job in jobs %}
-    {% if job.status in ('created', 'fetching', 'aligning', 'trimming', 'submitted', 'running', 'nj_running') %}
+    {% if job.status in ('created', 'fetching', 'aligning', 'trimming', 'submitted', 'running', 'nj_running', 'discovering', 'building') %}
     schedulePoll({{ job.id }});
     {% endif %}
     {% endfor %}
+});
+
+// ── Fragment matrix modal (multi-fragment mode) ──────────────────────────────
+let _matrixJobId = null;
+let _matrixData  = null;   // {fragments, rows, selection, phylo_inference}
+
+async function openMatrixModal(jobId) {
+    _matrixJobId = jobId;
+    setMsg('matrixMsg', 'Loading matrix…', 'var(--primary)');
+    document.getElementById('matrixModal').classList.add('active');
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/fragment_matrix`);
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) { setMsg('matrixMsg', data.error || 'Failed to load.', 'var(--danger)'); return; }
+        _matrixData = data;
+        // Seed a default selection if none saved: include all rows, pick the
+        // longest candidate per cell, concatenate every fragment.
+        const sel = (data.selection && Object.keys(data.selection).length) ? data.selection : {'_concat_fragments': data.fragments.slice()};
+        data.rows.forEach(r => {
+            if (!sel[r.norm]) {
+                const frags = {};
+                data.fragments.forEach(f => {
+                    const c = (r.fragments[f] || []);
+                    frags[f] = c.length ? c[0].accession : null;
+                });
+                sel[r.norm] = {rename: null, include: true, fragments: frags};
+            }
+        });
+        if (!sel._concat_fragments) sel._concat_fragments = data.fragments.slice();
+        _matrixData.selection = sel;
+        document.getElementById('matrixInference').value = data.phylo_inference || 'nj';
+        renderMatrix();
+        setMsg('matrixMsg', '', 'var(--gray-500)');
+    } catch(err) {
+        setMsg('matrixMsg', err.message, 'var(--danger)');
+    }
+}
+
+function closeMatrixModal() {
+    document.getElementById('matrixModal').classList.remove('active');
+    _matrixJobId = null; _matrixData = null;
+}
+
+function renderMatrix() {
+    if (!_matrixData) return;
+    const { fragments, rows, selection } = _matrixData;
+    const nSpec = rows.filter(r => r.in_specimens).length;
+    document.getElementById('matrixSummary').innerHTML =
+        `${rows.length} species — <strong>${nSpec}</strong> from Specimens, ` +
+        `<strong>${rows.length - nSpec}</strong> additional in GenBank. ` +
+        `Pick an accession per cell (or “none”), rename inline, untick to exclude a species, ` +
+        `and choose which fragments concatenate.`;
+
+    // Concatenate toggles + per-fragment downloads
+    const cc = selection._concat_fragments || fragments;
+    const dl = (f, stage, lbl) =>
+        `<a href="/api/project/${PROJECT_ID}/phylogeny/${_matrixJobId}/file/${stage}_${f}" title="Download ${f} ${stage} FASTA (available after build)" style="font-size:0.66rem; color:var(--primary);">${lbl}</a>`;
+    document.getElementById('matrixConcatToggles').innerHTML = fragments.map(f =>
+        `<label style="font-size:0.8rem; display:flex; align-items:center; gap:0.25rem;">
+            <input type="checkbox" class="matrix-concat" data-frag="${f}" ${cc.includes(f)?'checked':''} style="width:auto;">${f}
+            <span style="font-size:0.66rem; color:var(--gray-400);">[${dl(f,'raw','raw')}·${dl(f,'aligned','aln')}·${dl(f,'trimmed','trim')}]</span>
+        </label>`).join('');
+
+    const head = `<tr>
+        <th style="text-align:center; padding:0.3rem; border-bottom:2px solid var(--gray-300);">Use</th>
+        <th style="text-align:left; padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300);">Species (editable)</th>
+        ${fragments.map(f=>`<th style="text-align:left; padding:0.3rem 0.5rem; border-bottom:2px solid var(--gray-300);">${f}</th>`).join('')}
+    </tr>`;
+    document.getElementById('matrixHead').innerHTML = head;
+
+    const onlySpec = document.getElementById('matrixOnlySpecimens').checked;
+    const body = rows.map(r => {
+        const s = selection[r.norm] || {rename:null, include:true, fragments:{}};
+        const hidden = (onlySpec && !r.in_specimens) ? 'display:none;' : '';
+        const flag = r.in_specimens
+            ? ''
+            : `<span title="Not on Specimens page — GenBank suggestion" style="color:#8a6d00; font-size:0.7rem; margin-left:0.3rem;">✦ GenBank</span>`;
+        const cells = fragments.map(f => {
+            const cands = r.fragments[f] || [];
+            const chosen = s.fragments ? s.fragments[f] : null;
+            const opts = [`<option value="">— none —</option>`].concat(cands.map(c =>
+                `<option value="${c.accession}" ${c.accession===chosen?'selected':''}>${c.accession} (${c.length} bp)</option>`)).join('');
+            return `<td style="padding:0.2rem 0.4rem; border-bottom:1px solid var(--gray-100);">
+                ${cands.length ? `<select class="matrix-cell" data-norm="${r.norm}" data-frag="${f}" style="font-size:0.72rem; max-width:180px;">${opts}</select>`
+                               : `<span style="color:var(--gray-300);">—</span>`}
+            </td>`;
+        }).join('');
+        return `<tr data-norm="${r.norm}" style="${hidden}">
+            <td style="text-align:center; padding:0.2rem;"><input type="checkbox" class="matrix-include" data-norm="${r.norm}" ${s.include!==false?'checked':''} style="width:auto;"></td>
+            <td style="padding:0.2rem 0.5rem; border-bottom:1px solid var(--gray-100);">
+                <input type="text" class="matrix-rename" data-norm="${r.norm}" value="${s.rename || r.display}" style="font-size:0.75rem; font-style:italic; width:190px;">${flag}
+            </td>
+            ${cells}
+        </tr>`;
+    }).join('');
+    document.getElementById('matrixBody').innerHTML = body;
+}
+
+function gatherMatrixSelection() {
+    const sel = {};
+    document.querySelectorAll('#matrixBody tr[data-norm]').forEach(tr => {
+        const norm = tr.dataset.norm;
+        const rn = tr.querySelector('.matrix-rename');
+        const inc = tr.querySelector('.matrix-include');
+        const frags = {};
+        tr.querySelectorAll('.matrix-cell').forEach(s => { frags[s.dataset.frag] = s.value || null; });
+        const orig = (_matrixData.rows.find(r=>r.norm===norm)||{}).display || '';
+        const renameVal = rn ? rn.value.trim() : '';
+        sel[norm] = {
+            rename: (renameVal && renameVal !== orig) ? renameVal : null,
+            include: inc ? inc.checked : true,
+            fragments: frags,
+        };
+    });
+    sel._concat_fragments = [...document.querySelectorAll('.matrix-concat:checked')].map(c => c.dataset.frag);
+    return sel;
+}
+
+async function saveMatrix(showMsg) {
+    if (!_matrixJobId) return null;
+    const selection = gatherMatrixSelection();
+    _matrixData.selection = selection;
+    const phylo_inference = document.getElementById('matrixInference').value;
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${_matrixJobId}/fragment_matrix`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({selection, phylo_inference}),
+        });
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) { setMsg('matrixMsg', data.error || 'Save failed.', 'var(--danger)'); return null; }
+        if (showMsg) setMsg('matrixMsg', 'Saved.', 'var(--success)');
+        return {selection, phylo_inference};
+    } catch(err) { setMsg('matrixMsg', err.message, 'var(--danger)'); return null; }
+}
+
+async function buildFragments() {
+    if (!_matrixJobId) return;
+    const jobId = _matrixJobId;
+    const saved = await saveMatrix(false);
+    if (!saved) return;
+    const nConcat = saved.selection._concat_fragments.length;
+    if (!nConcat) { setMsg('matrixMsg', 'Select at least one fragment to concatenate.', 'var(--danger)'); return; }
+    setMsg('matrixMsg', 'Building fragments…', 'var(--primary)');
+    try {
+        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/build_fragments`, {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify(saved),
+        });
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) { setMsg('matrixMsg', data.error || 'Build failed.', 'var(--danger)'); return; }
+        closeMatrixModal();
+        updateRow(jobId, {status: data.status, message: data.message});
+        schedulePoll(jobId);
+    } catch(err) { setMsg('matrixMsg', err.message, 'var(--danger)'); }
+}
+
+document.getElementById('matrixModal').addEventListener('click', function(e) {
+    if (e.target === this) closeMatrixModal();
 });
 
 // ── Add Species modal ─────────────────────────────────────────────────────────

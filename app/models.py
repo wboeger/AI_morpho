@@ -307,5 +307,19 @@ class PhylogenyJob(db.Model):
     # Model selection (ModelTest-NG)
     best_fit_model = db.Column(db.String(100))   # e.g. "GTR+I+G4"
 
+    # --- Multi-fragment mode (marker == 'multi_fragment') ---
+    fragments = db.Column(db.JSON)            # chosen fragment codes, e.g.
+                                              # ["18S","ITS","COI"]
+    fragment_matrix = db.Column(db.JSON)      # discovery result:
+                                              # {norm_species: {display, in_specimens,
+                                              #  fragments:{code:{candidates:[{accession,
+                                              #  length,description}]}}}}
+    fragment_selection = db.Column(db.JSON)   # user's matrix decisions:
+                                              # {norm_species:{rename, include,
+                                              #  fragments:{code: accession|null}},
+                                              #  "_concat_fragments":[codes]}
+    partition_models = db.Column(db.JSON)     # {fragment: model} per-partition ModelTest-NG
+    phylo_inference = db.Column(db.String(20), default='nj')  # 'nj' or 'raxml'
+
     project = db.relationship('Project', backref='phylogeny_jobs')
     submitter = db.relationship('User', foreign_keys=[submitted_by])
