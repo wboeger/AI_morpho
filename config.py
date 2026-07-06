@@ -53,10 +53,10 @@ class Config:
     # Galaxy phylogenetic analysis (usegalaxy.eu)
     GALAXY_BASE_URL = os.environ.get('GALAXY_BASE_URL', 'https://usegalaxy.eu')
     GALAXY_API_KEY  = os.environ.get('GALAXY_API_KEY', '')
-    # Tool IDs — override via env if usegalaxy.eu updates versions
-    GALAXY_RAXML_TOOL_ID   = os.environ.get(
-        'GALAXY_RAXML_TOOL_ID',
-        'toolshed.g2.bx.psu.edu/repos/iuc/raxml/raxml/8.2.12+galaxy2')
+    # Tool IDs — override via env if usegalaxy.eu updates versions. RAxML-NG is
+    # resolved dynamically from the server when left blank (recommended, since
+    # versions differ per instance); set GALAXY_RAXMLNG_TOOL_ID to pin it.
+    GALAXY_RAXMLNG_TOOL_ID = os.environ.get('GALAXY_RAXMLNG_TOOL_ID', '')
     # MAFFT alignment + trimAl trimming on Galaxy (so the server needs no local
     # bioinformatics binaries). Tool IDs / input keys / extra params are all
     # env-overridable in case usegalaxy.eu updates tool versions.

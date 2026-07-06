@@ -2204,13 +2204,25 @@ def _find_newick_in_dir(results_dir):
     return None
 
 
-def _write_partition_file(partition_spec, out_path):
-    """Write a RAxML partition file from partition_spec ([{name,start,end}]).
-    One 'DNA, <name> = <start>-<end>' line per fragment. Returns out_path or None."""
-    lines = [f'DNA, {p["name"]} = {p["start"]}-{p["end"]}'
-             for p in (partition_spec or []) if p.get('end', 0) >= p.get('start', 1)]
-    if len(lines) < 2:
-        return None   # partitioning only meaningful with ≥2 fragments
+def _model_to_raxmlng(model):
+    """Normalize a ModelTest-NG model name to a RAxML-NG model string. RAxML-NG
+    parses most ModelTest names directly (e.g. 'GTR+I+G4'); default GTR+G."""
+    m = (model or '').strip()
+    return m or 'GTR+G'
+
+
+def _write_raxmlng_partition_file(partition_spec, partition_models, out_path):
+    """Write a RAxML-NG partition file: one '<model>, <name> = <start>-<end>'
+    line per fragment, the per-fragment model taken from partition_models.
+    Returns out_path, or None if no valid partitions."""
+    lines = []
+    for p in (partition_spec or []):
+        if p.get('end', 0) < p.get('start', 1):
+            continue
+        model = _model_to_raxmlng((partition_models or {}).get(p['name']))
+        lines.append(f'{model}, {p["name"]} = {p["start"]}-{p["end"]}')
+    if not lines:
+        return None
     with open(out_path, 'w') as fh:
         fh.write('\n'.join(lines) + '\n')
     return out_path
@@ -2438,46 +2450,58 @@ def _mrbayes_result_tree(results_dir):
     return (conv, True) if conv else (None, False)
 
 
-def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000, partition_spec=None):
-    """Upload alignment to Galaxy and submit RAxML-NG. Returns (history_id, job_id).
+def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000,
+                            partition_spec=None, partition_models=None,
+                            best_fit_model=None):
+    """Upload the alignment to Galaxy and run RAxML-NG (iuc `raxmlng`) in ALL
+    mode (adaptive ML search + non-parametric bootstrap with support). Returns
+    (history_id, job_id).
 
-    When partition_spec has ≥2 fragments, a partition file is uploaded and passed
-    so each fragment gets its own model parameters under GTRGAMMA."""
-    tool_id    = current_app.config.get('GALAXY_RAXML_TOOL_ID',
-                     'toolshed.g2.bx.psu.edu/repos/iuc/raxml/raxml/8.2.12+galaxy2')
-    history_id = _galaxy_create_history(api_key, 'GyroMorpho_RAxML')
+    With a partition_spec, a RAxML-NG partition file (per-fragment model) is
+    uploaded and passed via model_type=multi_file, so every fragment gets its own
+    model; otherwise a single model string (from ModelTest-NG, default GTR+G) is
+    used. The tool id is resolved from the server unless pinned via config."""
+    tool_id = current_app.config.get('GALAXY_RAXMLNG_TOOL_ID', '') or None
+    if not tool_id:
+        tool_id = (_galaxy_find_tool_id(api_key, 'raxmlng')
+                   or _galaxy_find_tool_id(api_key, 'raxml_ng'))
+    if not tool_id:
+        raise RuntimeError(
+            'No RAxML-NG tool is installed on this Galaxy server '
+            f'({_galaxy_base()}). Set GALAXY_RAXMLNG_TOOL_ID to pin one.')
+
+    history_id = _galaxy_create_history(api_key, 'GyroMorpho_RAxML-NG')
     ds_id, up_job = _galaxy_upload_file(api_key, history_id, fasta_path, 'fasta')
     if up_job:
         state = _galaxy_wait_for_job(api_key, up_job, max_wait=300)
         if state != 'ok':
             raise RuntimeError(f'Galaxy upload job failed (state: {state})')
 
-    part_ds_id = None
-    part_path = os.path.join(os.path.dirname(fasta_path), 'partitions.txt')
-    if _write_partition_file(partition_spec, part_path):
-        part_ds_id, part_job = _galaxy_upload_file(api_key, history_id, part_path, 'txt')
+    # Flattened conditional/section keys — nested dicts are ignored by the API.
+    inputs = {
+        'infile': {'src': 'hda', 'id': ds_id},
+        'general_opts|cmdtype|command': '--all',    # ML search + bootstrap + support
+        'bootstrap_opts|bs_reps': int(n_bootstraps),
+        'bootstrap_opts|bs_mre': 'true',            # autoMRE bootstopping
+        'random_seed': 1234567890,
+    }
+
+    part_path = os.path.join(os.path.dirname(fasta_path), 'raxmlng_partitions.txt')
+    part_file = _write_raxmlng_partition_file(partition_spec, partition_models, part_path)
+    if part_file:
+        part_ds_id, part_job = _galaxy_upload_file(api_key, history_id, part_file, 'txt')
         if part_job:
             state = _galaxy_wait_for_job(api_key, part_job, max_wait=300)
             if state != 'ok':
                 raise RuntimeError(f'Galaxy partition upload failed (state: {state})')
-    # Rapid bootstrap analysis (-f a): best ML tree + N bootstrap replicates,
-    # with support values drawn onto the best tree (RAxML_bipartitions).
-    # Conditional/section parameters MUST be passed as flattened '|'-delimited
-    # keys — nested dicts are silently ignored by the tool API, which then runs
-    # a plain ML search (-f d) with no bootstrap and emits no Bipartitions tree.
-    inputs = {
-        'infile': {'src': 'hda', 'id': ds_id},
-        'search_model_selector|model_type': 'nucleotide',
-        'search_model_selector|base_model': 'GTRGAMMA',
-        'random_seed': 1234567890,
-        'selExtraOpts|extraOptions': 'full',
-        'selExtraOpts|search_algorithm': 'a',   # -f a: rapid bootstrap + ML + bipartitions
-        'selExtraOpts|rapid_bootstrap_random_seed': 12345,
-        'selExtraOpts|number_of_runs_conditional|number_of_runs_selector': 'by_number_of_runs',
-        'selExtraOpts|number_of_runs_conditional|number_of_runs': int(n_bootstraps),
-    }
-    if part_ds_id:
-        inputs['partition'] = {'src': 'hda', 'id': part_ds_id}
+        inputs['model|model_type'] = 'multi_file'
+        inputs['model|model_file'] = {'src': 'hda', 'id': part_ds_id}
+        inputs['model|brlen_linkage'] = 'scaled'    # linked-proportional branch lengths
+        inputs['model|model_file_auto'] = 'false'   # use the models we supply
+    else:
+        inputs['model|model_type'] = 'single_string'
+        inputs['model|model_string'] = _model_to_raxmlng(best_fit_model)
+
     job_id = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
     return history_id, job_id
 
@@ -2912,6 +2936,8 @@ def submit_cipres(project_id, job_id):
             history_id, galaxy_job_id = _submit_to_galaxy_raxml(
                 submit_path, api_key, job.n_bootstraps or 1000,
                 partition_spec=job.partition_spec,
+                partition_models=job.partition_models,
+                best_fit_model=job.best_fit_model,
             )
             job.phylo_method   = 'raxml'
             job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
