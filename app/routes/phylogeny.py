@@ -2420,6 +2420,57 @@ def _nexus_contree_to_newick(in_path, out_path):
         return None
 
 
+def _local_mrbayes_thread(app, job_id, ngen):
+    """Run MrBayes locally (the `mb` binary) on a NEXUS built from the job's
+    concatenated alignment, convert the majority-rule consensus tree (with clade
+    posterior probabilities) to Newick, root it, and store it — ending at
+    tree_ready, like the NJ path. No Galaxy involved."""
+    with app.app_context():
+        job = db.session.get(PhylogenyJob, job_id)
+        if not job:
+            return
+        try:
+            submit_path = job.trimmed_fasta_path or job.raw_fasta_path
+            if not submit_path or not os.path.exists(submit_path):
+                raise RuntimeError('Alignment FASTA not found on disk.')
+            nexus_path = os.path.join(job.result_dir, 'mrbayes_input.nex')
+            _fasta_to_mrbayes_nexus(
+                submit_path, nexus_path,
+                partition_spec=job.partition_spec,
+                partition_models=job.partition_models,
+                ngen=ngen,
+            )
+            _set_status(job, 'running',
+                        f'Running MrBayes locally ({ngen:,} generations)…')
+            # mb reads the embedded command block (autoclose=yes) and writes
+            # <nexus>.con.tre in the job dir.
+            result = subprocess.run(
+                ['mb', os.path.basename(nexus_path)],
+                cwd=job.result_dir, capture_output=True, text=True, timeout=86400,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f'MrBayes failed: {result.stderr[:400] or result.stdout[-400:]}')
+
+            tree_path, has_support = _mrbayes_result_tree(job.result_dir)
+            if not tree_path:
+                raise RuntimeError('MrBayes produced no consensus tree.')
+            rooted = os.path.join(job.result_dir, 'rooted_tree.tre')
+            ok, msg = _root_tree(tree_path,
+                                 job.outgroup_genera or DEFAULT_OUTGROUP_GENERA, rooted)
+            use_file = rooted if ok else tree_path
+            with open(use_file) as fh:
+                job.tree_newick = fh.read().strip()
+            job.phylo_method = 'mrbayes'
+            job.status = 'tree_ready'
+            job.status_message = (f'MrBayes (local) tree ready with posterior '
+                                  f'probabilities. {msg if ok else "Unrooted (" + msg + ")."}')
+            db.session.commit()
+        except Exception as exc:
+            job.status = 'failed'
+            job.status_message = f'Local MrBayes error: {exc}'
+            db.session.commit()
+
+
 def _mrbayes_result_tree(results_dir):
     """Find a MrBayes consensus tree in results_dir and convert it to Newick.
     Returns (newick_path, has_support) or (None, False)."""
@@ -2910,15 +2961,33 @@ def submit_cipres(project_id, job_id):
     if not submit_path or not os.path.exists(submit_path):
         return jsonify({'error': 'FASTA file not found on disk.'}), 400
 
+    # Method: RAxML (default), Galaxy MrBayes, or local MrBayes.
+    _body = request.get_json(silent=True) or {}
+    method = (_body.get('method') or job.phylo_inference or 'raxml')
+    if method not in ('raxml', 'mrbayes', 'mrbayes_local'):
+        method = 'raxml'
+
+    # Local MrBayes runs on this host (no Galaxy key needed) in a background
+    # thread and ends at tree_ready, like the NJ path.
+    if method == 'mrbayes_local':
+        import shutil as _sh
+        if not _sh.which('mb'):
+            return jsonify({'error': 'MrBayes (mb) is not installed on this server. '
+                            'Choose RAxML or Galaxy MrBayes, or install MrBayes.'}), 400
+        ngen = int(_body.get('ngen') or current_app.config.get('MRBAYES_NGEN', 1000000))
+        app = current_app._get_current_object()
+        threading.Thread(target=_local_mrbayes_thread,
+                         args=(app, job_id, ngen), daemon=True).start()
+        job.phylo_method = 'mrbayes'
+        job.status = 'running'
+        job.status_message = 'Running MrBayes locally…'
+        db.session.commit()
+        return jsonify({'status': 'running', 'message': job.status_message})
+
     api_key = (job.galaxy_api_key or current_app.config.get('GALAXY_API_KEY', ''))
     if not api_key:
         return jsonify({'error': 'Galaxy API key is required. Set it in the job form or GALAXY_API_KEY env var.'}), 400
 
-    # Method: RAxML (default) or MrBayes, from the request body or job setting.
-    _body = request.get_json(silent=True) or {}
-    method = (_body.get('method') or job.phylo_inference or 'raxml')
-    if method not in ('raxml', 'mrbayes'):
-        method = 'raxml'
     try:
         if method == 'mrbayes':
             nexus_path = os.path.join(job.result_dir, 'mrbayes_input.nex')
@@ -3770,7 +3839,7 @@ def save_fragment_matrix(project_id, job_id):
     if not isinstance(selection, dict):
         return jsonify({'error': 'selection object required'}), 400
     job.fragment_selection = selection
-    if data.get('phylo_inference') in ('nj', 'raxml', 'mrbayes'):
+    if data.get('phylo_inference') in ('nj', 'raxml', 'mrbayes', 'mrbayes_local'):
         job.phylo_inference = data['phylo_inference']
     db.session.commit()
     return jsonify({'status': 'ok'})
@@ -3788,7 +3857,7 @@ def build_fragments(project_id, job_id):
     data = request.get_json() or {}
     if isinstance(data.get('selection'), dict):
         job.fragment_selection = data['selection']
-    if data.get('phylo_inference') in ('nj', 'raxml', 'mrbayes'):
+    if data.get('phylo_inference') in ('nj', 'raxml', 'mrbayes', 'mrbayes_local'):
         job.phylo_inference = data['phylo_inference']
     if not job.fragment_selection:
         return jsonify({'error': 'No selection saved yet.'}), 400

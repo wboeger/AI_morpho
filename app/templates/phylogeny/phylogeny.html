@@ -116,8 +116,9 @@
                             <label>Inference Method</label>
                             <select name="phylo_inference" id="phyloInferenceSelect">
                                 <option value="nj">NJ — model-corrected distances (fast, local)</option>
-                                <option value="raxml">RAxML — partitioned ML on Galaxy (per-partition models)</option>
+                                <option value="raxml">RAxML-NG — partitioned ML on Galaxy (per-partition models)</option>
                                 <option value="mrbayes">MrBayes — partitioned Bayesian on Galaxy (posterior probs)</option>
+                                <option value="mrbayes_local">MrBayes — partitioned Bayesian, local mb binary</option>
                             </select>
                         </div>
                     </div>
@@ -518,8 +519,9 @@
         <div class="form-group" style="margin-bottom:0.75rem;">
             <label>Method</label>
             <select id="cipres-method" onchange="toggleCipresMethod(this.value)" style="width:100%;">
-                <option value="raxml">RAxML-NG — maximum likelihood + bootstrap</option>
-                <option value="mrbayes">MrBayes — Bayesian (MCMC), posterior probabilities</option>
+                <option value="raxml">RAxML-NG — maximum likelihood + bootstrap (Galaxy)</option>
+                <option value="mrbayes">MrBayes — Bayesian MCMC (Galaxy)</option>
+                <option value="mrbayes_local">MrBayes — Bayesian MCMC (local mb binary)</option>
             </select>
         </div>
 
@@ -737,8 +739,9 @@
                 Inference:
                 <select id="matrixInference" style="font-size:0.8rem; padding:0.15rem 0.3rem;">
                     <option value="nj">NJ (model-corrected)</option>
-                    <option value="raxml">RAxML (partitioned, Galaxy)</option>
+                    <option value="raxml">RAxML-NG (partitioned, Galaxy)</option>
                     <option value="mrbayes">MrBayes (partitioned, Galaxy)</option>
+                    <option value="mrbayes_local">MrBayes (partitioned, local)</option>
                 </select>
             </label>
             <button class="btn btn-outline btn-sm" onclick="saveMatrix(true)">Save</button>
@@ -1024,15 +1027,17 @@ async function openCipresModal(jobId) {
     try {
         const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/status`);
         const d = await resp.json();
-        const m = (d.phylo_inference === 'mrbayes') ? 'mrbayes' : 'raxml';
+        const m = ['mrbayes', 'mrbayes_local', 'raxml'].includes(d.phylo_inference)
+            ? d.phylo_inference : 'raxml';
         document.getElementById('cipres-method').value = m;
         toggleCipresMethod(m);
     } catch(e) { toggleCipresMethod(document.getElementById('cipres-method').value); }
 }
 
 function toggleCipresMethod(m) {
-    document.getElementById('raxml-params').style.display   = (m === 'mrbayes') ? 'none' : '';
-    document.getElementById('mrbayes-params').style.display = (m === 'mrbayes') ? '' : 'none';
+    const isMb = (m === 'mrbayes' || m === 'mrbayes_local');
+    document.getElementById('raxml-params').style.display   = isMb ? 'none' : '';
+    document.getElementById('mrbayes-params').style.display = isMb ? '' : 'none';
 }
 
 function closeCipresModal() {
@@ -1044,8 +1049,9 @@ async function confirmCipresSubmit() {
     if (!_cipresJobId) return;
     const jobId = _cipresJobId;   // capture before closeCipresModal nullifies it
     const method = document.getElementById('cipres-method').value;
-    const body = (method === 'mrbayes')
-        ? {method: 'mrbayes', ngen: parseInt(document.getElementById('cipres-ngen').value) || 1000000}
+    const isMb = (method === 'mrbayes' || method === 'mrbayes_local');
+    const body = isMb
+        ? {method, ngen: parseInt(document.getElementById('cipres-ngen').value) || 1000000}
         : {method: 'raxml', n_bootstraps: parseInt(document.getElementById('cipres-bootstraps').value) || 1000};
     closeCipresModal();
     await submitCipres(jobId, body);
