@@ -1838,7 +1838,8 @@ def _multifragment_align_thread(app, job_id):
 # ── Galaxy helpers (usegalaxy.eu REST API) ────────────────────────────────────
 
 def _galaxy_base():
-    return current_app.config.get('GALAXY_BASE_URL', 'https://usegalaxy.eu')
+    # Forced to usegalaxy.eu — all Galaxy work (MAFFT, trimAl, RAxML-NG) runs there.
+    return 'https://usegalaxy.eu'
 
 
 def _galaxy_headers(api_key):
@@ -2966,10 +2967,13 @@ def submit_cipres(project_id, job_id):
     if not submit_path or not os.path.exists(submit_path):
         return jsonify({'error': 'FASTA file not found on disk.'}), 400
 
-    # Method: RAxML (default), Galaxy MrBayes, or local MrBayes.
+    # Method: RAxML-NG on Galaxy, or local MrBayes. (Galaxy MrBayes was dropped —
+    # not available on usegalaxy.eu; a legacy 'mrbayes' selection maps to local.)
     _body = request.get_json(silent=True) or {}
     method = (_body.get('method') or job.phylo_inference or 'raxml')
-    if method not in ('raxml', 'mrbayes', 'mrbayes_local'):
+    if method == 'mrbayes':
+        method = 'mrbayes_local'
+    if method not in ('raxml', 'mrbayes_local'):
         method = 'raxml'
 
     # Local MrBayes runs on this host (no Galaxy key needed) in a background
@@ -2994,27 +2998,14 @@ def submit_cipres(project_id, job_id):
         return jsonify({'error': 'Galaxy API key is required. Set it in the job form or GALAXY_API_KEY env var.'}), 400
 
     try:
-        if method == 'mrbayes':
-            nexus_path = os.path.join(job.result_dir, 'mrbayes_input.nex')
-            ngen = int(_body.get('ngen') or current_app.config.get('MRBAYES_NGEN', 1000000))
-            _fasta_to_mrbayes_nexus(
-                submit_path, nexus_path,
-                partition_spec=job.partition_spec,
-                partition_models=job.partition_models,
-                ngen=ngen,
-            )
-            history_id, galaxy_job_id = _submit_to_galaxy_mrbayes(nexus_path, api_key)
-            job.phylo_method   = 'mrbayes'
-            job.status_message = f'MrBayes submitted to Galaxy (job: {galaxy_job_id})'
-        else:
-            history_id, galaxy_job_id = _submit_to_galaxy_raxml(
-                submit_path, api_key, job.n_bootstraps or 1000,
-                partition_spec=job.partition_spec,
-                partition_models=job.partition_models,
-                best_fit_model=job.best_fit_model,
-            )
-            job.phylo_method   = 'raxml'
-            job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
+        history_id, galaxy_job_id = _submit_to_galaxy_raxml(
+            submit_path, api_key, job.n_bootstraps or 1000,
+            partition_spec=job.partition_spec,
+            partition_models=job.partition_models,
+            best_fit_model=job.best_fit_model,
+        )
+        job.phylo_method   = 'raxml'
+        job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
         job.job_url    = history_id    # Galaxy history ID
         job.job_handle = galaxy_job_id  # Galaxy job ID (for polling)
         job.status     = 'submitted'
