@@ -1,0 +1,6 @@
+# Nixpacks build customization for Railway.
+# Installs MrBayes so the local Bayesian inference option works (the Debian
+# `mrbayes` package provides the `mb` binary). `...` keeps Nixpacks' auto-detected
+# apt packages and appends ours.
+[phases.setup]
+aptPkgs = ["...", "mrbayes"]
