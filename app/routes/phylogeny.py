@@ -443,8 +443,23 @@ def _process_records(records, bad_accessions=None, min_length=400, max_length_fa
     return result
 
 
+def _phylo_results_base():
+    """Base directory for phylogeny job outputs. On Railway this resolves to the
+    persistent volume (Config.PHYLO_RESULTS_DIR under DATA_DIR); the repo dir is
+    ephemeral and wiped on redeploy. Falls back to <repo>/phylogeny/Results."""
+    base = current_app.config.get('PHYLO_RESULTS_DIR')
+    if not base:
+        base = os.path.join(os.path.dirname(current_app.root_path),
+                            'phylogeny', 'Results')
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
 def _write_fasta(records, path):
     from Bio import SeqIO
+    # Never hard-fail because a parent dir vanished (e.g. an old job whose result
+    # dir was on ephemeral storage) — recreate it first.
+    os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
     with open(path, 'w') as fh:
         SeqIO.write(records, fh, 'fasta')
 
@@ -2605,9 +2620,7 @@ def _create_job_inner(project_id):
                       or current_app.config.get('GALAXY_API_KEY', ''))
 
     stamp    = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-    # Save under <project_root>/phylogeny/Results/job_<timestamp>/
-    proj_root = os.path.dirname(current_app.root_path)
-    job_dir   = os.path.join(proj_root, 'phylogeny', 'Results', f'job_{stamp}')
+    job_dir  = os.path.join(_phylo_results_base(), f'job_{stamp}')
     os.makedirs(job_dir, exist_ok=True)
 
     if mode == 'upload':
@@ -3123,8 +3136,7 @@ def upload_tree_as_job(project_id):
             return jsonify({'error': 'No Newick tree found in the uploaded file.'}), 400
 
         stamp   = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
-        proj_root = os.path.dirname(current_app.root_path)
-        job_dir   = os.path.join(proj_root, 'phylogeny', 'Results', f'uploaded_{stamp}')
+        job_dir = os.path.join(_phylo_results_base(), f'uploaded_{stamp}')
         os.makedirs(job_dir, exist_ok=True)
 
         # Save the file
