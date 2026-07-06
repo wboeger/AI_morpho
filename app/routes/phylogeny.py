@@ -402,6 +402,22 @@ def _learn_from_selection(project_id, selection, matrix):
                              rename.replace(' ', '_'), 'accept')
 
 
+def _dedup_by_species_seq(records):
+    """Drop only genuine duplicates — the same sequence for the *same* species
+    (e.g. a record present in both the ingroup and an outgroup fetch). Identical
+    sequences belonging to different species are kept, so conserved-marker taxa
+    (e.g. 18S congeners) are never collapsed away. Keeps first-seen order."""
+    seen, out = set(), []
+    for rec in records:
+        sp = rec.id.split('|')[1] if '|' in rec.id else rec.id
+        sp = re.sub(r'^_R_', '', sp, flags=re.IGNORECASE)
+        key = (sp, str(rec.seq).upper())
+        if key not in seen:
+            seen.add(key)
+            out.append(rec)
+    return out
+
+
 def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
     """
     Filter and de-duplicate records, keeping one per species (longest that is
@@ -420,13 +436,17 @@ def _process_records(records, bad_accessions=None, min_length=400, max_length_fa
     # Minimum length
     records = {k: v for k, v in records.items() if len(v.seq) >= min_length}
 
-    # Deduplicate by exact sequence string
-    seen_seq = {}
+    # Deduplicate identical sequences WITHIN a species only. Deduplicating by
+    # sequence globally silently dropped whole species whenever two species share
+    # an identical sequence — common for conserved markers like 18S, where many
+    # congeners are identical over the amplicon, which lost most of the ingroup.
+    by_sp_seq = {}
     for rec in records.values():
-        s = str(rec.seq).upper()
-        if s not in seen_seq or len(rec.seq) > len(seen_seq[s].seq):
-            seen_seq[s] = rec
-    records = {r.id: r for r in seen_seq.values()}
+        sp = _parse_species_name(rec.description)
+        key = (sp, str(rec.seq).upper())
+        if key not in by_sp_seq or len(rec.seq) > len(by_sp_seq[key].seq):
+            by_sp_seq[key] = rec
+    records = {r.id: r for r in by_sp_seq.values()}
 
     # Compute max_length_factor × mean length cutoff
     if records:
@@ -630,13 +650,7 @@ def _fetch_step(job):
 
     # 3. Combine, deduplicate, write
     final = list(ingroup) + outgroup_records
-    seen_s = {}
-    final_unique = []
-    for rec in final:
-        s = str(rec.seq).upper()
-        if s not in seen_s:
-            seen_s[s] = True
-            final_unique.append(rec)
+    final_unique = _dedup_by_species_seq(final)
 
     flipped, low_qual = _quality_orient_records(final_unique)
     if flipped:
@@ -1031,13 +1045,7 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
             seen.add(r.id.split('|')[1] if '|' in r.id else r.id)
 
     final = ingroup + og_records
-    seen_s = {}
-    unique = []
-    for rec in final:
-        s = str(rec.seq).upper()
-        if s not in seen_s:
-            seen_s[s] = True
-            unique.append(rec)
+    unique = _dedup_by_species_seq(final)
 
     flipped, low_qual = _quality_orient_records(unique)
     if flipped:
