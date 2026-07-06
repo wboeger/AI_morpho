@@ -2090,6 +2090,170 @@ def _write_partition_file(partition_spec, out_path):
     return out_path
 
 
+def _model_to_mrbayes(model):
+    """Map a ModelTest-NG model name to MrBayes (nst, rates) lset parameters."""
+    m = (model or '').upper()
+    if 'GTR' in m or 'SYM' in m:
+        nst = '6'
+    elif any(t in m for t in ('HKY', 'K80', 'K2P', 'TN', 'TIM', 'TVM', 'F84')):
+        nst = '2'
+    else:
+        nst = '1'   # JC / F81
+    inv = '+I' in m or 'INV' in m
+    gam = '+G' in m or 'G4' in m or 'GAMMA' in m
+    if inv and gam:
+        rates = 'invgamma'
+    elif gam:
+        rates = 'gamma'
+    elif inv:
+        rates = 'propinv'
+    else:
+        rates = 'equal'
+    return nst, rates
+
+
+def _fasta_to_mrbayes_nexus(fasta_path, out_path, partition_spec=None,
+                            partition_models=None, ngen=1000000, samplefreq=1000,
+                            nchains=4, nruns=2, burninfrac=0.25):
+    """Convert a concatenated FASTA alignment to a NEXUS file carrying a full
+    MrBayes command block (data + charset partitions + per-partition lset/prset
+    + mcmc/sumt/sump). Taxon labels are single-quoted so 'accession|Genus_species'
+    survives NEXUS parsing. Returns out_path."""
+    from Bio import SeqIO
+    recs = list(SeqIO.parse(fasta_path, 'fasta'))
+    if not recs:
+        raise RuntimeError('Alignment is empty — cannot build NEXUS for MrBayes.')
+    ntax = len(recs)
+    nchar = len(recs[0].seq)
+    labels = [r.id for r in recs]
+    padw = max(len(l) for l in labels) + 3
+
+    lines = ['#NEXUS', '', 'BEGIN DATA;',
+             f'  DIMENSIONS NTAX={ntax} NCHAR={nchar};',
+             '  FORMAT DATATYPE=DNA MISSING=? GAP=-;', '  MATRIX']
+    for r in recs:
+        lines.append(f"    '{r.id}'".ljust(padw + 6) + str(r.seq))
+    lines += ['  ;', 'END;', '', 'BEGIN MRBAYES;', '  set autoclose=yes nowarnings=yes;']
+
+    spec = [p for p in (partition_spec or []) if p.get('end', 0) >= p.get('start', 1)]
+    if len(spec) >= 2:
+        for p in spec:
+            lines.append(f'  charset {p["name"]} = {p["start"]}-{p["end"]};')
+        names = ', '.join(p['name'] for p in spec)
+        lines.append(f'  partition byfrag = {len(spec)}: {names};')
+        lines.append('  set partition = byfrag;')
+        for i, p in enumerate(spec, start=1):
+            nst, rates = _model_to_mrbayes((partition_models or {}).get(p['name']))
+            lines.append(f'  lset applyto=({i}) nst={nst} rates={rates};')
+        # Let every partition have its own substitution parameters.
+        lines.append('  unlink revmat=(all) statefreq=(all) shape=(all) pinvar=(all);')
+        lines.append('  prset applyto=(all) ratepr=variable;')
+    else:
+        nst, rates = _model_to_mrbayes((partition_models or {}).get(spec[0]['name']) if spec else None)
+        lines.append(f'  lset nst={nst} rates={rates};')
+
+    lines += [
+        f'  mcmc ngen={int(ngen)} samplefreq={int(samplefreq)} '
+        f'nchains={int(nchains)} nruns={int(nruns)} printfreq={int(samplefreq)} '
+        f'diagnfreq={int(samplefreq)};',
+        f'  sump burninfrac={burninfrac};',
+        f'  sumt burninfrac={burninfrac};',
+        'END;', '',
+    ]
+    with open(out_path, 'w') as fh:
+        fh.write('\n'.join(lines))
+    return out_path
+
+
+def _submit_to_galaxy_mrbayes(nexus_path, api_key):
+    """Upload a MrBayes NEXUS (data + command block) to Galaxy and run MrBayes.
+    Returns (history_id, job_id). Tool id / input key are config-overridable
+    since Galaxy MrBayes wrappers differ across servers."""
+    tool_id = current_app.config.get('GALAXY_MRBAYES_TOOL_ID',
+                  'toolshed.g2.bx.psu.edu/repos/iuc/mrbayes/mrbayes/2.0.4')
+    input_key = current_app.config.get('GALAXY_MRBAYES_INPUT_KEY', 'data')
+    history_id = _galaxy_create_history(api_key, 'GyroMorpho_MrBayes')
+    ds_id, up_job = _galaxy_upload_file(api_key, history_id, nexus_path, 'nex')
+    if up_job:
+        state = _galaxy_wait_for_job(api_key, up_job, max_wait=300)
+        if state != 'ok':
+            raise RuntimeError(f'Galaxy upload job failed (state: {state})')
+    inputs = {input_key: {'src': 'hda', 'id': ds_id}}
+    try:
+        extra = json.loads(current_app.config.get('GALAXY_MRBAYES_EXTRA_JSON', '') or '{}')
+        if isinstance(extra, dict):
+            inputs.update(extra)
+    except Exception:
+        pass
+    job_id = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
+    return history_id, job_id
+
+
+def _nexus_contree_to_newick(in_path, out_path):
+    """Convert a MrBayes consensus tree (.con.tre, NEXUS) to Newick, carrying the
+    posterior probability of each clade as an internal-node label. Returns
+    out_path on success, None on failure."""
+    try:
+        from Bio import Phylo
+        trees = list(Phylo.parse(in_path, 'nexus'))
+        if not trees:
+            return None
+        tree = trees[-1]
+        for cl in tree.get_nonterminals() + tree.get_terminals():
+            if cl.confidence is None and cl.comment:
+                m = re.search(r'prob=([0-9.eE+-]+)', cl.comment)
+                if m:
+                    try:
+                        cl.confidence = float(m.group(1))
+                    except ValueError:
+                        pass
+            cl.comment = None   # drop [&prob=…] so the Newick stays clean
+        Phylo.write(tree, out_path, 'newick')
+        return out_path if os.path.exists(out_path) and os.path.getsize(out_path) else None
+    except Exception:
+        # Last resort: strip the NEXUS wrapper with the existing extractor.
+        try:
+            with open(in_path, errors='ignore') as fh:
+                nwk = _extract_newick(fh.read())
+            if nwk:
+                with open(out_path, 'w') as fh:
+                    fh.write(nwk)
+                return out_path
+        except Exception:
+            pass
+        return None
+
+
+def _mrbayes_result_tree(results_dir):
+    """Find a MrBayes consensus tree in results_dir and convert it to Newick.
+    Returns (newick_path, has_support) or (None, False)."""
+    try:
+        names = os.listdir(results_dir)
+    except OSError:
+        return None, False
+    cand = None
+    for name in names:
+        low = name.lower()
+        path = os.path.join(results_dir, name)
+        if not os.path.isfile(path):
+            continue
+        if 'con' in low and ('tre' in low or 'nex' in low):
+            cand = path
+            break
+        try:
+            with open(path, errors='ignore') as fh:
+                head = fh.read(200).lstrip().upper()
+            if head.startswith('#NEXUS') and cand is None:
+                cand = path
+        except OSError:
+            continue
+    if not cand:
+        return None, False
+    out = os.path.join(results_dir, 'mrbayes_consensus.nwk')
+    conv = _nexus_contree_to_newick(cand, out)
+    return (conv, True) if conv else (None, False)
+
+
 def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000, partition_spec=None):
     """Upload alignment to Galaxy and submit RAxML-NG. Returns (history_id, job_id).
 
@@ -2544,13 +2708,31 @@ def submit_cipres(project_id, job_id):
     if not api_key:
         return jsonify({'error': 'Galaxy API key is required. Set it in the job form or GALAXY_API_KEY env var.'}), 400
 
+    # Method: RAxML (default) or MrBayes, from the request body or job setting.
+    _body = request.get_json(silent=True) or {}
+    method = (_body.get('method') or job.phylo_inference or 'raxml')
+    if method not in ('raxml', 'mrbayes'):
+        method = 'raxml'
     try:
-        history_id, galaxy_job_id = _submit_to_galaxy_raxml(
-            submit_path, api_key, job.n_bootstraps or 1000,
-            partition_spec=job.partition_spec,
-        )
-        job.phylo_method   = 'raxml'
-        job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
+        if method == 'mrbayes':
+            nexus_path = os.path.join(job.result_dir, 'mrbayes_input.nex')
+            ngen = int(_body.get('ngen') or current_app.config.get('MRBAYES_NGEN', 1000000))
+            _fasta_to_mrbayes_nexus(
+                submit_path, nexus_path,
+                partition_spec=job.partition_spec,
+                partition_models=job.partition_models,
+                ngen=ngen,
+            )
+            history_id, galaxy_job_id = _submit_to_galaxy_mrbayes(nexus_path, api_key)
+            job.phylo_method   = 'mrbayes'
+            job.status_message = f'MrBayes submitted to Galaxy (job: {galaxy_job_id})'
+        else:
+            history_id, galaxy_job_id = _submit_to_galaxy_raxml(
+                submit_path, api_key, job.n_bootstraps or 1000,
+                partition_spec=job.partition_spec,
+            )
+            job.phylo_method   = 'raxml'
+            job.status_message = f'RAxML-NG submitted to Galaxy (job: {galaxy_job_id})'
         job.job_url    = history_id    # Galaxy history ID
         job.job_handle = galaxy_job_id  # Galaxy job ID (for polling)
         job.status     = 'submitted'
@@ -2574,7 +2756,13 @@ def download_and_root(project_id, job_id):
         api_key     = (job.galaxy_api_key or current_app.config.get('GALAXY_API_KEY', ''))
         downloaded  = _galaxy_download_results(api_key, job.job_handle, results_dir)
 
-        tree_file, has_support = _find_best_tree(results_dir)
+        # MrBayes returns a NEXUS consensus tree (posterior probs), not a RAxML
+        # bipartitions file — pick and convert it first.
+        tree_file, has_support = (None, False)
+        if job.phylo_method == 'mrbayes':
+            tree_file, has_support = _mrbayes_result_tree(results_dir)
+        if not tree_file:
+            tree_file, has_support = _find_best_tree(results_dir)
         if not tree_file:
             tree_file = _find_newick_in_dir(results_dir)
             has_support = False
@@ -3349,7 +3537,7 @@ def save_fragment_matrix(project_id, job_id):
     if not isinstance(selection, dict):
         return jsonify({'error': 'selection object required'}), 400
     job.fragment_selection = selection
-    if data.get('phylo_inference') in ('nj', 'raxml'):
+    if data.get('phylo_inference') in ('nj', 'raxml', 'mrbayes'):
         job.phylo_inference = data['phylo_inference']
     db.session.commit()
     return jsonify({'status': 'ok'})
@@ -3367,7 +3555,7 @@ def build_fragments(project_id, job_id):
     data = request.get_json() or {}
     if isinstance(data.get('selection'), dict):
         job.fragment_selection = data['selection']
-    if data.get('phylo_inference') in ('nj', 'raxml'):
+    if data.get('phylo_inference') in ('nj', 'raxml', 'mrbayes'):
         job.phylo_inference = data['phylo_inference']
     if not job.fragment_selection:
         return jsonify({'error': 'No selection saved yet.'}), 400
