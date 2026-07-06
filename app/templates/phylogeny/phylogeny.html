@@ -115,9 +115,8 @@
                         <div class="form-group">
                             <label>Inference Method</label>
                             <select name="phylo_inference" id="phyloInferenceSelect">
-                                <option value="nj">NJ — model-corrected distances (fast, local)</option>
+                                <option value="nj">NJ — model-corrected distances (fast, local preview)</option>
                                 <option value="raxml">RAxML-NG — partitioned ML on usegalaxy.eu (per-partition models)</option>
-                                <option value="mrbayes_local">MrBayes — partitioned Bayesian, local mb binary</option>
                             </select>
                         </div>
                     </div>
@@ -512,29 +511,14 @@
             <button class="btn btn-sm btn-outline" onclick="closeCipresModal()">&#10005;</button>
         </div>
         <p style="font-size:0.85rem; color:var(--gray-600); margin-bottom:0.75rem;">
-            Phylogenetic inference on the Galaxy platform.
+            Maximum-likelihood inference with RAxML-NG on usegalaxy.eu (adaptive ML
+            search + bootstrap). Multi-fragment jobs use per-partition models.
         </p>
 
-        <div class="form-group" style="margin-bottom:0.75rem;">
-            <label>Method</label>
-            <select id="cipres-method" onchange="toggleCipresMethod(this.value)" style="width:100%;">
-                <option value="raxml">RAxML-NG — maximum likelihood + bootstrap (usegalaxy.eu)</option>
-                <option value="mrbayes_local">MrBayes — Bayesian MCMC (local mb binary)</option>
-            </select>
-        </div>
-
-        <!-- RAxML bootstrap field -->
         <div id="raxml-params" style="margin-top:0.25rem;">
             <div class="form-group" style="margin-bottom:0;">
                 <label>Bootstrap replicates</label>
                 <input type="number" id="cipres-bootstraps" value="1000" min="100" max="5000" style="width:110px;">
-            </div>
-        </div>
-        <div id="mrbayes-params" style="margin-top:0.25rem; display:none;">
-            <div class="form-group" style="margin-bottom:0;">
-                <label>MCMC generations</label>
-                <input type="number" id="cipres-ngen" value="1000000" min="100000" max="50000000" step="100000" style="width:140px;">
-                <small style="color:var(--gray-500);">Partitions use the per-fragment models; samplefreq 1000, 2 runs × 4 chains, 25% burn-in.</small>
             </div>
         </div>
 
@@ -738,7 +722,6 @@
                 <select id="matrixInference" style="font-size:0.8rem; padding:0.15rem 0.3rem;">
                     <option value="nj">NJ (model-corrected)</option>
                     <option value="raxml">RAxML-NG (partitioned, usegalaxy.eu)</option>
-                    <option value="mrbayes_local">MrBayes (partitioned, local)</option>
                 </select>
             </label>
             <button class="btn btn-outline btn-sm" onclick="saveMatrix(true)">Save</button>
@@ -1016,26 +999,9 @@ function buildActions(jobId, status) {
 // ── CIPRES method modal ───────────────────────────────────────────────────────
 let _cipresJobId = null;
 
-async function openCipresModal(jobId) {
+function openCipresModal(jobId) {
     _cipresJobId = jobId;
     document.getElementById('cipresModal').classList.add('active');
-    // Default the method to whatever the job chose (multi-fragment jobs carry
-    // an inference preference); fall back to RAxML.
-    try {
-        const resp = await fetch(`/api/project/${PROJECT_ID}/phylogeny/${jobId}/status`);
-        const d = await resp.json();
-        // Legacy Galaxy-MrBayes selection maps to local MrBayes.
-        const m = (d.phylo_inference === 'mrbayes' || d.phylo_inference === 'mrbayes_local')
-            ? 'mrbayes_local' : 'raxml';
-        document.getElementById('cipres-method').value = m;
-        toggleCipresMethod(m);
-    } catch(e) { toggleCipresMethod(document.getElementById('cipres-method').value); }
-}
-
-function toggleCipresMethod(m) {
-    const isMb = (m === 'mrbayes' || m === 'mrbayes_local');
-    document.getElementById('raxml-params').style.display   = isMb ? 'none' : '';
-    document.getElementById('mrbayes-params').style.display = isMb ? '' : 'none';
 }
 
 function closeCipresModal() {
@@ -1046,11 +1012,8 @@ function closeCipresModal() {
 async function confirmCipresSubmit() {
     if (!_cipresJobId) return;
     const jobId = _cipresJobId;   // capture before closeCipresModal nullifies it
-    const method = document.getElementById('cipres-method').value;
-    const isMb = (method === 'mrbayes' || method === 'mrbayes_local');
-    const body = isMb
-        ? {method, ngen: parseInt(document.getElementById('cipres-ngen').value) || 1000000}
-        : {method: 'raxml', n_bootstraps: parseInt(document.getElementById('cipres-bootstraps').value) || 1000};
+    const body = {method: 'raxml',
+                  n_bootstraps: parseInt(document.getElementById('cipres-bootstraps').value) || 1000};
     closeCipresModal();
     await submitCipres(jobId, body);
 }
