@@ -309,6 +309,87 @@ def _add_pending_candidates(job, suffix, species_norm, species_display, candidat
     job.pending_candidates = pc
 
 
+# ── Learned sequence decisions ────────────────────────────────────────────────
+# The pipeline remembers which GenBank accession a user accepted (or rejected)
+# for a given species/fragment, and their preferred species label, so later jobs
+# in the same project auto-apply the choice instead of re-asking.
+
+def _record_decision(project_id, species_norm, marker, accession, decision):
+    """Persist a user decision. accept: upsert the chosen accession (one per
+    species/fragment). reject: remember the rejected accession so it is not
+    re-suggested. Non-fatal."""
+    from app.models import SequenceDecision
+    species_norm = _norm_species(species_norm) if marker != '__rename__' else (species_norm or '').strip().lower()
+    if not project_id or not species_norm or not marker:
+        return
+    try:
+        q = SequenceDecision.query.filter_by(
+            project_id=project_id, species_norm=species_norm, marker=marker)
+        if decision == 'accept':
+            row = q.filter_by(decision='accept').first()
+            if row:
+                row.accession = accession
+            else:
+                db.session.add(SequenceDecision(
+                    project_id=project_id, species_norm=species_norm, marker=marker,
+                    accession=accession, decision='accept'))
+            for r in q.filter_by(decision='reject', accession=accession).all():
+                db.session.delete(r)
+        else:
+            if accession and not q.filter_by(decision='reject', accession=accession).first():
+                db.session.add(SequenceDecision(
+                    project_id=project_id, species_norm=species_norm, marker=marker,
+                    accession=accession, decision='reject'))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
+def _decisions_for(project_id, species_norm, marker):
+    """Return (accepted_accession_or_None, {rejected_accessions}) for a
+    species/fragment in a project."""
+    from app.models import SequenceDecision
+    try:
+        rows = SequenceDecision.query.filter_by(
+            project_id=project_id, species_norm=_norm_species(species_norm),
+            marker=marker).all()
+    except Exception:
+        return None, set()
+    accept = next((r.accession for r in rows if r.decision == 'accept'), None)
+    rejects = {r.accession for r in rows if r.decision == 'reject' and r.accession}
+    return accept, rejects
+
+
+def _remembered_rename(project_id, species_norm):
+    """Preferred 'Genus_species' label previously chosen for this species, or None."""
+    from app.models import SequenceDecision
+    try:
+        r = SequenceDecision.query.filter_by(
+            project_id=project_id, species_norm=_norm_species(species_norm),
+            marker='__rename__', decision='accept').first()
+        return r.accession if r else None
+    except Exception:
+        return None
+
+
+def _learn_from_selection(project_id, selection, matrix):
+    """Record the accession chosen for each species/fragment and any rename as
+    accept decisions. When a candidate existed but the user picked a different
+    accession (or none), the previously-remembered accession is left intact
+    unless overwritten by the new accept — no automatic rejects here."""
+    for norm, row in (selection or {}).items():
+        if norm == '_concat_fragments' or not isinstance(row, dict):
+            continue
+        for code, acc in (row.get('fragments') or {}).items():
+            if acc:
+                _record_decision(project_id, norm, code, acc, 'accept')
+        rename = (row.get('rename') or '').strip()
+        display = (matrix.get(norm, {}) or {}).get('display', '')
+        if rename and rename != display:
+            _record_decision(project_id, norm, '__rename__',
+                             rename.replace(' ', '_'), 'accept')
+
+
 def _process_records(records, bad_accessions=None, min_length=400, max_length_factor=2.0):
     """
     Filter and de-duplicate records, keeping one per species (longest that is
@@ -1375,13 +1456,43 @@ def _discovery_thread(app, job_id):
             for norm, orig in specimen_norms.items():
                 _ensure(norm, orig.replace('_', ' '), True)
 
+            # Apply learned decisions from previous jobs in this project: drop
+            # rejected accessions, surface a remembered accepted accession, and
+            # pre-seed the matrix selection (chosen accession + preferred name) so
+            # the user's earlier choices are auto-applied rather than re-asked.
+            pid = job.project_id
+            selection = {'_concat_fragments': list(queries.keys())}
+            n_learned = 0
+            for norm, m in matrix.items():
+                frags_sel = {}
+                for code in queries:
+                    cell = m['fragments'].setdefault(code, {'candidates': []})
+                    cands = cell.get('candidates', [])
+                    accept, rejects = _decisions_for(pid, norm, code)
+                    if rejects:
+                        cands = [c for c in cands if c.get('accession') not in rejects]
+                    accs = [c.get('accession') for c in cands]
+                    if accept and accept not in accs:
+                        cands.insert(0, {'accession': accept, 'length': 0,
+                                         'description': 'remembered choice (auto-applied)'})
+                        accs.insert(0, accept)
+                    cell['candidates'] = cands
+                    chosen = accept if accept else (accs[0] if accs else None)
+                    if accept:
+                        n_learned += 1
+                    frags_sel[code] = chosen
+                rn = _remembered_rename(pid, norm)
+                selection[norm] = {'rename': rn, 'include': True, 'fragments': frags_sel}
             job.fragment_matrix = matrix
+            job.fragment_selection = selection
+
             n_spec = sum(1 for m in matrix.values() if m['in_specimens'])
             n_new = len(matrix) - n_spec
+            learned_note = f' Auto-applied {n_learned} remembered sequence choice(s).' if n_learned else ''
             _set_status(job, 'discovered',
                         f'Discovery done: {len(matrix)} species across '
                         f'{len(queries)} fragment(s) — {n_spec} from Specimens, '
-                        f'{n_new} additional in GenBank. Build the fragment matrix.')
+                        f'{n_new} additional in GenBank.{learned_note} Build the fragment matrix.')
         except Exception as exc:
             job.status = 'failed'
             job.status_message = str(exc)
@@ -3212,10 +3323,15 @@ def resolve_candidates(project_id, job_id):
         if acc:
             accepted_by_marker.setdefault(marker, []).append(
                 (sp_norm, entry.get('display', sp_norm), acc))
+            # Remember this choice for future jobs.
+            _record_decision(project_id, sp_norm, marker, acc, 'accept')
         else:
             display = entry.get('display', sp_norm).replace(' ', '_')
             if display not in missing:
                 missing.append(display)
+            # Remember rejected candidates so they are not re-suggested.
+            for c in entry.get('candidates', []):
+                _record_decision(project_id, sp_norm, marker, c.get('accession'), 'reject')
         if not pc[marker]:
             del pc[marker]
 
@@ -3410,6 +3526,7 @@ def add_sequences(project_id, job_id):
                 current_ids.add(new_id)
                 added.append({'accession': acc, 'species': sp_norm.replace('_', ' '),
                               'length': len(rec.seq)})
+                _record_decision(project_id, sp_norm, job.marker or 'other', acc, 'accept')
 
         if not added:
             return jsonify({'error': 'No new sequences added (may already be present)',
@@ -3561,6 +3678,9 @@ def build_fragments(project_id, job_id):
         return jsonify({'error': 'No selection saved yet.'}), 400
     db.session.commit()
 
+    # Remember these choices so future jobs in this project auto-apply them.
+    _learn_from_selection(project_id, job.fragment_selection, job.fragment_matrix or {})
+
     app = current_app._get_current_object()
 
     def _run(app, job_id):
@@ -3604,6 +3724,11 @@ def rename_species(project_id, job_id):
     def _norm_map(d):
         return {_norm_species(k): str(v).strip().replace(' ', '_') for k, v in d.items()}
     rmap = _norm_map(renames)
+
+    # Remember rename decisions for future jobs in this project.
+    for old_norm, new_label in rmap.items():
+        if new_label:
+            _record_decision(project_id, old_norm, '__rename__', new_label, 'accept')
 
     if job.marker == 'multi_fragment':
         paths = [os.path.join(job.result_dir, f'{c}_raw.fa') for c in (job.fragments or [])]

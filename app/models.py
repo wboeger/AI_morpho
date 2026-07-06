@@ -83,6 +83,25 @@ class SpecimenComment(db.Model):
     author = db.relationship('User')
 
 
+class SequenceDecision(db.Model):
+    """Remembered user decisions about which GenBank sequence to use (or reject)
+    for a species/fragment, so the phylogeny pipeline can auto-apply the same
+    choice in later jobs instead of re-asking. Also stores rename decisions
+    (marker == '__rename__', accession holds the preferred 'Genus_species' label)."""
+    __tablename__ = 'sequence_decisions'
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    species_norm = db.Column(db.String(200), nullable=False)   # _norm_species key
+    marker = db.Column(db.String(50), nullable=False)          # fragment code / '__rename__'
+    accession = db.Column(db.String(100))                      # chosen acc / rename label
+    decision = db.Column(db.String(10), nullable=False)        # 'accept' | 'reject'
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+    __table_args__ = (
+        db.Index('ix_seqdec_lookup', 'project_id', 'species_norm', 'marker'),
+    )
+
+
 class DNASequence(db.Model):
     __tablename__ = 'dna_sequences'
     id = db.Column(db.Integer, primary_key=True)
