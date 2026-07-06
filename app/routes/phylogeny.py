@@ -2517,6 +2517,11 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000,
         tool_id = (_galaxy_find_tool_id(api_key, 'raxmlng')
                    or _galaxy_find_tool_id(api_key, 'raxml_ng'))
     if not tool_id:
+        # Last-resort pin for usegalaxy.eu (the default server) so RAxML-NG runs
+        # even if the tool-search API returns nothing.
+        tool_id = ('toolshed.g2.bx.psu.edu/repos/iuc/raxmlng/raxmlng/2.0.2+galaxy0'
+                   if 'usegalaxy.eu' in _galaxy_base() else None)
+    if not tool_id:
         raise RuntimeError(
             'No RAxML-NG tool is installed on this Galaxy server '
             f'({_galaxy_base()}). Set GALAXY_RAXMLNG_TOOL_ID to pin one.')
