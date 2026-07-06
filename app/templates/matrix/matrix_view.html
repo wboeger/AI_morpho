@@ -382,26 +382,27 @@ function uploadTree() {
 }
 
 const _embeddedNewick = {{ tree_newick | tojson }};
-// species (normalized) -> '18S+ITS' | '18S' | 'ITS', carried from the imported job
+// species (normalized) -> gene combination string, e.g. '18S+ITS+COI',
+// carried from the imported job (any subset of 18S/ITS/28S/COI/COII)
 const _tipMarkers = {{ tree_fragments | tojson }};
-const MARKER_COLORS = {'18S+ITS': '#2e7d32', '18S': '#1565c0', 'ITS': '#e65100'};
-function markerColor(m) { return MARKER_COLORS[m] || null; }
+{% include 'phylogeny/_fragment_colors.js' %}
+function markerColor(m) { return fragmentColor(m); }
 
 // Color each matrix row's species name by which GenBank fragment(s) it had.
 function colorSpeciesByFragment() {
     if (!_tipMarkers || !Object.keys(_tipMarkers).length) return;
     document.querySelectorAll('.sp-label').forEach(el => {
-        const c = markerColor(_tipMarkers[normName(el.textContent)]);
+        const c = fragmentColor(_tipMarkers[normName(el.textContent)]);
         if (c) el.style.color = c;
     });
     const legend = document.getElementById('fragLegend');
     if (legend) {
-        legend.innerHTML =
-            'DNA fragments: ' +
-            `<span style="color:${MARKER_COLORS['18S+ITS']};font-weight:600;">18S+ITS</span> · ` +
-            `<span style="color:${MARKER_COLORS['18S']};font-weight:600;">18S only</span> · ` +
-            `<span style="color:${MARKER_COLORS['ITS']};font-weight:600;">ITS only</span>`;
-        legend.style.display = '';
+        const items = fragmentLegendItems(_tipMarkers);
+        if (items.length) {
+            legend.innerHTML = 'DNA fragments: ' + items.map(it =>
+                `<span style="color:${it.color};font-weight:600;">${it.combo}</span>`).join(' · ');
+            legend.style.display = '';
+        }
     }
 }
 

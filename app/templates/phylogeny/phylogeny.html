@@ -1462,6 +1462,7 @@ async function openNjModal(jobId) {
             `Check rows to remove or replace before approving for Galaxy.` +
             _njWarningBannerHtml(data);
         _renderNjTable();
+        _tipMarkers = data.presence || {};   // colour tips by gene combination
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
     } catch(err) {
         document.getElementById('njSeqSummary').textContent = 'Network error: ' + err.message;
@@ -1546,6 +1547,7 @@ async function openNjModalRevise(jobId) {
             `Remove or replace sequences, then <strong>Apply &amp; Re-run NJ</strong> → resubmit to Galaxy.` +
             _njWarningBannerHtml(data);
         _renderNjTable();
+        _tipMarkers = data.presence || {};   // colour tips by gene combination
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
     } catch(err) {
         document.getElementById('njSeqSummary').textContent = 'Network error: ' + err.message;
@@ -1826,6 +1828,7 @@ async function rerootNjTree() {
         }
         msg.style.color = '#155724';
         msg.textContent = data.warning ? `Rooted. (${data.warning})` : 'Tree re-rooted.';
+        _tipMarkers = data.presence || {};   // colour tips by gene combination
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
     } catch(err) {
         msg.style.color = '#c0392b';
@@ -2010,11 +2013,10 @@ async function viewTree(jobId) {
         `${data.taxon || ''} ${data.marker || ''}`.trim(), data.presence || {});
 }
 
-// species (lowercase, spaces) -> '18S+ITS' | '18S' | 'ITS'
+// species (lowercase, spaces) -> gene combination, e.g. '18S+ITS+COI'
 let _tipMarkers = {};
-// Colors for which GenBank fragment(s) a taxon contributed to the concatenation.
-const MARKER_COLORS = {'18S+ITS': '#2e7d32', '18S': '#1565c0', 'ITS': '#e65100'};
-function markerColor(m) { return MARKER_COLORS[m] || '#333'; }
+{% include 'phylogeny/_fragment_colors.js' %}
+function markerColor(m) { return fragmentColor(m) || '#333'; }
 
 function openTreeModal(jobId, newick, subtitle, presence) {
     _modalJobId = jobId;
@@ -2204,13 +2206,15 @@ function renderPhylogram(newick, svgEl) {
     }
     drawNode(tree);
 
-    // Legend: fragment colour key (only when concatenation marker info exists)
+    // Legend: fragment-combination colour key (only when marker info exists)
     if (_tipMarkers && Object.keys(_tipMarkers).length) {
         const ly = 26;
         svgText(PAD_LEFT, ly, 'fragments: ', {size: '9', fill: '#555'});
-        svgText(PAD_LEFT + 56,  ly, '18S+ITS', {size: '9', fill: MARKER_COLORS['18S+ITS']});
-        svgText(PAD_LEFT + 108, ly, '18S only', {size: '9', fill: MARKER_COLORS['18S']});
-        svgText(PAD_LEFT + 162, ly, 'ITS only', {size: '9', fill: MARKER_COLORS['ITS']});
+        let lx = PAD_LEFT + 56;
+        fragmentLegendItems(_tipMarkers).forEach(it => {
+            svgText(lx, ly, it.combo, {size: '9', fill: it.color});
+            lx += 14 + it.combo.length * 6.2;
+        });
     }
 
     // Scale bar (10% of max depth)
