@@ -28,6 +28,18 @@ from app.models import Project, PhylogenyJob, Specimen
 
 phylo_bp = Blueprint('phylogeny', __name__)
 
+
+@phylo_bp.errorhandler(404)
+def _phylo_api_404(e):
+    """Return JSON for missing API resources (e.g. a job that was deleted and is
+    still being polled) so the client shows a clean message instead of the bare
+    HTML 404 page that surfaced as 'Server error 404: <!doctype html>…'."""
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'This job or resource no longer exists — '
+                        'reload the page.'}), 404
+    return e
+
+
 # ── Defaults matching R v8 script ─────────────────────────────────────────────
 
 DEFAULT_GENE_QUERY_18S = (
@@ -431,13 +443,15 @@ def _process_records(records, bad_accessions=None, min_length=400, max_length_fa
     for sp in by_species:
         by_species[sp].sort(key=lambda r: len(r.seq), reverse=True)
 
-    # One per species: longest sequence that does not exceed 2× mean length;
-    # if all are too long, skip that species entirely
+    # One per species: prefer the longest sequence within the length-outlier
+    # cutoff; but never drop a species outright — if every sequence exceeds the
+    # cutoff (common for e.g. COI, where the only record may be a whole
+    # mitogenome), keep the shortest available rather than losing the taxon.
     result = []
     for sp, recs in by_species.items():
         chosen = next((r for r in recs if len(r.seq) <= max_allowed), None)
         if chosen is None:
-            continue
+            chosen = min(recs, key=lambda r: len(r.seq))   # shortest = closest to in-range
         new_id = f"{chosen.id}|{sp}"
         result.append(SeqRecord(chosen.seq, id=new_id, name='', description=''))
     return result
