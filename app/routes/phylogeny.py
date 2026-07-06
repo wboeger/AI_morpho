@@ -3565,27 +3565,47 @@ def add_sequences(project_id, job_id):
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/fetch_preview')
 @login_required
 def fetch_preview(project_id, job_id):
-    """Return the list of sequences in the raw FASTA for user review."""
+    """Return the list of sequences in the raw FASTA for user review.
+
+    Multi-fragment jobs store no single raw_fasta_path (sequences live in one
+    <fragment>_raw.fa file per fragment), so fall back to concatenating the
+    per-fragment raw files, tagging each row with its fragment."""
     job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
-    if not job.raw_fasta_path or not os.path.exists(job.raw_fasta_path):
-        return jsonify({'error': 'Raw FASTA not found on disk.'}), 404
-    from Bio import SeqIO
-    sequences = []
-    with open(job.raw_fasta_path) as fh:
-        for rec in SeqIO.parse(fh, 'fasta'):
-            species = rec.id.split('|')[1].replace('_', ' ') if '|' in rec.id else rec.id
-            sequences.append({
-                'id':      rec.id,
-                'species': species,
-                'length':  len(rec.seq),
-            })
-    return jsonify({
-        'sequences':    sequences,
-        'n_raw':        job.n_sequences_raw,
-        'n_deduped':    job.n_sequences_deduped,
-        'n_final':      job.n_sequences_final,
-        'n_sequences':  len(sequences),
-    })
+    try:
+        from Bio import SeqIO
+
+        # Which raw FASTA(s) hold this job's sequences.
+        paths = []
+        if job.raw_fasta_path and os.path.exists(job.raw_fasta_path):
+            paths.append((None, job.raw_fasta_path))
+        else:
+            for code in (job.fragments or []):
+                p = os.path.join(job.result_dir or '', f'{code}_raw.fa')
+                if os.path.exists(p):
+                    paths.append((code, p))
+        if not paths:
+            return jsonify({'error': 'Raw FASTA not found on disk.'}), 404
+
+        sequences = []
+        for code, path in paths:
+            with open(path) as fh:
+                for rec in SeqIO.parse(fh, 'fasta'):
+                    rid = rec.id[3:] if rec.id.startswith('_R_') else rec.id
+                    species = rid.split('|')[1].replace('_', ' ') if '|' in rid else rid
+                    row = {'id': rec.id, 'species': species, 'length': len(rec.seq)}
+                    if code:
+                        row['fragment'] = code
+                    sequences.append(row)
+        return jsonify({
+            'sequences':    sequences,
+            'n_raw':        job.n_sequences_raw,
+            'n_deduped':    job.n_sequences_deduped,
+            'n_final':      job.n_sequences_final,
+            'n_sequences':  len(sequences),
+        })
+    except Exception as exc:
+        current_app.logger.exception('fetch_preview failed for job %s', job_id)
+        return jsonify({'error': f'Failed to read sequences: {exc}'}), 500
 
 
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/approve_and_align',
