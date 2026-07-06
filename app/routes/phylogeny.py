@@ -2291,13 +2291,71 @@ def _fasta_to_mrbayes_nexus(fasta_path, out_path, partition_spec=None,
     return out_path
 
 
+def _galaxy_find_tool_id(api_key, needle):
+    """Search the Galaxy server for an installed tool whose id contains `needle`
+    (e.g. 'mrbayes'), preferring the one with a '/<needle>/' path segment and the
+    highest version. Returns the tool id or None."""
+    import requests as _req
+    base = _galaxy_base()
+    r = _req.get(f'{base}/api/tools',
+                 params={'q': needle, 'in_panel': 'false'},
+                 headers=_galaxy_headers(api_key), timeout=30)
+    r.raise_for_status()
+    ids = []
+
+    def _collect(o):
+        if isinstance(o, dict):
+            tid = o.get('id')
+            if isinstance(tid, str):
+                ids.append(tid)
+            for v in o.values():
+                _collect(v)
+        elif isinstance(o, list):
+            for v in o:
+                _collect(v)
+    _collect(r.json())
+    n = needle.lower()
+    matches = [t for t in ids if n in t.lower()]
+    seg = [t for t in matches if f'/{n}/' in t.lower()] or matches
+    seg.sort(key=lambda t: t.split('/')[-1], reverse=True)   # highest version first
+    return seg[0] if seg else None
+
+
+def _galaxy_tool_data_input_key(api_key, tool_id, default='data'):
+    """Return the name of the tool's first dataset ('data') input, so the NEXUS
+    is passed under the parameter the wrapper actually expects. Falls back to
+    `default` on any error."""
+    import requests as _req
+    try:
+        base = _galaxy_base()
+        r = _req.get(f'{base}/api/tools/{tool_id}',
+                     params={'io_details': 'true'},
+                     headers=_galaxy_headers(api_key), timeout=30)
+        r.raise_for_status()
+        for inp in (r.json().get('inputs') or []):
+            if inp.get('type') == 'data' and inp.get('name'):
+                return inp['name']
+    except Exception:
+        pass
+    return default
+
+
 def _submit_to_galaxy_mrbayes(nexus_path, api_key):
     """Upload a MrBayes NEXUS (data + command block) to Galaxy and run MrBayes.
-    Returns (history_id, job_id). Tool id / input key are config-overridable
-    since Galaxy MrBayes wrappers differ across servers."""
-    tool_id = current_app.config.get('GALAXY_MRBAYES_TOOL_ID',
-                  'toolshed.g2.bx.psu.edu/repos/iuc/mrbayes/mrbayes/2.0.4')
-    input_key = current_app.config.get('GALAXY_MRBAYES_INPUT_KEY', 'data')
+    Returns (history_id, job_id).
+
+    The MrBayes wrapper (Tool Shed owner `nml`) and its version differ across
+    servers, so the tool id and data-input parameter are looked up from the
+    Galaxy instance at submit time unless explicitly pinned via config."""
+    tool_id = current_app.config.get('GALAXY_MRBAYES_TOOL_ID', '') or None
+    if not tool_id:
+        tool_id = _galaxy_find_tool_id(api_key, 'mrbayes')
+    if not tool_id:
+        raise RuntimeError(
+            'No MrBayes tool is installed on this Galaxy server '
+            f'({_galaxy_base()}). Choose RAxML, or set GALAXY_MRBAYES_TOOL_ID.')
+    input_key = (current_app.config.get('GALAXY_MRBAYES_INPUT_KEY', '')
+                 or _galaxy_tool_data_input_key(api_key, tool_id))
     history_id = _galaxy_create_history(api_key, 'GyroMorpho_MrBayes')
     ds_id, up_job = _galaxy_upload_file(api_key, history_id, nexus_path, 'nex')
     if up_job:
