@@ -93,6 +93,7 @@ def create_app(config_class=None):
     from app.routes.matrix import matrix_bp
     from app.routes.descriptions import descriptions_bp
     from app.routes.export import export_bp
+    from app.routes.test_ncbi import test_ncbi_bp
     from app.routes.phylogeny import phylo_bp
     from app.routes.ai_advisor import ai_advisor_bp
     from app.routes.backup import backup_bp
@@ -110,6 +111,7 @@ def create_app(config_class=None):
     app.register_blueprint(ai_advisor_bp)
     app.register_blueprint(backup_bp)
     app.register_blueprint(optimization_bp)
+    app.register_blueprint(test_ncbi_bp)
 
     with app.app_context():
         # Enable SQLite WAL mode and busy timeout to prevent "database is locked" errors
