@@ -699,13 +699,15 @@ def _fetch_step(job):
 
         # The one broad taxon-level search can miss a specimen (retmax cutoff,
         # gene-query wording mismatch, name variant) even though NCBI has a
-        # usable record for it. Retry each missing specimen with its own
-        # targeted per-species search before giving up on it.
+        # usable record for it. Retry each missing specimen with its own targeted
+        # per-species search, with NO length floor (min_length=1) so any specimen
+        # that has a record for this marker is kept. Single pass — no extra NCBI
+        # passes (rate limits without an API key cause 429 fetch errors).
         if missing:
             _set_status(job, 'fetching',
                         msg + f' Retrying {len(missing)} missing specimen(s) individually…')
             recovered, still_missing = _fetch_missing_specimens(
-                missing, job.restrict_species, email, gene_q, min_len, bad_acc)
+                missing, job.restrict_species, email, gene_q, 1, bad_acc)
             kept.extend(recovered)
             if recovered:
                 msg = (f'Restricted to project specimens: {len(kept)} of '
@@ -713,16 +715,6 @@ def _fetch_step(job):
                        f'({len(matched) + len(recovered)} species matched, '
                        f'{len(recovered)} recovered via per-species retry).')
             missing = still_missing
-
-        # Guarantee: any specimen with ANY record for this marker must be kept.
-        # Final per-species rescue with no length floor, auto-included.
-        if missing:
-            rescued, missing = _fetch_missing_specimens(
-                missing, job.restrict_species, email, gene_q, 1, bad_acc)
-            if rescued:
-                kept.extend(rescued)
-                msg = (f'Restricted to project specimens: {len(kept)} kept '
-                       f'({len(rescued)} recovered via no-floor rescue).')
 
         # Last resort for species still missing: a bare organism-name search
         # with no marker restriction at all. These are NOT auto-included —
@@ -1158,19 +1150,12 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
 
         recovered = []
         if missing:
+            # No length floor (min_length=1): any specimen with a record for this
+            # marker is kept and auto-included. Single per-species pass — do not
+            # add extra NCBI passes (rate limits without an API key cause 429s).
             recovered, missing = _fetch_missing_specimens(
-                missing, restrict, email, gene_query, min_len, bad_acc)
-            kept.extend(recovered)
-
-        # Guarantee: any specimen with ANY record for this marker must be kept.
-        # Final per-species rescue with no length floor, auto-included (never sent
-        # to manual review). Only species with truly zero marker records survive
-        # as still-missing.
-        if missing:
-            rescued, missing = _fetch_missing_specimens(
                 missing, restrict, email, gene_query, 1, bad_acc)
-            kept.extend(rescued)
-            recovered.extend(rescued)
+            kept.extend(recovered)
 
         n_pending = 0
         if missing:
