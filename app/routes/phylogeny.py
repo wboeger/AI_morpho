@@ -2152,10 +2152,11 @@ def _galaxy_download_results(api_key, job_id, dest_dir):
 # Order 'bipartitions' before 'bipartitionsbranchlabels' so the plain
 # node-label tree wins (endswith('bipartitions') is false for branchlabels).
 _TREE_NAME_PRIORITY = (
-    'bipartitions',              # ML best tree, support as node labels (preferred)
+    'bipartitions',              # RAxML 8 ML tree, support as node labels (legacy)
+    'branchsupportvalues',       # RAxML-NG label "ML Tree with branch support values (FBP/…)"
     'support',                   # RAxML-NG .raxml.support (support as node labels)
     'bipartitionsbranchlabels',  # support as [..] branch labels (parser strips these)
-    'bestscoringmltree',         # RAxML 8 "Best-scoring ML Tree" — no support
+    'bestscoringmltree',         # RAxML-NG "Best-scoring ML Tree" — no support
     'besttree',                  # RAxML-NG best tree (.raxml.bestTree) — no support
     'mltree',
     'result',                    # RAxML 8 ML best tree (RAxML_result.*) — no support
@@ -2180,7 +2181,8 @@ def _looks_like_newick(path):
     return head.startswith('(') and ')' in head
 
 
-_TREE_NAMES_WITH_SUPPORT = {'bipartitions', 'support', 'bipartitionsbranchlabels'}
+_TREE_NAMES_WITH_SUPPORT = {'bipartitions', 'branchsupportvalues', 'support',
+                            'bipartitionsbranchlabels'}
 
 
 def _find_best_tree(results_dir):
@@ -2196,22 +2198,20 @@ def _find_best_tree(results_dir):
         return None, False
     norm = {name: _norm_ds_name(name) for name in names}
 
-    def pick(match):
-        for key in _TREE_NAME_PRIORITY:
+    # Priority dominates match type: a higher-priority key that only matches as a
+    # substring still beats a lower-priority key that matches with endswith. This
+    # keeps the RAxML-NG support tree ("…branch support values (FBP)", key ends in
+    # "fbp") from losing to the no-support "Best-scoring ML Tree". Within one key,
+    # endswith is tried before substring so 'bipartitions' prefers the plain
+    # RAxML 8 file over 'bipartitionsBranchLabels'.
+    for key in _TREE_NAME_PRIORITY:
+        for match in (str.endswith, lambda n, k: k in n):
             for name in names:
                 if match(norm[name], key):
                     path = os.path.join(results_dir, name)
                     if os.path.isfile(path) and _looks_like_newick(path):
                         return path, key in _TREE_NAMES_WITH_SUPPORT
-        return None, False
-
-    # endswith first (Galaxy prefixes names, e.g. "...bipartitions"); this keeps
-    # 'bipartitions' from matching the 'bipartitionsbranchlabels' file. Fall back
-    # to a looser substring match only if nothing ended cleanly.
-    result = pick(lambda n, k: n.endswith(k))
-    if result[0]:
-        return result
-    return pick(lambda n, k: k in n)
+    return None, False
 
 
 def _find_newick_in_dir(results_dir):
@@ -2317,6 +2317,11 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000,
     inputs = {
         'infile': {'src': 'hda', 'id': ds_id},
         'general_opts|cmdtype|command': '--all',    # ML search + bootstrap + support
+        # Felsenstein bootstrap proportions written as node labels. Without this
+        # the tool defaults bs_metric to 'rbs' and never emits the standard
+        # `galaxy.raxml.support` (FBP) tree — leaving us with no matchable
+        # bootstrap-support output. 'fbp' makes the tree with bootstrap values.
+        'general_opts|cmdtype|bs_metric': 'fbp',
         'bootstrap_opts|bs_reps': int(n_bootstraps),
         'bootstrap_opts|bs_mre': 'true',            # autoMRE bootstopping
         'random_seed': 1234567890,
