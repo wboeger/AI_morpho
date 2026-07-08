@@ -714,6 +714,16 @@ def _fetch_step(job):
                        f'{len(recovered)} recovered via per-species retry).')
             missing = still_missing
 
+        # Guarantee: any specimen with ANY record for this marker must be kept.
+        # Final per-species rescue with no length floor, auto-included.
+        if missing:
+            rescued, missing = _fetch_missing_specimens(
+                missing, job.restrict_species, email, gene_q, 1, bad_acc)
+            if rescued:
+                kept.extend(rescued)
+                msg = (f'Restricted to project specimens: {len(kept)} kept '
+                       f'({len(rescued)} recovered via no-floor rescue).')
+
         # Last resort for species still missing: a bare organism-name search
         # with no marker restriction at all. These are NOT auto-included —
         # they're queued in job.pending_candidates for you to accept/reject
@@ -1152,6 +1162,16 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
                 missing, restrict, email, gene_query, min_len, bad_acc)
             kept.extend(recovered)
 
+        # Guarantee: any specimen with ANY record for this marker must be kept.
+        # Final per-species rescue with no length floor, auto-included (never sent
+        # to manual review). Only species with truly zero marker records survive
+        # as still-missing.
+        if missing:
+            rescued, missing = _fetch_missing_specimens(
+                missing, restrict, email, gene_query, 1, bad_acc)
+            kept.extend(rescued)
+            recovered.extend(rescued)
+
         n_pending = 0
         if missing:
             orig_by_norm = {_norm_species(s): s for s in restrict if _norm_species(s)}
@@ -1343,13 +1363,21 @@ def _concat_18s_first_fetch_thread(app, job_id):
             # 1. 18S first — this defines the species set (one seq per species).
             raw18s, ing18s, tot18s = _fetch_marker(job, '18S', q18s, '18S')
 
-            # 2. ITS restricted to exactly the species 18S recovered.
+            # 2. ITS for the species 18S recovered UNION the Specimens list, so a
+            # specimen with ITS but no 18S is still kept (concat pads its 18S with
+            # gaps). Anchoring ITS to only 18S species would drop ITS-only taxa.
             species_18s = _species_labels_in_fasta(raw18s)
+            its_targets = list(species_18s)
+            seen_norm = {_norm_species(s) for s in species_18s}
+            for s in (job.restrict_species or []):
+                if _norm_species(s) not in seen_norm:
+                    its_targets.append(s)
+                    seen_norm.add(_norm_species(s))
             _set_status(job, 'fetching',
                         f'18S done: {tot18s} sequences ({len(species_18s)} species). '
-                        f'Fetching ITS for those species…')
+                        f'Fetching ITS for {len(its_targets)} target species…')
             rawITS, ingITS, totITS = _fetch_marker(
-                job, 'ITS', qITS, 'ITS', restrict_override=species_18s)
+                job, 'ITS', qITS, 'ITS', restrict_override=its_targets)
 
             job.raw_fasta_path    = raw18s   # primary for downloads
             job.n_sequences_raw   = tot18s + totITS
