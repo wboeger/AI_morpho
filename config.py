@@ -50,6 +50,11 @@ class Config:
         'mco': (80, 150),
     }
 
+    # NCBI Entrez API key — raises the E-utilities rate limit from 3 to 10 req/s,
+    # sharply cutting 429 errors during per-species fetches. Override via env
+    # (recommended — rotate without a code change).
+    NCBI_API_KEY = os.environ.get('NCBI_API_KEY', 'ad7b2da5ec1defcd377fa8114ce9cc128a09')
+
     # Galaxy phylogenetic analysis (usegalaxy.eu)
     GALAXY_BASE_URL = os.environ.get('GALAXY_BASE_URL', 'https://usegalaxy.eu')
     GALAXY_API_KEY  = os.environ.get('GALAXY_API_KEY', '')

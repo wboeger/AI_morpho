@@ -95,15 +95,34 @@ FRAGMENT_CODES = tuple(FRAGMENT_DEFAULTS.keys())
 
 # ── NCBI helpers ──────────────────────────────────────────────────────────────
 
-def _ncbi_search(term, email, retmax=10000):
+def _ncbi_api_key():
+    """NCBI Entrez API key from config/env, or '' if none."""
+    try:
+        key = current_app.config.get('NCBI_API_KEY', '')
+    except Exception:
+        key = ''
+    return key or os.environ.get('NCBI_API_KEY', '')
+
+
+def _entrez_setup(email):
+    """Set Entrez credentials and return the polite inter-request delay.
+    With an API key NCBI allows 10 req/s (0.1 s); without it, 3 req/s (0.4 s)."""
     from Bio import Entrez
     Entrez.email = email
+    key = _ncbi_api_key()
+    Entrez.api_key = key or None
+    return 0.1 if key else 0.4
+
+
+def _ncbi_search(term, email, retmax=10000):
+    from Bio import Entrez
+    delay = _entrez_setup(email)
     for attempt in range(5):
         try:
             h = Entrez.esearch(db='nuccore', term=term, retmax=retmax)
             result = Entrez.read(h)
             h.close()
-            time.sleep(0.4)   # respect NCBI rate limit (3 req/s without API key)
+            time.sleep(delay)
             return result['IdList'], int(result['Count'])
         except Exception as exc:
             is_429 = '429' in str(exc) or 'Too Many Requests' in str(exc)
@@ -116,7 +135,7 @@ def _ncbi_search(term, email, retmax=10000):
 def _ncbi_fetch_batch(ids, email, batch_size=200):
     """Download FASTA records in batches. Returns dict {rec.id: SeqRecord}."""
     from Bio import Entrez, SeqIO
-    Entrez.email = email
+    delay = _entrez_setup(email)
     records = {}
     for i in range(0, len(ids), batch_size):
         batch = ids[i:i + batch_size]
@@ -134,7 +153,7 @@ def _ncbi_fetch_batch(ids, email, batch_size=200):
                     time.sleep(5 * (attempt + 1) if is_429 else 3)
                 else:
                     raise
-        time.sleep(0.4)   # respect NCBI rate limit (3 req/s without API key)
+        time.sleep(delay)
     return records
 
 
