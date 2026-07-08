@@ -180,6 +180,127 @@ def _restrict_ingroup(ingroup, restrict_species):
     return kept, matched, missing
 
 
+def _specimen_norm_index(project_id):
+    """Map normalized species name -> Specimen for a project, including synonyms.
+    First writer wins so the canonical species_name entry is preferred."""
+    idx = {}
+    for s in Specimen.query.filter_by(project_id=project_id).all():
+        for name in [s.species_name] + list(s.synonyms or []):
+            n = _norm_species(name)
+            if n:
+                idx.setdefault(n, s)
+    return idx
+
+
+def _recorded_accessions(project_id, restrict, marker):
+    """GenBank accessions already recorded on the Specimens page for `marker`,
+    limited to specimens whose species is in `restrict`. Returns
+    {norm_species: (species_display, [accession, ...])}. Marker match is
+    case-insensitive; unavailable rows and blank accessions are skipped."""
+    allowed = {_norm_species(s) for s in (restrict or []) if _norm_species(s)}
+    if not allowed:
+        return {}
+    mk = (marker or '').strip().lower()
+    idx = _specimen_norm_index(project_id)
+    out = {}
+    for n in allowed:
+        sp = idx.get(n)
+        if not sp:
+            continue
+        accs = [d.accession.strip() for d in (sp.dna_sequences or [])
+                if d.accession and d.accession.strip()
+                and d.available is not False
+                and (d.marker or '').strip().lower() == mk]
+        if accs:
+            out[n] = (sp.species_name, list(dict.fromkeys(accs)))
+    return out
+
+
+def _force_include_recorded(job, ingroup, restrict, marker, email):
+    """Guarantee the exact GenBank accessions recorded on the Specimens page for
+    `restrict` species reach the ingroup — the broad taxon-level search can miss
+    them (retmax, query wording) or pick a different record, silently dropping a
+    listed specimen. Fetches any recorded accession not already present and
+    replaces the broad-search pick for those species with the recorded record(s),
+    relabeled to the specimen's species name so restrict/coverage checks pass.
+
+    Returns (new_ingroup, covered_norms)."""
+    from Bio.SeqRecord import SeqRecord
+    recorded = _recorded_accessions(job.project_id, restrict, marker)
+    if not recorded:
+        return ingroup, set()
+
+    want = {}   # accession -> (norm_species, display)
+    for n, (disp, accs) in recorded.items():
+        for a in accs:
+            want[a] = (n, disp)
+
+    existing_by_acc = {r.id.split('|')[0]: r for r in ingroup if '|' in r.id}
+    to_fetch = [a for a in want if a not in existing_by_acc]
+    try:
+        fetched = _ncbi_fetch_batch(to_fetch, email) if to_fetch else {}
+    except Exception:
+        fetched = {}
+
+    forced, covered = [], set()
+    for a, (n, disp) in want.items():
+        label = disp.replace(' ', '_').strip()
+        src = existing_by_acc.get(a) or fetched.get(a)
+        if src is None:
+            continue   # recorded accession not fetchable — leave to normal missing handling
+        forced.append(SeqRecord(src.seq, id=f'{a}|{label}', name='', description=''))
+        covered.add(n)
+
+    # Drop broad-search picks for covered species; the recorded records replace them.
+    kept = [r for r in ingroup
+            if '|' not in r.id or _norm_species(r.id.split('|')[1]) not in covered]
+    return kept + forced, covered
+
+
+def _writeback_accessions(job, ingroup, marker):
+    """Persist every ingroup GenBank accession onto the Specimens page: upsert a
+    DNASequence(marker, accession) for the matching specimen, creating the
+    specimen when none exists. Ingroup only (outgroups are never written back).
+    Runs in the pipeline's background thread, so it uses job.submitted_by rather
+    than current_user. Non-fatal — never raises. Returns count of rows added."""
+    from app.models import DNASequence as _DNASeq
+    mk = (marker or '').strip()
+    try:
+        idx = _specimen_norm_index(job.project_id)
+        added = 0
+        for r in ingroup:
+            if '|' not in r.id:
+                continue
+            acc, sp_label = r.id.split('|', 1)
+            acc = acc.strip()
+            if not acc:
+                continue
+            n = _norm_species(sp_label)
+            if not n:
+                continue
+            sp = idx.get(n)
+            if sp is None:
+                sp = Specimen(project_id=job.project_id,
+                              species_name=sp_label.replace('_', ' ').strip(),
+                              created_by=job.submitted_by)
+                db.session.add(sp)
+                db.session.flush()
+                idx[n] = sp
+            exists = any((d.marker or '').strip().lower() == mk.lower()
+                         and (d.accession or '').strip() == acc
+                         for d in (sp.dna_sequences or []))
+            if not exists:
+                db.session.add(_DNASeq(specimen_id=sp.id, marker=mk,
+                                       accession=acc, available=True))
+                added += 1
+        if added:
+            db.session.commit()
+        return added
+    except Exception:
+        db.session.rollback()
+        return 0
+
+
 def _fetch_missing_specimens(missing_norm, restrict_species, email, gene_q, min_length, bad_accessions=None):
     """Per-species targeted NCBI retry for specimens the bulk taxon-level search
     missed. Returns (recovered_records, still_missing_norm).
@@ -547,6 +668,16 @@ def _fetch_step(job):
     # Optional: restrict ingroup to species selected from the project Specimens page
     if job.restrict_species:
         kept, matched, missing = _restrict_ingroup(ingroup, job.restrict_species)
+
+        # Force-include the exact GenBank accessions recorded on the Specimens
+        # page — the broad search can miss/replace them, silently dropping a
+        # listed specimen. These species are then no longer "missing".
+        kept, covered = _force_include_recorded(
+            job, kept, job.restrict_species, job.marker, email)
+        if covered:
+            matched = matched | covered
+            missing = [m for m in missing if m not in covered]
+
         msg = (f'Restricted to project specimens: {len(kept)} of {len(ingroup)} '
                f'sequences kept ({len(matched)} species matched).')
 
@@ -598,6 +729,12 @@ def _fetch_step(job):
     job.n_sequences_deduped = len(ingroup)
     ingroup_species = {r.id.split('|')[1] for r in ingroup if '|' in r.id}
     db.session.commit()
+
+    # Incorporate every detected GenBank accession into the Specimens page.
+    n_wb = _writeback_accessions(job, ingroup, job.marker)
+    if n_wb:
+        _set_status(job, 'fetching',
+                    (job.status_message or '') + f' {n_wb} accession(s) saved to Specimens.')
 
     # 2. Outgroups
     outgroup_records = []
@@ -982,6 +1119,14 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
     # 18S-guided flow, to the species 18S recovered — passed via restrict_override)
     if restrict:
         kept, matched, missing = _restrict_ingroup(ingroup, restrict)
+
+        # Force-include the exact accessions recorded on the Specimens page for
+        # this marker so listed specimens are never dropped by a missed search.
+        kept, covered = _force_include_recorded(job, kept, restrict, marker, email)
+        if covered:
+            matched = matched | covered
+            missing = [m for m in missing if m not in covered]
+
         recovered = []
         if missing:
             recovered, missing = _fetch_missing_specimens(
@@ -1010,6 +1155,9 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
                     f'{", " + str(n_pending) + " need review" if n_pending else ""}'
                     f'{", " + str(len(missing)) + " missing" if missing else ""}).')
         ingroup = kept
+
+    # Incorporate every detected GenBank accession for this marker into Specimens.
+    _writeback_accessions(job, ingroup, marker)
 
     # Outgroups
     seen = {r.id.split('|')[1] for r in ingroup if '|' in r.id}
