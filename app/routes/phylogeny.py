@@ -148,6 +148,19 @@ def _parse_species_name(description):
     return parts[0]
 
 
+def _relax_query(gene_q):
+    """Strip any 'NOT (...)' exclusion clause from a gene query.
+
+    The strict marker queries carry a NOT clause (18S: 'NOT (internal transcribed
+    spacer)'; ITS: 'NOT (18S OR 28S)') purely to keep the two marker searches from
+    overlapping in concatenation. But that clause also throws out every species
+    whose only deposit is a combined 18S-ITS-28S rDNA cassette — a huge fraction
+    of Gyrodactylidae. Used as the default ingroup search so cassette-only taxa
+    are pulled in; per-marker alignment + trimAl then keep only the relevant
+    columns. Returns the query unchanged if it has no NOT clause."""
+    return re.sub(r'\s*NOT\s*\([^)]*\)', '', gene_q or '').strip()
+
+
 def _norm_species(name):
     """Normalize a species name for matching: lowercase, spaces/underscores unified,
     collapse to 'genus species' (first two tokens), strip punctuation."""
@@ -651,8 +664,11 @@ def _fetch_step(job):
     bad_acc    = job.bad_accessions or []
     og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
 
-    # 1. Ingroup
-    query = f'"{taxon}"[Organism] AND ({gene_q})'
+    # 1. Ingroup — use the relaxed (NOT-clause-stripped) query so species whose
+    # only deposit is a combined rDNA cassette are not silently excluded. The
+    # strict NOT clause is kept only for outgroup fetches below.
+    ingroup_q = _relax_query(gene_q)
+    query = f'"{taxon}"[Organism] AND ({ingroup_q})'
     _set_status(job, 'fetching', f'Searching NCBI: {query}')
 
     ids, count = _ncbi_search(query, email)
@@ -1106,7 +1122,10 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
     og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
     restrict   = restrict_override if restrict_override is not None else job.restrict_species
 
-    query = f'"{taxon}"[Organism] AND ({gene_query})'
+    # Relaxed ingroup search (NOT clause stripped) so combined-cassette-only
+    # species are pulled in; per-marker alignment + trimAl keep only the relevant
+    # columns. Outgroup fetches below stay strict on gene_query.
+    query = f'"{taxon}"[Organism] AND ({_relax_query(gene_query)})'
     _set_status(job, 'fetching', f'[{marker}] Searching NCBI: {query}')
 
     ids, count = _ncbi_search(query, email)
