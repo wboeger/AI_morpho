@@ -117,7 +117,7 @@ def build_manual():
     pdf.cell(0, 7, 'https://github.com/wboeger/AI_morpho', align='C', new_x='LMARGIN', new_y='NEXT')
     pdf.ln(30)
     pdf.set_font('Helvetica', 'I', 9)
-    pdf.cell(0, 7, 'Version 2.1 - June 2026', align='C', new_x='LMARGIN', new_y='NEXT')
+    pdf.cell(0, 7, 'Version 2.2 - July 2026', align='C', new_x='LMARGIN', new_y='NEXT')
 
     # ── Table of Contents ──
     pdf.add_page()
@@ -140,7 +140,8 @@ def build_manual():
         ('11', 'How Character States Are Computed'),
         ('12', 'Collaboration: Sharing Projects and Comments'),
         ('13', 'Data Storage and Backup'),
-        ('14', 'Troubleshooting'),
+        ('14', 'Molecular Phylogenetic Analysis'),
+        ('15', 'Troubleshooting'),
     ]
     for num, title in toc:
         pdf.set_font('Helvetica', '', 11)
@@ -545,9 +546,86 @@ def build_manual():
 
     pdf.note_box('Backup tip: periodically copy the data/ folder to a safe location. The db.sqlite file contains everything except the images.')
 
-    # ── 14. Troubleshooting ──
+    # ── 14. Molecular Phylogenetic Analysis ──
     pdf.add_page()
-    pdf.chapter_title('14', 'Troubleshooting')
+    pdf.chapter_title('14', 'Molecular Phylogenetic Analysis')
+
+    pdf.body_text(
+        'The Phylogeny module estimates a molecular tree from DNA sequences and imports it into '
+        'the project so the morphological matrix and the phylogeny share one set of taxa. It runs '
+        'as a background job: sequences are retrieved from GenBank (or uploaded), aligned, trimmed, '
+        'and analysed by maximum likelihood, with two expert-review checkpoints along the way. '
+        'Open it from a project via the Phylogeny page.'
+    )
+
+    pdf.section_title('Markers and Analysis Modes')
+    pdf.bullet('Single marker: 18S rRNA, ITS (ITS1-5.8S-ITS2), 28S, COI, COII, or a custom Entrez query.')
+    pdf.bullet('Concatenated 18S + ITS: each marker fetched, aligned, and trimmed independently, then concatenated by species (taxa missing one marker are gap-filled).')
+    pdf.bullet('18S-guided concatenation: 18S is retrieved first; ITS is then fetched for the union of the 18S species and the Specimens-page selection, so an ITS-only specimen is still kept.')
+    pdf.bullet('Multi-fragment: any combination of the five markers, analysed as a partitioned matrix with a per-fragment substitution model.')
+
+    pdf.section_title('Starting a Job')
+    pdf.body_text('On the Phylogeny page, set:')
+    pdf.bullet('Target taxon (e.g. Gyrodactylidae) and the per-marker Entrez gene query.')
+    pdf.bullet('NCBI email (required by Entrez). An NCBI API key is configured server-side to raise the request rate.')
+    pdf.bullet('Minimum sequence length and a length-outlier factor for de-duplication.')
+    pdf.bullet('trimAl mode: standard (gappyout), gentle (automated1), or none.')
+    pdf.bullet('Outgroup families, one per line as "Family | mode | n" (mode = each_genus or top_species).')
+    pdf.bullet('Number of bootstrap replicates (default 1000).')
+    pdf.bullet('Optionally, "Restrict to project specimens": limit the ingroup to species selected from the Specimens page.')
+    pdf.note_box('Restrict-to-specimens is the recommended mode: it guarantees every listed species that has a GenBank record for the marker is pursued, and writes each detected accession back onto the Specimens page.')
+
+    pdf.section_title('Step A - Sequence Retrieval and Coverage Guarantee')
+    pdf.body_text(
+        'The ingroup search runs the gene query in relaxed form (its "NOT (...)" exclusion is stripped) '
+        'so that species whose only deposit is a combined ribosomal cassette (18S+ITS+28S in one record) '
+        'are still recovered; per-marker trimming later keeps only the relevant region. When restricted '
+        'to Specimens, the pipeline then guarantees coverage in three passes:'
+    )
+    pdf.numbered_item(1, 'Recorded accessions: if a specimen already lists an accession for the marker, that exact record is fetched and used.')
+    pdf.numbered_item(2, 'No-floor per-species rescue: any listed species not yet recovered is searched individually with no length filter, so even a short partial record is kept - added automatically.')
+    pdf.numbered_item(3, 'Flexible search (manual): species with no record of the target marker trigger a broad organism-name search whose hits are queued on the Review Sequences screen for explicit accept/reject (never auto-added).')
+    pdf.body_text(
+        'Only species for which GenBank holds no marker record at all remain missing, and those are '
+        'reported by name. Every detected accession is written back to the Specimens page.'
+    )
+
+    pdf.section_title('Step B - Quality, Orientation, Alignment, Trimming')
+    pdf.bullet('Each sequence is oriented by shared k-mer content against the longest record; reverse-complemented sequences are corrected and reported.')
+    pdf.bullet('Sequences with >5% ambiguous bases are flagged (kept, not removed).')
+    pdf.bullet('Alignment: MAFFT (--auto --adjustdirection) locally, or the equivalent Galaxy MAFFT tool.')
+    pdf.bullet('Trimming: trimAl in the selected mode, with a no-loss guarantee - if trimming would drop a sequence entirely, it falls back to a gentler mode or the untrimmed alignment, so trimming never removes a taxon.')
+
+    pdf.section_title('Step C - Model Selection and NJ Preview')
+    pdf.body_text(
+        'The best-fit substitution model is chosen with ModelTest-NG (by BIC), per partition in '
+        'multi-fragment mode. A rapid neighbour-joining tree is produced as a PREVIEW ONLY, for a '
+        'sanity check of rooting and obvious misplacements. Because it carries no bootstrap support, '
+        'the NJ tree cannot be imported as the project tree.'
+    )
+
+    pdf.section_title('Step D - Maximum-Likelihood Tree (RAxML-NG on Galaxy)')
+    pdf.body_text(
+        'After you approve the sequence set, the alignment (and a partition file, if partitioned) is '
+        'uploaded to usegalaxy.eu and RAxML-NG is run in all-in-one mode (--all): an adaptive ML '
+        'search followed by non-parametric bootstrapping with autoMRE bootstopping and a fixed seed. '
+        'Felsenstein bootstrap support (fbp) is requested explicitly and drawn on the best tree as '
+        'node labels. Partitioned analyses estimate each fragment under its own model with '
+        'proportionally linked branch lengths. The job is polled to completion, and the support-bearing '
+        'tree is downloaded in preference to any support-free tree; a run returning no support values '
+        'is flagged rather than accepted.'
+    )
+
+    pdf.section_title('Step E - Review, Resubmit, Import, Rooting')
+    pdf.bullet('Revise & Resubmit: replace a sequence with another accession, reverse-complement, add, or remove a taxon, then rerun quality/alignment/trim/NJ before resubmitting.')
+    pdf.bullet('Import: the bootstrap-supported tree is imported into the matrix view; tip labels are parsed and any new species are added to the Specimens list.')
+    pdf.bullet('Rooting: specify one or more outgroup genera; the tree is rooted at their MRCA (ape via Rscript, or BioPython) with support values preserved, and saved as the project tree.')
+
+    pdf.note_box('Only a bootstrap-supported tree can be imported, so every tree used downstream (matrix view, descriptions, exports) carries support values.')
+
+    # ── 15. Troubleshooting ──
+    pdf.add_page()
+    pdf.chapter_title('15', 'Troubleshooting')
 
     problems = [
         ('"Database is locked" error',
@@ -562,6 +640,12 @@ def build_manual():
          'Part colors appear when a color legend is available. Ensure boundaries are confirmed for the structure type being viewed.'),
         ('ImageJ macro cannot find images',
          'Verify the input directory path in the macro setup dialog. The directory must contain image files (TIF, TIFF, JPG, JPEG, PNG, BMP, or GIF).'),
+        ('Phylogeny job fails during fetch with "HTTP Error 400"',
+         'NCBI Entrez rejects requests carrying an invalid API key with a 400 Bad Request. Verify the NCBI_API_KEY server environment variable holds a current, valid key (or remove it to run unauthenticated at a lower rate).'),
+        ('Specimens missing from the final alignment',
+         'Species reported as missing genuinely have no GenBank record for the chosen marker under that name. Check for placeholder ("sp.", "gen.") or misspelled names on the Specimens page; correct the name and rerun. Species that do have a record are recovered automatically by the no-floor per-species rescue.'),
+        ('Tree returned without bootstrap support',
+         'The pipeline requests Felsenstein bootstrap (fbp) support explicitly and prefers the support-bearing tree. If a run is flagged as returning no support, check the Galaxy history for the RAxML-NG job for a tool error before treating the tree as final.'),
     ]
 
     for title, desc in problems:
