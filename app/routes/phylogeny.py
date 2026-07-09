@@ -1104,6 +1104,44 @@ def _presence_key(sp):
     return s.lower().replace('_', ' ').strip()
 
 
+def _fasta_species_set(path):
+    """Return the set of normalized species names present in a FASTA file
+    (MAFFT '_R_' prefix stripped). Empty set if the file is missing/unreadable."""
+    from Bio import SeqIO
+    out = set()
+    if not path or not os.path.exists(path):
+        return out
+    try:
+        for rec in SeqIO.parse(path, 'fasta'):
+            rid = rec.id[3:] if rec.id.startswith('_R_') else rec.id
+            sp = rid.split('|')[1] if '|' in rid else rid
+            n = _norm_species(sp)
+            if n:
+                out.add(n)
+    except Exception:
+        pass
+    return out
+
+
+def _stage_trace(job, label, prev_set, prev_name, path, name):
+    """Log a per-stage species count and any species lost since the previous
+    stage, both to the job status message and the app logger (Railway deploy
+    logs). Returns the current stage's species set for chaining. Non-fatal."""
+    cur = _fasta_species_set(path)
+    lost = sorted(prev_set - cur) if prev_set else []
+    msg = f'[{label}] {prev_name}={len(prev_set)} -> {name}={len(cur)}'
+    if lost:
+        shown = ', '.join(s.replace(' ', '_') for s in lost[:12])
+        more = '' if len(lost) <= 12 else f' (+{len(lost) - 12} more)'
+        msg += f'; DROPPED {len(lost)}: {shown}{more}'
+    try:
+        current_app.logger.info('phylo job %s %s', job.id, msg)
+    except Exception:
+        pass
+    job.status_message = (job.status_message or '') + ' | ' + msg
+    return cur
+
+
 def _concatenate_alignments(path1, marker1, path2, marker2, out_path):
     """Concatenate two trimmed alignments. Taxa missing from one marker get all-gap columns.
 
@@ -1336,10 +1374,28 @@ def _concatenated_fetch_thread(app, job_id):
             job.raw_fasta_path   = raw18s   # store primary for downloads
             job.n_sequences_raw  = tot18s + totITS
             job.n_sequences_final = tot18s + totITS
+
+            # Fetch-stage coverage trace: which Specimens-page species did the
+            # fetch actually recover (in either marker) before any alignment?
+            fetch_note = ''
+            if job.restrict_species:
+                want = {_norm_species(s) for s in job.restrict_species if _norm_species(s)}
+                got = _fasta_species_set(raw18s) | _fasta_species_set(rawITS)
+                unfetched = sorted(want - got)
+                try:
+                    current_app.logger.info(
+                        'phylo job %s FETCH: restrict=%d recovered=%d unfetched=%d: %s',
+                        job.id, len(want), len(want & got), len(unfetched),
+                        ', '.join(s.replace(' ', '_') for s in unfetched))
+                except Exception:
+                    pass
+                fetch_note = (f' Fetch coverage: {len(want & got)}/{len(want)} specimens '
+                              f'recovered in 18S or ITS.')
+
             n_pending = sum(len(v) for v in (job.pending_candidates or {}).values())
             note = f' {n_pending} specimen(s) need your review before aligning.' if n_pending else ''
             _set_status(job, 'fetched',
-                        f'Fetched {tot18s} 18S + {totITS} ITS sequences.{note} '
+                        f'Fetched {tot18s} 18S + {totITS} ITS sequences.{note}{fetch_note} '
                         f'Review sequences and click Approve & Align.')
         except Exception as exc:
             job.status = 'failed'
@@ -1434,17 +1490,28 @@ def _concatenated_align_thread(app, job_id):
 
             # Align + trim both markers (on Galaxy when local binaries absent)
             _where = 'Galaxy' if _use_galaxy_for_align() else 'local'
+            raw18s_sp = _fasta_species_set(raw18s)
+            rawITS_sp = _fasta_species_set(rawITS)
             _set_status(job, 'aligning', f'Aligning + trimming 18S ({_where})…')
             aln18s, trm18s = _align_trim_marker(job, raw18s, '18S')
             _set_status(job, 'aligning', f'Aligning + trimming ITS ({_where})…')
             alnITS, trmITS = _align_trim_marker(job, rawITS, 'ITS')
             job.aligned_fasta_path = aln18s
 
+            # Per-stage species trace: pinpoint where any taxon is lost.
+            job.status_message = 'Stage trace:'
+            a18 = _stage_trace(job, '18S', raw18s_sp, 'raw', aln18s, 'aligned')
+            _stage_trace(job, '18S', a18, 'aligned', trm18s, 'trimmed')
+            aITS = _stage_trace(job, 'ITS', rawITS_sp, 'raw', alnITS, 'aligned')
+            _stage_trace(job, 'ITS', aITS, 'aligned', trmITS, 'trimmed')
+
             # Concatenate
-            _set_status(job, 'trimming', 'Concatenating alignments…')
             cat_path = os.path.join(job.result_dir, 'concatenated.fa')
             n_taxa, w18s, wITS, presence = _concatenate_alignments(
                 trm18s, '18S', trmITS, 'ITS', cat_path)
+            _stage_trace(job, 'concat', raw18s_sp | rawITS_sp, 'raw-union',
+                         cat_path, 'concatenated')
+            db.session.commit()
             job.trimmed_fasta_path = cat_path
             job.fasta_filename     = 'concatenated.fa'
             job.n_sequences        = n_taxa
@@ -1458,11 +1525,12 @@ def _concatenated_align_thread(app, job_id):
             n_both  = sum(1 for m in presence.values() if m == '18S+ITS')
             n_18only = sum(1 for m in presence.values() if m == '18S')
             n_itsonly = sum(1 for m in presence.values() if m == 'ITS')
+            trace = job.status_message or ''
             _set_status(job, 'trimmed',
                         f'Concatenation done: {n_taxa} taxa, {w18s}bp 18S + {wITS}bp ITS = '
                         f'{w18s + wITS}bp total. '
                         f'{n_both} taxa with both 18S+ITS, {n_18only} with 18S only, '
-                        f'{n_itsonly} with ITS only. Ready for Galaxy.')
+                        f'{n_itsonly} with ITS only. Ready for Galaxy. {trace}')
             _verify_specimen_coverage(job)
 
             _nj_step(job)
