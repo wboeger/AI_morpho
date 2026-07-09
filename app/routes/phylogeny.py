@@ -104,14 +104,34 @@ def _ncbi_api_key():
     return key or os.environ.get('NCBI_API_KEY', '')
 
 
+# Set False once a 400 proves the configured API key is invalid, so the rest of
+# the process degrades to keyless instead of re-applying the bad key every call.
+_NCBI_KEY_OK = True
+
+
 def _entrez_setup(email):
     """Set Entrez credentials and return the polite inter-request delay.
-    With an API key NCBI allows 10 req/s (0.1 s); without it, 3 req/s (0.4 s)."""
+    With a valid API key NCBI allows 10 req/s (0.1 s); without it, 3 req/s (0.4 s)."""
     from Bio import Entrez
     Entrez.email = email
-    key = _ncbi_api_key()
+    key = _ncbi_api_key() if _NCBI_KEY_OK else ''
     Entrez.api_key = key or None
     return 0.1 if key else 0.4
+
+
+def _drop_bad_api_key(exc):
+    """If an Entrez error is a 400 Bad Request and an API key is set, clear it so
+    the caller can retry keyless. NCBI returns HTTP 400 for an invalid/revoked
+    api_key — a stale key must degrade to the (slower) unauthenticated rate
+    rather than failing every fetch. Returns True if the key was cleared."""
+    global _NCBI_KEY_OK
+    from Bio import Entrez
+    if getattr(Entrez, 'api_key', None) and (
+            '400' in str(exc) or 'Bad Request' in str(exc)):
+        Entrez.api_key = None
+        _NCBI_KEY_OK = False
+        return True
+    return False
 
 
 def _ncbi_search(term, email, retmax=10000):
@@ -126,8 +146,9 @@ def _ncbi_search(term, email, retmax=10000):
             return result['IdList'], int(result['Count'])
         except Exception as exc:
             is_429 = '429' in str(exc) or 'Too Many Requests' in str(exc)
-            if attempt < 4 and (is_429 or attempt < 2):
-                time.sleep(5 * (attempt + 1) if is_429 else 3)
+            dropped = _drop_bad_api_key(exc)
+            if attempt < 4 and (is_429 or dropped or attempt < 2):
+                time.sleep(5 * (attempt + 1) if is_429 else (0 if dropped else 3))
             else:
                 raise
 
@@ -149,8 +170,9 @@ def _ncbi_fetch_batch(ids, email, batch_size=200):
                 break
             except Exception as exc:
                 is_429 = '429' in str(exc) or 'Too Many Requests' in str(exc)
+                dropped = _drop_bad_api_key(exc)
                 if attempt < 4:
-                    time.sleep(5 * (attempt + 1) if is_429 else 3)
+                    time.sleep(5 * (attempt + 1) if is_429 else (0 if dropped else 3))
                 else:
                     raise
         time.sleep(delay)
