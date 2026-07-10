@@ -2603,8 +2603,11 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000,
             raise RuntimeError(f'Galaxy upload job failed (state: {state})')
 
     # Flattened conditional/section keys — nested dicts are ignored by the API.
+    # NOTE: infile and the whole model conditional live INSIDE general_opts|cmdtype
+    # in the raxmlng wrapper; addressing them at the top level (e.g. 'model|…')
+    # is silently ignored and the tool falls back to single_auto (no partitions).
     inputs = {
-        'infile': {'src': 'hda', 'id': ds_id},
+        'general_opts|cmdtype|infile': {'src': 'hda', 'id': ds_id},
         'general_opts|cmdtype|command': '--all',    # ML search + bootstrap + support
         # Felsenstein bootstrap proportions written as node labels. Without this
         # the tool defaults bs_metric to 'rbs' and never emits the standard
@@ -2624,13 +2627,13 @@ def _submit_to_galaxy_raxml(fasta_path, api_key, n_bootstraps=1000,
             state = _galaxy_wait_for_job(api_key, part_job, max_wait=300)
             if state != 'ok':
                 raise RuntimeError(f'Galaxy partition upload failed (state: {state})')
-        inputs['model|model_type'] = 'multi_file'
-        inputs['model|model_file'] = {'src': 'hda', 'id': part_ds_id}
-        inputs['model|brlen_linkage'] = 'scaled'    # linked-proportional branch lengths
-        inputs['model|model_file_auto'] = 'false'   # use the models we supply
+        inputs['general_opts|cmdtype|model|model_type'] = 'multi_file'
+        inputs['general_opts|cmdtype|model|model_file'] = {'src': 'hda', 'id': part_ds_id}
+        inputs['general_opts|cmdtype|model|brlen_linkage'] = 'scaled'   # linked-proportional
+        inputs['general_opts|cmdtype|model|model_file_auto'] = 'false'  # use supplied models
     else:
-        inputs['model|model_type'] = 'single_string'
-        inputs['model|model_string'] = _model_to_raxmlng(best_fit_model)
+        inputs['general_opts|cmdtype|model|model_type'] = 'single_string'
+        inputs['general_opts|cmdtype|model|model_string'] = _model_to_raxmlng(best_fit_model)
 
     job_id = _galaxy_run_tool(api_key, history_id, tool_id, inputs)
     return history_id, job_id
