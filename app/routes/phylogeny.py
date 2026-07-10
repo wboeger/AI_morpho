@@ -705,22 +705,28 @@ def _fetch_step(job):
     bad_acc    = job.bad_accessions or []
     og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
 
-    # 1. Ingroup — use the relaxed (NOT-clause-stripped) query so species whose
-    # only deposit is a combined rDNA cassette are not silently excluded. The
-    # strict NOT clause is kept only for outgroup fetches below.
-    ingroup_q = _relax_query(gene_q)
-    query = f'"{taxon}"[Organism] AND ({ingroup_q})'
-    _set_status(job, 'fetching', f'Searching NCBI: {query}')
-
-    ids, count = _ncbi_search(query, email)
-    _set_status(job, 'fetching', f'Found {count} records. Downloading {len(ids)}…')
-
-    records = _ncbi_fetch_batch(ids, email)
-    job.n_sequences_raw = len(records)
-    db.session.commit()
-
-    _set_status(job, 'fetching', f'Processing {len(records)} sequences…')
-    ingroup = _process_records(records, bad_acc, min_len, max_factor)
+    # 1. Ingroup. When limiting to project specimens, download ONLY the listed
+    # species (per-species fetch below) — no family-wide download, no extras.
+    # Otherwise, a relaxed (NOT-clause-stripped) taxon search so cassette-only
+    # species are not excluded; the strict NOT clause is kept for outgroups.
+    if job.restrict_species:
+        ingroup = []
+        job.n_sequences_raw = 0
+        db.session.commit()
+        _set_status(job, 'fetching',
+                    f'Limiting to {len(job.restrict_species)} project specimens '
+                    f'(per-species download)…')
+    else:
+        ingroup_q = _relax_query(gene_q)
+        query = f'"{taxon}"[Organism] AND ({ingroup_q})'
+        _set_status(job, 'fetching', f'Searching NCBI: {query}')
+        ids, count = _ncbi_search(query, email)
+        _set_status(job, 'fetching', f'Found {count} records. Downloading {len(ids)}…')
+        records = _ncbi_fetch_batch(ids, email)
+        job.n_sequences_raw = len(records)
+        db.session.commit()
+        _set_status(job, 'fetching', f'Processing {len(records)} sequences…')
+        ingroup = _process_records(records, bad_acc, min_len, max_factor)
 
     # Optional: restrict ingroup to species selected from the project Specimens page
     if job.restrict_species:
@@ -795,11 +801,12 @@ def _fetch_step(job):
         _set_status(job, 'fetching',
                     (job.status_message or '') + f' {n_wb} accession(s) saved to Specimens.')
 
-    # 2. Outgroups
+    # 2. Outgroups — skipped when limiting to project specimens: the final set
+    # must be exactly the Specimens list, nothing more.
     outgroup_records = []
     seen_species = set(ingroup_species)
 
-    for od in og_defs:
+    for od in ([] if job.restrict_species else og_defs):
         family = od.get('family', '').strip()
         mode   = od.get('mode', 'each_genus')
         n      = int(od.get('n', 2))
@@ -1203,17 +1210,26 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
     og_defs    = job.outgroup_definitions or DEFAULT_OUTGROUP_DEFS
     restrict   = restrict_override if restrict_override is not None else job.restrict_species
 
-    # Relaxed ingroup search (NOT clause stripped) so combined-cassette-only
-    # species are pulled in; per-marker alignment + trimAl keep only the relevant
-    # columns. Outgroup fetches below stay strict on gene_query.
-    query = f'"{taxon}"[Organism] AND ({_relax_query(gene_query)})'
-    _set_status(job, 'fetching', f'[{marker}] Searching NCBI: {query}')
-
-    ids, count = _ncbi_search(query, email)
-    _set_status(job, 'fetching', f'[{marker}] Found {count} records. Downloading {len(ids)}…')
-
-    records = _ncbi_fetch_batch(ids, email)
-    ingroup = _process_records(records, bad_acc, min_len, max_factor)
+    if restrict:
+        # "Limit to project specimens": download ONLY the listed species — one
+        # targeted per-species search each (below), no family-wide download and
+        # no extra congeners. Start from an empty ingroup so every listed species
+        # is fetched individually.
+        ingroup = []
+        _set_status(job, 'fetching',
+                    f'[{marker}] Limiting to {len(restrict)} project specimens '
+                    f'(per-species download)…')
+    else:
+        # Relaxed ingroup search (NOT clause stripped) so combined-cassette-only
+        # species are pulled in; per-marker alignment + trimAl keep only the
+        # relevant columns. Outgroup fetches below stay strict on gene_query.
+        query = f'"{taxon}"[Organism] AND ({_relax_query(gene_query)})'
+        _set_status(job, 'fetching', f'[{marker}] Searching NCBI: {query}')
+        ids, count = _ncbi_search(query, email)
+        _set_status(job, 'fetching',
+                    f'[{marker}] Found {count} records. Downloading {len(ids)}…')
+        records = _ncbi_fetch_batch(ids, email)
+        ingroup = _process_records(records, bad_acc, min_len, max_factor)
 
     # Optional: restrict ingroup to project specimen species (or, in the
     # 18S-guided flow, to the species 18S recovered — passed via restrict_override)
@@ -1262,10 +1278,11 @@ def _fetch_marker(job, marker, gene_query, suffix, restrict_override=None):
     # Incorporate every detected GenBank accession for this marker into Specimens.
     _writeback_accessions(job, ingroup, marker)
 
-    # Outgroups
+    # Outgroups — skipped entirely when limiting to project specimens: the final
+    # set must be exactly the Specimens list, nothing more.
     seen = {r.id.split('|')[1] for r in ingroup if '|' in r.id}
     og_records = []
-    for od in og_defs:
+    for od in ([] if job.restrict_species else og_defs):
         family = od.get('family', '').strip()
         mode   = od.get('mode', 'each_genus')
         n      = int(od.get('n', 2))
