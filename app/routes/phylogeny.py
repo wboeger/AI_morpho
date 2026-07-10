@@ -2730,8 +2730,18 @@ def _root_tree_python(tree_file, outgroup_genera, output_file):
         og_tips = [t for t in tree.get_terminals()
                    if any(p in (t.name or '').lower() for p in pats)]
         if not og_tips:
-            Phylo.write(tree, output_file, 'newick')
-            return os.path.exists(output_file), 'No outgroup tips found (Python); unrooted.'
+            # No named root taxon in the tree (e.g. a "Limit to specimens" run
+            # with no outgroups) — fall back to midpoint rooting so the tree is
+            # sensibly rooted rather than left arbitrary. The user can re-root on
+            # any chosen ingroup tip afterwards.
+            try:
+                tree.root_at_midpoint()
+                Phylo.write(tree, output_file, 'newick')
+                return os.path.exists(output_file), ('No matching root taxon; '
+                                                     'rooted at midpoint.')
+            except Exception as exc:
+                Phylo.write(tree, output_file, 'newick')
+                return os.path.exists(output_file), f'Midpoint rooting failed ({exc}); unrooted.'
         if len(og_tips) == 1:
             tree.root_with_outgroup(og_tips[0])
         else:
@@ -2782,6 +2792,10 @@ if (length(outgroup) > 0) {{
     except FileNotFoundError:
         return _root_tree_python(tree_file, outgroup_genera, output_file)
     msg = (result.stdout + result.stderr).strip()
+    # ape has no midpoint rooting; when no outgroup tip matched, fall back to the
+    # Biopython path (which midpoint-roots) so no-outgroup runs are still rooted.
+    if 'NO_OUTGROUP' in msg:
+        return _root_tree_python(tree_file, outgroup_genera, output_file)
     return result.returncode == 0 and os.path.exists(output_file), msg
 
 
