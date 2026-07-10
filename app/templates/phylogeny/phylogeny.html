@@ -736,7 +736,17 @@
 <div class="modal-overlay" id="treeModal">
     <div class="modal" style="max-width:92vw; width:92vw; max-height:90vh; display:flex; flex-direction:column; padding:0;">
         <div style="padding:0.75rem 1rem; border-bottom:1px solid var(--gray-200); display:flex; align-items:center; gap:1rem; flex-shrink:0;">
-            <h3 style="margin:0; flex:1;" id="treeModalTitle">Phylogenetic Tree</h3>
+            <h3 style="margin:0;" id="treeModalTitle">Phylogenetic Tree</h3>
+            <div style="display:flex; align-items:center; gap:0.4rem; margin-left:auto; flex-shrink:0;">
+                <label style="font-size:0.78rem; color:var(--gray-600); white-space:nowrap;">Root on:</label>
+                <input type="text" id="mlOutgroupInput"
+                    placeholder="ingroup taxon (blank = midpoint)"
+                    style="font-size:0.82rem; padding:0.2rem 0.5rem; border:1px solid var(--gray-300); border-radius:4px; width:210px;"
+                    title="Enter one or more ingroup genus/species names (comma-separated) to re-root the ML tree at their MRCA. Leave blank to root at midpoint. Bootstrap support is preserved."
+                    onkeydown="if(event.key==='Enter') rerootMlTree()">
+                <button class="btn btn-sm btn-outline" onclick="rerootMlTree()" title="Re-root the ML tree on the chosen ingroup taxon (or midpoint if blank)">Re-root</button>
+                <span id="mlRootMsg" style="font-size:0.78rem; color:var(--gray-500);"></span>
+            </div>
             <button class="btn btn-sm btn-success" id="treeModalImport" onclick="importFromModal()">Import into Project</button>
             <button class="btn btn-sm btn-outline" onclick="closeTreeModal()">Close</button>
         </div>
@@ -1830,6 +1840,37 @@ async function rerootNjTree() {
         msg.textContent = data.warning ? `Rooted. (${data.warning})` : 'Tree re-rooted.';
         _tipMarkers = data.presence || {};   // colour tips by gene combination
         renderPhylogram(data.newick, document.getElementById('njModalSvg'));
+    } catch(err) {
+        msg.style.color = '#c0392b';
+        msg.textContent = 'Network error: ' + err.message;
+    }
+}
+
+async function rerootMlTree() {
+    if (!_modalJobId) return;
+    const input = document.getElementById('mlOutgroupInput');
+    const msg   = document.getElementById('mlRootMsg');
+    const raw   = (input.value || '').trim();
+    // Blank => midpoint rooting.
+    const outgroups = raw ? raw.split(',').map(s => s.trim()).filter(Boolean) : [];
+    msg.style.color = '';
+    msg.textContent = 'Re-rooting…';
+    try {
+        const resp = await fetch(
+            `/api/project/${PROJECT_ID}/phylogeny/${_modalJobId}/reroot_ml`,
+            {method: 'POST', headers: {'Content-Type': 'application/json'},
+             body: JSON.stringify({outgroups})}
+        );
+        const data = await safeJSON(resp);
+        if (!resp.ok || data.error) {
+            msg.style.color = '#c0392b';
+            msg.textContent = data.error || resp.statusText;
+            return;
+        }
+        msg.style.color = '#155724';
+        const on = (data.rooted_on || []).join(', ') || 'midpoint';
+        msg.textContent = data.warning ? `Rooted on ${on}. (${data.warning})` : `Rooted on ${on}.`;
+        renderPhylogram(data.newick, document.getElementById('treeModalSvg'));
     } catch(err) {
         msg.style.color = '#c0392b';
         msg.textContent = 'Network error: ' + err.message;

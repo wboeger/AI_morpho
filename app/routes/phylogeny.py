@@ -3294,6 +3294,73 @@ def reroot_nj_tree(project_id, job_id):
         return jsonify({'error': str(exc)}), 500
 
 
+def _reroot_newick(newick, names):
+    """Reroot a newick string at the MRCA of tips matching `names` (tip-label
+    substring, case-insensitive), preserving support/branch labels as far as
+    Biopython allows. If `names` is empty (or nothing matches), root at midpoint.
+    Returns (new_newick, rooted_on, not_found). Raises on parse error."""
+    from Bio import Phylo
+    from io import StringIO
+    tree = Phylo.read(StringIO(newick), 'newick')
+    want = [n for n in (names or []) if n and n.strip().lower() != 'midpoint']
+    matched, not_found = [], []
+    if want:
+        terminals = tree.get_terminals()
+        for name in want:
+            t = next((t for t in terminals if t.name and (
+                        name.lower() in t.name.lower().replace('_', ' ') or
+                        t.name.lower().replace('_', ' ') in name.lower())), None)
+            if t:
+                matched.append(t)
+            else:
+                not_found.append(name)
+    if not matched:
+        tree.root_at_midpoint()
+        rooted_on = ['midpoint']
+    elif len(matched) == 1:
+        tree.root_with_outgroup(matched[0])
+        rooted_on = [matched[0].name]
+    else:
+        tree.root_with_outgroup(tree.common_ancestor(matched))
+        rooted_on = [m.name for m in matched]
+    buf = StringIO()
+    Phylo.write(tree, buf, 'newick')
+    return buf.getvalue().strip(), rooted_on, not_found
+
+
+@phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/reroot_ml',
+                methods=['POST'])
+@login_required
+def reroot_ml_tree(project_id, job_id):
+    """Re-root the final ML/bootstrap tree (job.tree_newick) on one or more
+    chosen ingroup tips (MRCA), or at midpoint when none are given. Keeps the
+    project's active tree in sync if it was this job's tree.
+
+    Accepts JSON: {outgroups: ["Name1", ...]}  (empty => midpoint)
+    Returns: {newick, rooted_on, warning?}
+    """
+    job = PhylogenyJob.query.filter_by(id=job_id, project_id=project_id).first_or_404()
+    if not job.tree_newick:
+        return jsonify({'error': 'No ML tree available for this job. Download results first.'}), 400
+    data = request.get_json() or {}
+    names = [s.strip() for s in data.get('outgroups', []) if s.strip()]
+    try:
+        old = job.tree_newick
+        new_newick, rooted_on, not_found = _reroot_newick(old, names)
+        job.tree_newick = new_newick
+        project = Project.query.get(project_id)
+        if project and project.tree_newick == old:
+            project.tree_newick = new_newick   # keep the active project tree in sync
+        db.session.commit()
+        result = {'status': 'ok', 'newick': new_newick, 'rooted_on': rooted_on}
+        if not_found:
+            result['warning'] = f'Not found in tree (skipped): {", ".join(not_found)}'
+        return jsonify(result)
+    except Exception as exc:
+        db.session.rollback()
+        return jsonify({'error': str(exc)}), 500
+
+
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/newick')
 @login_required
 def get_newick(project_id, job_id):
