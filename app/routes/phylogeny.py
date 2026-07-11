@@ -924,12 +924,43 @@ def _orient_fasta_by_reference(in_path, k=8):
     return flipped_ids
 
 
+def _restrict_fasta_to_specimens(job, path):
+    """Hard gate applied just before alignment: rewrite a raw FASTA in place so it
+    contains ONLY records whose species is on the project's Specimens page (plus
+    the job's restrict list, in case an accession writeback lagged). No-op unless
+    'Limit to project specimens' is on. Guarantees the alignment holds exactly the
+    Specimens species — no congeners, outgroups, or other extras. Non-fatal;
+    returns (kept, dropped_species) or None when skipped."""
+    if not job.restrict_species or not path or not os.path.exists(path):
+        return None
+    from Bio import SeqIO
+    allowed = set(_specimen_norm_index(job.project_id).keys())
+    allowed |= {_norm_species(s) for s in job.restrict_species if _norm_species(s)}
+    kept, dropped = [], set()
+    for rec in SeqIO.parse(path, 'fasta'):
+        rid = rec.id[3:] if rec.id.startswith('_R_') else rec.id
+        sp = rid.split('|')[1] if '|' in rid else rid
+        if _norm_species(sp) in allowed:
+            kept.append(rec)
+        else:
+            dropped.add(_norm_species(sp))
+    if dropped:
+        _write_fasta(kept, path)
+        try:
+            current_app.logger.info('phylo job %s align-gate dropped %d non-specimen: %s',
+                                     job.id, len(dropped), ', '.join(sorted(dropped)))
+        except Exception:
+            pass
+    return len(kept), sorted(dropped)
+
+
 def _align_step(job):
     """MAFFT --auto --adjustdirection (local binary, or Galaxy when unavailable).
 
     When running on Galaxy, MAFFT + trimAl are done together in one history;
     both output files are produced here and _trim_step becomes a no-op.
     """
+    _restrict_fasta_to_specimens(job, job.raw_fasta_path)
     aligned_path = os.path.join(job.result_dir, f'{job.marker}_aligned.fa')
     trimmed_path = os.path.join(job.result_dir, f'{job.marker}_trimmed.fa')
     n_in = _count_fasta(job.raw_fasta_path)
@@ -1504,6 +1535,11 @@ def _concatenated_align_thread(app, job_id):
         try:
             raw18s = os.path.join(job.result_dir, '18S_raw.fa')
             rawITS = os.path.join(job.result_dir, 'ITS_raw.fa')
+
+            # Hard gate: keep ONLY Specimens-page species in each marker before
+            # alignment (no-op when restrict is off).
+            _restrict_fasta_to_specimens(job, raw18s)
+            _restrict_fasta_to_specimens(job, rawITS)
 
             # Align + trim both markers (on Galaxy when local binaries absent)
             _where = 'Galaxy' if _use_galaxy_for_align() else 'local'
