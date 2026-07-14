@@ -312,11 +312,12 @@ def _force_include_recorded(job, ingroup, restrict, marker, email):
 
 
 def _writeback_accessions(job, ingroup, marker):
-    """Persist every ingroup GenBank accession onto the Specimens page: upsert a
-    DNASequence(marker, accession) for the matching specimen, creating the
-    specimen when none exists. Ingroup only (outgroups are never written back).
-    Runs in the pipeline's background thread, so it uses job.submitted_by rather
-    than current_user. Non-fatal — never raises. Returns count of rows added."""
+    """Attach every ingroup GenBank accession to the MATCHING existing specimen on
+    the Specimens page (upsert a DNASequence(marker, accession)). Never creates a
+    new specimen — the Specimens page stays exactly the user's curated list, so a
+    broad (non-restrict) run cannot pollute it with congeners. Ingroup only
+    (outgroups are never written back). Runs in the pipeline's background thread.
+    Non-fatal — never raises. Returns count of rows added."""
     from app.models import DNASequence as _DNASeq
     mk = (marker or '').strip()
     try:
@@ -334,12 +335,7 @@ def _writeback_accessions(job, ingroup, marker):
                 continue
             sp = idx.get(n)
             if sp is None:
-                sp = Specimen(project_id=job.project_id,
-                              species_name=sp_label.replace('_', ' ').strip(),
-                              created_by=job.submitted_by)
-                db.session.add(sp)
-                db.session.flush()
-                idx[n] = sp
+                continue   # not a curated specimen — do not create one
             exists = any((d.marker or '').strip().lower() == mk.lower()
                          and (d.accession or '').strip() == acc
                          for d in (sp.dna_sequences or []))
