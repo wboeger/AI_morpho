@@ -386,6 +386,28 @@
 
 </div>
 {% endif %}
+
+<!-- Tip detail modal: structure image + change state (Matrix-style) -->
+<div class="modal-overlay" id="optCellModal"
+     style="display:none; position:fixed; inset:0; z-index:9000; background:rgba(0,0,0,0.45);
+            align-items:center; justify-content:center;">
+    <div class="modal" style="max-width:640px; width:94vw; max-height:92vh; overflow:auto;
+         background:#fff; border-radius:8px; padding:1rem; box-shadow:0 10px 50px rgba(0,0,0,0.35);">
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.6rem;">
+            <h3 id="optCellTitle" style="margin:0; font-size:1rem;">Species</h3>
+            <button class="btn btn-sm btn-outline" onclick="closeOptCell()">&#10005;</button>
+        </div>
+        <div id="optCellImgWrap" style="display:none; text-align:center; margin-bottom:0.6rem;
+             background:var(--gray-100,#f5f5f5); border-radius:6px; padding:0.5rem;">
+            <img id="optCellImg" src="" alt="structure figure"
+                 style="max-width:100%; max-height:52vh; object-fit:contain; border-radius:4px;">
+        </div>
+        <div id="optCellInfo" style="font-size:0.85rem; color:var(--gray-600,#555); margin-bottom:0.6rem;"></div>
+        <div style="font-weight:600; font-size:0.85rem; margin-bottom:0.35rem;">Set state:</div>
+        <div id="optCellStates" style="display:flex; flex-wrap:wrap; gap:0.4rem; margin-bottom:0.7rem;"></div>
+        <div id="optCellMsg" style="font-size:0.8rem; color:var(--gray-500,#888); min-height:1.1em;"></div>
+    </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -721,12 +743,21 @@ function renderTree(ch) {
                 });
             }
 
-            // Species name (italic, right side) — colored by DNA fragment(s)
-            svgTxt(node.name || '', {
+            // Species name (italic, right side) — colored by DNA fragment(s).
+            // Clickable: opens the structure image + state editor for this taxon.
+            const lbl = svgTxt(node.name || '', {
                 x: X_R + PAD_R + 5, y: ny + 4,
                 'font-size': 11, 'font-family': 'sans-serif',
-                fill: _fragColor(node.name) || '#333', 'font-style': 'italic'
+                fill: _fragColor(node.name) || '#333', 'font-style': 'italic',
+                cursor: 'pointer'
             });
+            const _sp = node.name || '';
+            if (_sp) {
+                lbl.addEventListener('click', () => openOptCell(ch.id, _sp));
+                const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+                t.textContent = 'Click to view image / change state';
+                lbl.appendChild(t);
+            }
         }
     }
 
@@ -1016,6 +1047,91 @@ async function rerun() {
     await init();
     if (btn) { btn.disabled = false; btn.innerHTML = old; }
 }
+
+// ── Tip popup: structure image + change state (Matrix-style) ──────────────────
+let _optCell = null;   // {value_id, struct_id, char_id, states, current}
+
+async function openOptCell(charId, species) {
+    const modal = document.getElementById('optCellModal');
+    const msg   = document.getElementById('optCellMsg');
+    document.getElementById('optCellTitle').textContent = species;
+    document.getElementById('optCellInfo').innerHTML = '<em>Loading…</em>';
+    document.getElementById('optCellStates').innerHTML = '';
+    document.getElementById('optCellImgWrap').style.display = 'none';
+    msg.textContent = '';
+    modal.style.display = 'flex';
+    try {
+        const r = await fetch(`/api/project/${PROJECT_ID}/optimization/cell?char_id=${charId}`
+                              + `&species=${encodeURIComponent(species)}`);
+        const d = await r.json();
+        if (!r.ok || d.error) { document.getElementById('optCellInfo').textContent = d.error || 'Error'; return; }
+        _optCell = {value_id: d.value_id, struct_id: d.struct_id, char_id: d.char_id,
+                    states: d.states || [], current: d.state};
+        const img = document.getElementById('optCellImg');
+        if (d.image_url) {
+            img.src = d.image_url;
+            document.getElementById('optCellImgWrap').style.display = 'block';
+        }
+        const cur = d.state ? `<b>${d.state}</b>` : '<span style="color:#999">unscored (?)</span>';
+        const proxy = d.has_target_structure ? '' :
+            ' <span style="color:#c0392b">(proxy image — no ' +
+            String(d.code||'').toLowerCase() + ' structure)</span>';
+        document.getElementById('optCellInfo').innerHTML =
+            `${d.code}: ${d.character} &nbsp;·&nbsp; current: ${cur}${proxy}`;
+        renderOptStates();
+    } catch (e) {
+        document.getElementById('optCellInfo').textContent = 'Network error: ' + e.message;
+    }
+}
+
+function renderOptStates() {
+    const wrap = document.getElementById('optCellStates');
+    wrap.innerHTML = '';
+    const opts = _optCell.states.slice();
+    // Always allow "?" (unscored / missing).
+    const mk = (code, name) => {
+        const b = document.createElement('button');
+        b.className = 'btn btn-sm ' + (code === _optCell.current ? 'btn-primary' : 'btn-outline');
+        b.textContent = name ? `${code} — ${name}` : code;
+        b.onclick = () => saveOptState(code);
+        wrap.appendChild(b);
+    };
+    opts.forEach(s => mk(s.code || s, s.name || ''));
+    mk('?', 'unscored');
+}
+
+async function saveOptState(state) {
+    const msg = document.getElementById('optCellMsg');
+    msg.style.color = ''; msg.textContent = 'Saving…';
+    try {
+        let resp;
+        if (_optCell.value_id) {
+            resp = await fetch(`/api/project/${PROJECT_ID}/matrix/override`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({value_id: _optCell.value_id, state, reason: 'Set from optimization tree'})});
+        } else {
+            resp = await fetch(`/api/project/${PROJECT_ID}/matrix/assign`, {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({structure_id: _optCell.struct_id, character_id: _optCell.char_id, state})});
+        }
+        const d = await resp.json().catch(() => ({}));
+        if (!resp.ok || d.error) { msg.style.color = '#c0392b'; msg.textContent = d.error || 'Save failed'; return; }
+        _optCell.current = state;
+        msg.style.color = '#155724'; msg.textContent = 'Saved. Recomputing tree…';
+        closeOptCell();
+        await rerun();   // refresh Fitch reconstruction + tree with the new state
+    } catch (e) {
+        msg.style.color = '#c0392b'; msg.textContent = 'Network error: ' + e.message;
+    }
+}
+
+function closeOptCell() {
+    document.getElementById('optCellModal').style.display = 'none';
+    _optCell = null;
+}
+document.getElementById('optCellModal').addEventListener('click', function(e) {
+    if (e.target === this) closeOptCell();
+});
 
 init();
 </script>

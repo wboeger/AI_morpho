@@ -353,3 +353,64 @@ def run_optimization(project_id):
         })
 
     return jsonify({'characters': results})
+
+
+def _structure_completeness(s):
+    """Higher = more complete structure (prefer for display / value lookup)."""
+    return (bool(s.landmarks_json) * 2 + bool(s.landmarks_confirmed) * 2 +
+            bool(s.boundary_json) + bool(s.image_path))
+
+
+@optimization_bp.route('/api/project/<int:project_id>/optimization/cell', methods=['GET'])
+@login_required
+def optimization_cell(project_id):
+    """Resolve a tree tip (species label) + character to its structure image and
+    current state, for the Matrix-style popup on the optimization tree. Returns a
+    payload compatible with the matrix cell popup (state saved via the existing
+    /matrix/override or /matrix/assign endpoints)."""
+    Project.query.get_or_404(project_id)
+    char_id = request.args.get('char_id', type=int)
+    species = request.args.get('species', '') or ''
+    char = CharacterDefinition.query.filter_by(id=char_id, project_id=project_id).first_or_404()
+
+    # Resolve the tree label to a specimen: apply alias (tree_label -> specimen
+    # name), then match on normalized species name.
+    target = _norm_name(species)
+    alias_map = {_norm_name(a.tree_label): _norm_name(a.specimen_name)
+                 for a in SpeciesAlias.query.filter_by(project_id=project_id).all()}
+    target = alias_map.get(target, target)
+
+    specimen = next((sp for sp in Specimen.query.filter_by(project_id=project_id).all()
+                     if _norm_name(sp.species_name) == target), None)
+    if not specimen:
+        return jsonify({'error': f'No specimen matches tree tip "{species}".'}), 404
+
+    all_structs = Structure.query.filter_by(specimen_id=specimen.id).all()
+    type_structs = [s for s in all_structs if s.structure_type == char.structure_type]
+    if type_structs:
+        primary = max(type_structs, key=_structure_completeness)
+    elif all_structs:
+        primary = max(all_structs, key=_structure_completeness)   # proxy image only
+    else:
+        return jsonify({'error': f'No structures for {specimen.species_name}.'}), 404
+
+    val = CharacterValue.query.filter_by(
+        structure_id=primary.id, character_id=char.id).first()
+
+    return jsonify({
+        'species':          specimen.species_name,
+        'character':        char.name,
+        'code':             char.code,
+        'state':            val.state if val else None,
+        'raw_value':        val.raw_value if val else None,
+        'confidence':       val.confidence if val else None,
+        'auto_assigned':    val.auto_assigned if val else None,
+        'override_reason':  val.override_reason if val else None,
+        'states':           char.states_json,
+        'computation_type': char.computation_type,
+        'image_url':        f'/uploads/{primary.image_path}' if primary.image_path else None,
+        'has_target_structure': bool(type_structs),
+        'value_id':         val.id if val else None,
+        'struct_id':        primary.id,
+        'char_id':          char.id,
+    })
