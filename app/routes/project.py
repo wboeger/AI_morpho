@@ -417,6 +417,58 @@ def delete_specimen(project_id, specimen_id):
     return jsonify({'status': 'ok', 'species': species_name})
 
 
+def _writeback_artifact_specimens(project_id):
+    """Specimens that look auto-added by the phylogeny accession writeback: no
+    structures, no image, no notes — i.e. no morphological data a curator would
+    have entered. These are safe-to-remove artifacts of past broad runs."""
+    out = []
+    for sp in Specimen.query.filter_by(project_id=project_id).all():
+        if sp.structures:
+            continue
+        if (sp.image_path or '').strip() or (sp.notes or '').strip():
+            continue
+        out.append(sp)
+    return out
+
+
+@project_bp.route('/api/project/<int:project_id>/specimens/cleanup_preview')
+@login_required
+def specimens_cleanup_preview(project_id):
+    """List specimens with no morphological data (structures/image/notes) —
+    candidates for removal (auto-added by past phylogeny runs)."""
+    _get_project_or_404(project_id)
+    cands = _writeback_artifact_specimens(project_id)
+    total = Specimen.query.filter_by(project_id=project_id).count()
+    return jsonify({
+        'total': total,
+        'candidates': [
+            {'id': sp.id, 'species': sp.species_name,
+             'sequences': len(sp.dna_sequences or [])}
+            for sp in sorted(cands, key=lambda s: s.species_name or '')
+        ],
+    })
+
+
+@project_bp.route('/api/project/<int:project_id>/specimens/cleanup', methods=['POST'])
+@login_required
+def specimens_cleanup(project_id):
+    """Delete specimens with no morphological data. Optionally restrict to a set
+    of ids passed as {ids: [...]} (defaults to all artifact candidates)."""
+    _get_project_or_404(project_id)
+    data = request.get_json(silent=True) or {}
+    keep_ids = set(data.get('ids') or [])
+    cands = _writeback_artifact_specimens(project_id)
+    if keep_ids:
+        cands = [sp for sp in cands if sp.id in keep_ids]
+    names = [sp.species_name for sp in cands]
+    for sp in cands:
+        db.session.delete(sp)
+    if names:
+        _log(project_id, f'Removed {len(names)} auto-added specimen(s) with no morphology')
+    db.session.commit()
+    return jsonify({'status': 'ok', 'removed': len(names), 'species': names})
+
+
 @project_bp.route('/api/project/<int:project_id>/readiness_check', methods=['POST'])
 @login_required
 def readiness_check(project_id):

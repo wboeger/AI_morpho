@@ -62,7 +62,32 @@
     </form>
     <button class="btn btn-outline" onclick="openModal('readinessModal')">Check Readiness</button>
     <a href="{{ url_for('project.coverage', project_id=project.id) }}" class="btn btn-outline">Coverage Report</a>
+    <button class="btn btn-outline" onclick="cleanupSpecimens({{ project.id }})"
+            title="Remove specimens that have no structures, image, or notes — auto-added by past phylogeny runs">Remove Auto-added</button>
 </div>
+
+<script>
+async function cleanupSpecimens(pid) {
+    let d;
+    try {
+        const r = await fetch(`/api/project/${pid}/specimens/cleanup_preview`);
+        d = await r.json();
+        if (!r.ok || d.error) { alert(d.error || 'Preview failed.'); return; }
+    } catch (e) { alert('Network error: ' + e.message); return; }
+    if (!d.candidates.length) { alert('No auto-added specimens to remove.'); return; }
+    const names = d.candidates.map(c => c.species).join(', ');
+    if (!confirm(`Remove ${d.candidates.length} of ${d.total} specimens with no structures, image, or notes?\n\n${names}`))
+        return;
+    try {
+        const r2 = await fetch(`/api/project/${pid}/specimens/cleanup`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+        const d2 = await r2.json();
+        if (!r2.ok || d2.error) { alert(d2.error || 'Cleanup failed.'); return; }
+        alert(`Removed ${d2.removed} specimen(s).`);
+        location.reload();
+    } catch (e) { alert('Network error: ' + e.message); }
+}
+</script>
 
 <!-- ImageJ Batch Import -->
 <div class="card" style="margin-bottom:1rem;">
