@@ -2860,11 +2860,26 @@ def phylogeny_view(project_id):
             .filter_by(project_id=project_id)
             .order_by(PhylogenyJob.submitted_at.desc())
             .all())
-    specimen_species = sorted({
-        (s.species_name or '').strip()
-        for s in Specimen.query.filter_by(project_id=project_id).all()
-        if (s.species_name or '').strip()
-    })
+    # Per-species info for the "Limit to project specimens" selector: recorded
+    # GenBank sequences (marker + accession) and a representative image.
+    by_name = {}
+    for s in Specimen.query.filter_by(project_id=project_id).all():
+        name = (s.species_name or '').strip()
+        if not name:
+            continue
+        e = by_name.setdefault(name, {'name': name, 'sequences': [], 'image_url': None})
+        seen = {(d['marker'], d['accession']) for d in e['sequences']}
+        for d in (s.dna_sequences or []):
+            acc = (d.accession or '').strip()
+            if acc and d.available is not False and (d.marker, acc) not in seen:
+                e['sequences'].append({'marker': d.marker or '?', 'accession': acc})
+                seen.add((d.marker, acc))
+        if not e['image_url']:
+            img = next((st.image_path for st in s.structures if st.image_path), None)
+            if img:
+                e['image_url'] = f'/uploads/{img}'
+    specimen_info = [by_name[n] for n in sorted(by_name)]
+    specimen_species = [e['name'] for e in specimen_info]
     defaults = {
         'target_taxon':     'Gyrodactylidae',
         'gene_query':       DEFAULT_GENE_QUERY_18S,
@@ -2875,7 +2890,8 @@ def phylogeny_view(project_id):
     }
     return render_template('phylogeny/phylogeny.html',
                            project=project, jobs=jobs, defaults=defaults,
-                           specimen_species=specimen_species)
+                           specimen_species=specimen_species,
+                           specimen_info=specimen_info)
 
 
 @phylo_bp.route('/project/<int:project_id>/phylogeny/create', methods=['POST'])
