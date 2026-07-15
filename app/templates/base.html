@@ -72,6 +72,10 @@
        class="nav-item {% if request.blueprint == 'ai_advisor' %}active{% endif %}">
       <span class="num">AI</span><span>AI Advisor</span>
     </a>
+    <a href="{{ url_for('reliability.reliability_view', project_id=project.id) }}"
+       class="nav-item {% if request.blueprint == 'reliability' %}active{% endif %}">
+      <span class="num">CRI</span><span>MCO Reliability</span>
+    </a>
     <a href="{{ url_for('export.export_page', project_id=project.id) }}"
        class="nav-item {% if request.blueprint == 'export' %}active{% endif %}">
       <span class="num">09</span><span>Export</span>

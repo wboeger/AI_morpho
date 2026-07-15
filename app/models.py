@@ -342,3 +342,51 @@ class PhylogenyJob(db.Model):
 
     project = db.relationship('Project', backref='phylogeny_jobs')
     submitter = db.relationship('User', foreign_keys=[submitted_by])
+
+
+class ReliabilityCriterion(db.Model):
+    """A user-editable criterion for the blind MCO-illustration reliability index.
+    Criteria (code, rubric, weight, max score) can be added/edited/deleted per
+    project at any time; the composite index (CRI) is recomputed from whichever
+    criteria a rating actually scored."""
+    __tablename__ = 'reliability_criteria'
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    code = db.Column(db.String(16), nullable=False)          # short label, e.g. 'S','O'
+    name = db.Column(db.String(120), nullable=False)         # e.g. 'Orientation / aspect'
+    rubric = db.Column(db.Text)                              # 0..max score descriptions
+    max_score = db.Column(db.Integer, default=2)             # top score for this criterion
+    weight = db.Column(db.Float, default=1.0)                # relative weight in the CRI
+    display_order = db.Column(db.Integer, default=0)
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+
+    project = db.relationship('Project', backref=db.backref(
+        'reliability_criteria', cascade='all, delete-orphan'))
+
+
+class MCOReliabilityRating(db.Model):
+    """One scientist's blind reliability scoring of a species' MCO illustration.
+    scores is {criterion_id: score}; cri is the snapshot composite in [0,1]."""
+    __tablename__ = 'mco_reliability_ratings'
+    id = db.Column(db.Integer, primary_key=True)
+    project_id = db.Column(db.Integer, db.ForeignKey('projects.id'), nullable=False)
+    rater_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    species_norm = db.Column(db.String(200), nullable=False)   # normalized species key
+    species_display = db.Column(db.String(200))                # human-readable name
+    structure_id = db.Column(db.Integer, db.ForeignKey('structures.id'))  # MCO image scored
+    scores = db.Column(db.JSON, default=dict)                  # {criterion_id: score}
+    cri = db.Column(db.Float)                                  # snapshot composite [0,1]
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+
+    rater = db.relationship('User')
+    project = db.relationship('Project', backref=db.backref(
+        'reliability_ratings', cascade='all, delete-orphan'))
+
+    __table_args__ = (
+        db.UniqueConstraint('project_id', 'species_norm', 'rater_id',
+                            name='uq_reliability_rater_species'),
+    )

@@ -10,6 +10,19 @@ from app.models import (
 from app.descriptions import generate_species_description, generate_group_diagnosis
 
 
+def _cri_for_species(project_id):
+    """Return a lookup {species_display -> {cri, band, n}} for the MCO reliability
+    index, matched by normalized species name. Empty if none scored."""
+    from app.routes.reliability import species_cri_map, _norm
+    cri = species_cri_map(project_id)
+    out = {}
+    for sp in Specimen.query.filter_by(project_id=project_id).all():
+        info = cri.get(_norm(sp.species_name))
+        if info:
+            out[sp.species_name] = info
+    return out
+
+
 def build_matrix(project_id: int, structure_type: str = None, dna_only: bool = False) -> dict:
     """Build the complete character matrix.
 
@@ -88,13 +101,17 @@ def export_csv(project_id: int, **kwargs) -> str:
 
     # Header
     char_codes = [c['code'] for c in data['characters']]
-    writer.writerow(['Species'] + [f"{c['code']}_{c['name']}" for c in data['characters']])
+    cri = _cri_for_species(project_id)
+    writer.writerow(['Species'] + [f"{c['code']}_{c['name']}" for c in data['characters']]
+                    + ['MCO_CRI', 'MCO_CRI_band'])
 
     # Rows
     for species in data['species']:
         row = [species]
         for code in char_codes:
             row.append(data['matrix'][species].get(code, '?'))
+        info = cri.get(species)
+        row.extend([info['cri'] if info else '', info['band'] if info else ''])
         writer.writerow(row)
 
     return output.getvalue()
@@ -168,6 +185,19 @@ def export_nexus(project_id: int, **kwargs) -> str:
     lines.append('  ;')
     lines.append('END;')
     lines.append('')
+
+    # MCO reliability index per taxon (as a comment block — NEXUS STANDARD has no
+    # per-taxon continuous slot). Enables CRI-thresholded sensitivity tests.
+    cri = _cri_for_species(project_id)
+    if cri:
+        lines.append('[ MCO reliability index (CRI, mean across scientists):')
+        for species in data['species']:
+            info = cri.get(species)
+            if info:
+                lines.append(f'    {species.replace(" ", "_")} '
+                             f'CRI={info["cri"]} band={info["band"]} n={info["n"]}')
+        lines.append(']')
+        lines.append('')
 
     return '\n'.join(lines)
 
@@ -264,6 +294,7 @@ def export_json_full(project_id: int) -> str:
         'character_definitions': chars_data,
         'matrix': data['matrix'],
         'detailed_matrix': data['detailed'],
+        'mco_reliability': _cri_for_species(project_id),
         'correction_history': corrections,
     }
 

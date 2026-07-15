@@ -117,6 +117,7 @@ async function cleanupSpecimens(pid) {
             <tr>
                 <th>Species</th>
                 <th>Specimen ID</th>
+                <th title="Blind MCO illustration reliability index (mean CRI across scientists)">MCO CRI</th>
                 <th>Comments</th>
                 <th>Structures</th>
                 <th>DNA</th>
@@ -159,6 +160,17 @@ async function cleanupSpecimens(pid) {
                     </div>
                 </td>
                 <td><span class="mono tiny muted">{{ s.specimen_id_label or '—' }}</span></td>
+                <td style="white-space:nowrap;">
+                    {% set cri = cri_by_specimen.get(s.id) %}
+                    {% if cri %}
+                        {% set bc = {'High':'#1b7f3b','Moderate':'#b8860b','Low':'#c0392b'} %}
+                        <span title="mean CRI over {{ cri.n }} scientist(s)"
+                              style="font-weight:600; color:{{ bc.get(cri.band,'#555') }};">{{ '%.2f'|format(cri.cri) }}</span>
+                        <span class="tiny muted">{{ cri.band[0] }}</span>
+                    {% else %}
+                        <span class="tiny muted">—</span>
+                    {% endif %}
+                </td>
                 <td style="white-space:nowrap;">
                     <button class="btn btn-sm btn-outline" id="cmt-btn-{{ s.id }}"
                             title="View / add comments"

@@ -97,6 +97,7 @@
                         <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.1rem 0.35rem; margin-left:0.4rem; vertical-align:middle;"
                             onclick="openAddSpecies()" title="Add new species row">+ Add</button>
                     </th>
+                    <th title="Blind MCO illustration reliability index (mean CRI across scientists)">CRI</th>
                     {% for c in characters %}
                     <th title="{{ c.name }} ({{ c.structure_type }})">
                         <a href="{{ url_for('matrix.gallery_view', project_id=project.id, char_id=c.id) }}"
@@ -129,6 +130,15 @@
                                  onclick="event.stopPropagation(); matrixLightbox(this.src, '{{ row.specimen.species_name | replace("'", "\\'") }} — {{ im.type }}')">
                             {% endfor %}
                         </span>
+                        {% endif %}
+                    </td>
+                    <td style="text-align:center; white-space:nowrap;">
+                        {% if row.cri %}
+                            {% set bc = {'High':'#1b7f3b','Moderate':'#b8860b','Low':'#c0392b'} %}
+                            <span title="mean CRI over {{ row.cri.n }} scientist(s) — {{ row.cri.band }}"
+                                  style="font-weight:600; color:{{ bc.get(row.cri.band,'#555') }};">{{ '%.2f'|format(row.cri.cri) }}</span>
+                        {% else %}
+                            <span style="color:#bbb;">—</span>
                         {% endif %}
                     </td>
                     {% for c in characters %}

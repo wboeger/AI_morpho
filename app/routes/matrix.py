@@ -130,6 +130,12 @@ def matrix_view(project_id):
     all_structure_types = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
     structure_types = ['mco'] if 'MCO' in project.name.upper() else all_structure_types
 
+    # Attach the per-species MCO reliability index (CRI) to each taxon row.
+    from app.routes.reliability import species_cri_map, _norm as _cri_norm
+    _cri = species_cri_map(project_id)
+    for row in matrix_data:
+        row['cri'] = _cri.get(_cri_norm(row['specimen'].species_name))
+
     return render_template('matrix/matrix_view.html',
                            project=project, characters=characters,
                            matrix_data=matrix_data,

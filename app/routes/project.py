@@ -253,12 +253,22 @@ def view_project(project_id):
     all_structure_types = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco']
     structure_types = ['mco'] if 'MCO' in project.name.upper() else all_structure_types
 
+    # Per-species MCO reliability index (CRI), keyed by specimen id for the table.
+    from app.routes.reliability import species_cri_map, _norm as _cri_norm
+    _cri = species_cri_map(project_id)
+    cri_by_specimen = {}
+    for sp in specimens:
+        info = _cri.get(_cri_norm(sp.species_name))
+        if info:
+            cri_by_specimen[sp.id] = info
+
     return render_template('project/view_project.html',
                            project=project, specimens=specimens,
                            members=members, stats=stats, dna_only=dna_only,
                            structure_types=structure_types,
                            shareable_users=shareable_users,
                            can_manage_members=can_manage_members,
+                           cri_by_specimen=cri_by_specimen,
                            project_owner_id=project.created_by)
 
 
