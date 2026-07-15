@@ -8,6 +8,7 @@ numpy>=1.24
 Pillow>=10.0
 gunicorn>=21.2
 biopython>=1.83   # Bio.SeqIO / Bio.Phylo — phylogeny fetch, concatenation, tree parsing
+anthropic>=0.40   # Claude API — AI Morphology Advisor
 
 # NOTE: torch / torchvision / opencv are only needed for offline U-Net landmark
 # training (see unet/), NOT by the web app. They are intentionally excluded from

@@ -151,7 +151,7 @@ def _call_claude(api_key: str, prompt: str) -> dict:
     import anthropic
     client = anthropic.Anthropic(api_key=api_key)
     message = client.messages.create(
-        model='claude-opus-4-6',
+        model='claude-opus-4-8',
         max_tokens=8096,
         messages=[{'role': 'user', 'content': prompt}]
     )
@@ -216,7 +216,7 @@ def _call_freeform(provider: str, api_key: str, prompt: str) -> str:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
         msg = client.messages.create(
-            model='claude-opus-4-6',
+            model='claude-opus-4-8',
             max_tokens=2048,
             messages=[{'role': 'user', 'content': prompt}]
         )
