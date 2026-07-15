@@ -228,6 +228,22 @@ Similarly, specimen data (images, landmark CSVs, boundary assignments) from anot
 
 ---
 
+## MCO Illustration Reliability Index
+
+The male copulatory organ (MCO) of Gyrodactylidae is small, weakly sclerotized (except for the spines and spinelets), and highly susceptible to orientation, flattening, and preservation artefacts. Because the MCO character scores depend almost entirely on published illustrations of variable quality, a formal, reproducible reliability index was computed to make the confidence of each species' MCO scoring explicit and to permit sensitivity analyses.
+
+Reliability was assessed by blind expert scoring. Each participating scientist, logged into the platform, was presented with the MCO illustration of each species with the species identity withheld, and scored it against a set of ordinal criteria. The criteria are fully user-configurable per project — they may be added, edited, reweighted, or removed at any time, and the index is recomputed accordingly — but the default scheme follows four criteria adapted from the protocol for gyrodactylid MCO illustrations: **source fidelity (S)** (original photomicrograph/DIC image = 2, line drawing traced from a specimen = 1, redrawn/schematic = 0), **orientation/aspect (O)** (clear en‑face aspect with visible symmetry axis = 2, oblique but interpretable = 1, lateral/folded/ambiguous = 0), **structural completeness (C)** (bulb, principal spine, and full spinelet crown all visible = 2, one region obscured = 1, everted/collapsed/damaged = 0), and **optical/rendering resolution (R)** (individual spinelets and their bases resolvable = 2, spinelets visible but bases uncertain = 1, spinelet zone blurred = 0). Because the most information‑rich but most error‑prone MCO characters (spinelet counts and arrangement) depend directly on orientation and resolution, criteria O and R were weighted 1.5 and S and C weighted 1.0.
+
+For each scoring, a composite reliability index normalised to the unit interval was computed as
+
+CRI = Σᵢ (wᵢ · scoreᵢ) / Σᵢ (wᵢ · maxᵢ),
+
+where *wᵢ*, *scoreᵢ*, and *maxᵢ* are the weight, assigned score, and maximum score of criterion *i*, taken over the criteria actually scored. The per‑species index is the mean CRI across all scientists who scored that species, and is interpreted in three confidence bands: **high** (CRI ≥ 0.80; suitable for diagnosis and phylogeny), **moderate** (0.50–0.79; usable, with orientation/resolution‑dependent characters flagged), and **low** (< 0.50; count and arrangement characters treated as uncertain). Inter‑observer agreement was quantified as the mean pairwise linearly‑weighted Cohen's κ computed over the ordinal confidence band of each shared species, and the per‑species dispersion (standard deviation of CRI across scientists) was retained as an additional flag. An automatic concordance check (K) flags any species whose raw MCO spinelet count and its binned count character resolve inconsistently, triggering re‑examination.
+
+The per‑species reliability index is stored as a species‑level attribute and displayed alongside the taxa on the Specimens page and in the character matrix, and is included in the CSV and JSON matrix exports (and as a per‑taxon comment block in the NEXUS export). This allows downstream analyses to be repeated on nested subsets of decreasing stringency (all species vs. CRI ≥ 0.5 vs. CRI ≥ 0.8) as a sensitivity test. Consistent with its purpose, the index is treated primarily as a transparency and reproducibility instrument rather than as an absolute measure of morphological accuracy.
+
+---
+
 ## Phylogenetic Analysis
 
 Molecular phylogenies were estimated from DNA sequence data downloaded from GenBank or supplied by the user. The pipeline supports a single marker (18S rRNA, ITS, COI, or a user-defined query), a concatenated 18S + ITS (ITS1–5.8S–ITS2) analysis, or a **multi-fragment** analysis over any combination of five markers (18S, ITS, 28S, COI, COII), and proceeds through the following automated steps, with mandatory checkpoints for expert review before any sequence is aligned and before any tree is treated as final.
