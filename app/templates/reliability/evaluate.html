@@ -14,6 +14,7 @@
   <button class="btn btn-primary btn-sm" onclick="showTab('evaluate')" id="tab-evaluate">Evaluate</button>
   <button class="btn btn-outline btn-sm" onclick="showTab('results')" id="tab-results">Results</button>
   <button class="btn btn-outline btn-sm" onclick="showTab('criteria')" id="tab-criteria">Criteria</button>
+  <button class="btn btn-outline btn-sm" onclick="printCriteria()" style="margin-left:auto;" title="Open a printable summary of the criteria used to determine the CRI">🖨 Print criteria</button>
 </div>
 
 <!-- ── Evaluate ─────────────────────────────────────────────────────────── -->
@@ -243,6 +244,56 @@ async function deleteCriterion(cid){
   if(!confirm('Delete this criterion? Existing ratings keep their scores; CRIs recompute.')) return;
   const {ok}=await jsend(`/api/project/${PID}/reliability/criteria/${cid}`,'DELETE',{});
   if(ok) loadCriteria();
+}
+
+// ── Print criteria ────────────────────────────────────────────────────────
+async function printCriteria() {
+  const d = await jget(`/api/project/${PID}/reliability/criteria`);
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const active = (d.criteria||[]).filter(c => c.active);
+  const wmax = active.reduce((a,c)=>a + c.weight*c.max_score, 0);
+  const rows = (d.criteria||[]).map(c => `
+    <tr${c.active?'':' style="color:#999;"'}>
+      <td>${esc(c.code)}</td>
+      <td>${esc(c.name)}${c.active?'':' <i>(inactive)</i>'}</td>
+      <td style="text-align:right;">${c.weight}</td>
+      <td style="text-align:right;">${c.max_score}</td>
+      <td style="white-space:pre-wrap;">${esc(c.rubric)}</td>
+    </tr>`).join('');
+  const when = new Date().toLocaleString();
+  const html = `<!doctype html><html><head><meta charset="utf-8">
+    <title>MCO Reliability Criteria — {{ project.name }}</title>
+    <style>
+      body{font:13px/1.5 Georgia,serif; color:#222; margin:2.5rem;}
+      h1{font-size:18px; margin:0 0 .2rem;}
+      .sub{color:#666; font-size:12px; margin-bottom:1rem;}
+      table{border-collapse:collapse; width:100%; font-size:12px; margin-top:.5rem;}
+      th,td{border:1px solid #bbb; padding:.35rem .5rem; vertical-align:top; text-align:left;}
+      th{background:#eee;}
+      .formula{background:#f6f6f6; border:1px solid #ddd; padding:.5rem .7rem; margin:.6rem 0; font-family:Menlo,monospace; font-size:12px;}
+      .bands{font-size:12px; margin:.4rem 0 1rem;}
+      @media print{ .noprint{display:none;} }
+    </style></head><body>
+    <h1>MCO Illustration Reliability — Scoring Criteria</h1>
+    <div class="sub">Project: {{ project.name }} · Generated ${esc(when)}</div>
+    <p>Each species' MCO illustration is scored blind against the criteria below.
+       The composite reliability index is the weighted, normalised mean of the
+       scores:</p>
+    <div class="formula">CRI = &Sigma;<sub>i</sub> (w<sub>i</sub> &middot; score<sub>i</sub>) / &Sigma;<sub>i</sub> (w<sub>i</sub> &middot; max<sub>i</sub>) &nbsp;&rarr;&nbsp; [0, 1]
+      <br>Active denominator &Sigma;(w&middot;max) = ${wmax}</div>
+    <div class="bands"><b>Confidence bands:</b> High &ge; 0.80 &nbsp;|&nbsp; Moderate 0.50–0.79 &nbsp;|&nbsp; Low &lt; 0.50</div>
+    <table>
+      <thead><tr><th>Code</th><th>Criterion</th><th>Weight</th><th>Max</th><th>Rubric (score levels)</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="noprint" style="margin-top:1rem;"><button onclick="window.print()">Print</button></p>
+    </body></html>`;
+  const w = window.open('', '_blank');
+  if (!w) { alert('Allow pop-ups to open the printable criteria.'); return; }
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => w.print(), 300);
 }
 
 loadQueue();
