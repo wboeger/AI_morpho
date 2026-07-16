@@ -147,6 +147,24 @@ def matrix_view(project_id):
                            structure_types=structure_types)
 
 
+@matrix_bp.route('/api/admin/enrich_host_data', methods=['POST'])
+@login_required
+def enrich_host_data():
+    """One-off trigger for scripts/enrich_host_data.py against the live DB
+    (production has no shell access to the data volume, so this runs it
+    in-process instead). Admin-only."""
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Admin access required'}), 403
+    from scripts.enrich_host_data import run
+    project_id = request.args.get('project_id', type=int)
+    dry_run = request.args.get('dry_run') == '1'
+    summary = run(project_id=project_id, dry_run=dry_run)
+    return jsonify({'status': 'ok', 'updated': summary['updated'],
+                    'skipped_no_accession': summary['skipped_no_accession'],
+                    'errors': summary['errors'],
+                    'changes': summary['changes']})
+
+
 @matrix_bp.route('/project/<int:project_id>/matrix/gallery/<int:char_id>')
 @login_required
 def gallery_view(project_id, char_id):

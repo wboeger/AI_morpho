@@ -42,6 +42,13 @@
                 title="Copy character states from another project where character codes and species names match">
             Import States
         </button>
+        {% if current_user.role == 'admin' %}
+        <button type="button" class="btn btn-sm btn-outline" onclick="runHostEnrichment()"
+                title="One-time: fill Host/Habitat/Family/Order/Locality from GenBank + GBIF for this project">
+            Enrich Host Data
+        </button>
+        <span id="enrichMsg" style="font-size:0.75rem; color:var(--gray-500);"></span>
+        {% endif %}
     </form>
 </div>
 
@@ -399,6 +406,25 @@ function uploadTree() {
             }
         })
         .catch(err => { msg.style.color = 'red'; msg.textContent = 'Upload failed: ' + err; });
+}
+
+function runHostEnrichment() {
+    const msg = document.getElementById('enrichMsg');
+    if (!confirm('Fill Host/Habitat/Family/Order/Locality for this project from GenBank + GBIF?\n\nOnly empty cells are filled; existing values are never overwritten. May take a few minutes.')) return;
+    msg.style.color = '';
+    msg.textContent = 'Running… (this can take a few minutes)';
+    fetch(`/api/admin/enrich_host_data?project_id=${projectId}`, {method: 'POST'})
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                msg.textContent = `Updated ${data.updated}, skipped ${data.skipped_no_accession} (no accession), ${data.errors} error(s). Reloading…`;
+                setTimeout(() => location.reload(), 1500);
+            } else {
+                msg.style.color = 'red';
+                msg.textContent = data.error || 'Failed.';
+            }
+        })
+        .catch(err => { msg.style.color = 'red'; msg.textContent = 'Failed: ' + err; });
 }
 
 const _embeddedNewick = {{ tree_newick | tojson }};

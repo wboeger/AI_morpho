@@ -128,75 +128,86 @@ def _tree_accession_for_specimen(specimen):
     return None
 
 
+def run(project_id=None, dry_run=False, email=DEFAULT_EMAIL, delay=0.4, log=print):
+    """Core enrichment loop. Must be called with a Flask app context already
+    active (the CLI entry point below provides one; a Flask route already has
+    one)."""
+    query = Specimen.query
+    if project_id:
+        query = query.filter_by(project_id=project_id)
+    specimens = query.all()
+
+    updated = skipped_no_accession = errors = 0
+    changes = []
+
+    for sp in specimens:
+        needs = not all([sp.host_species, sp.host_habitat, sp.host_family,
+                          sp.host_order, sp.geographic_area])
+        if not needs:
+            continue
+
+        seq = next((d for d in sp.dna_sequences if d.accession), None)
+        accession = seq.accession if seq else _tree_accession_for_specimen(sp)
+        if not accession:
+            skipped_no_accession += 1
+            continue
+
+        try:
+            quals = _genbank_source_quals(accession, email)
+            time.sleep(delay)
+        except Exception as exc:
+            log(f'  [genbank error] {sp.species_name} ({accession}): {exc}')
+            errors += 1
+            continue
+
+        host = quals.get('host')
+        geo = quals.get('geo')
+
+        gbif = {}
+        if host:
+            try:
+                gbif = _gbif_lookup(host)
+            except Exception as exc:
+                log(f'  [gbif error] {sp.species_name} host={host!r}: {exc}')
+
+        changed = []
+        if host and not sp.host_species:
+            sp.host_species = host
+            changed.append('host_species')
+        if geo and not sp.geographic_area:
+            sp.geographic_area = geo
+            changed.append('geographic_area')
+        if gbif.get('family') and not sp.host_family:
+            sp.host_family = gbif['family']
+            changed.append('host_family')
+        if gbif.get('order') and not sp.host_order:
+            sp.host_order = gbif['order']
+            changed.append('host_order')
+        if gbif.get('habitat') and not sp.host_habitat:
+            sp.host_habitat = gbif['habitat']
+            changed.append('host_habitat')
+
+        if changed:
+            updated += 1
+            changes.append((sp.species_name, changed))
+            log(f'  {sp.species_name}: {", ".join(changed)}')
+
+    if dry_run:
+        db.session.rollback()
+    else:
+        db.session.commit()
+    summary = {'updated': updated, 'skipped_no_accession': skipped_no_accession,
+               'errors': errors, 'changes': changes}
+    log(f'\n{"[dry-run] would update" if dry_run else "Updated"} {updated} specimen(s); '
+        f'{skipped_no_accession} without accession; {errors} error(s).')
+    return summary
+
+
 def enrich(project_id=None, dry_run=False, email=DEFAULT_EMAIL, delay=0.4):
+    """CLI entry point: creates its own app context, then runs the enrichment."""
     app = create_app()
     with app.app_context():
-        query = Specimen.query
-        if project_id:
-            query = query.filter_by(project_id=project_id)
-        specimens = query.all()
-
-        updated = skipped_no_accession = errors = 0
-
-        for sp in specimens:
-            needs = not all([sp.host_species, sp.host_habitat, sp.host_family,
-                              sp.host_order, sp.geographic_area])
-            if not needs:
-                continue
-
-            seq = next((d for d in sp.dna_sequences if d.accession), None)
-            accession = seq.accession if seq else _tree_accession_for_specimen(sp)
-            if not accession:
-                skipped_no_accession += 1
-                continue
-
-            try:
-                quals = _genbank_source_quals(accession, email)
-                time.sleep(delay)
-            except Exception as exc:
-                print(f'  [genbank error] {sp.species_name} ({accession}): {exc}')
-                errors += 1
-                continue
-
-            host = quals.get('host')
-            geo = quals.get('geo')
-
-            gbif = {}
-            if host:
-                try:
-                    gbif = _gbif_lookup(host)
-                except Exception as exc:
-                    print(f'  [gbif error] {sp.species_name} host={host!r}: {exc}')
-
-            changed = []
-            if host and not sp.host_species:
-                sp.host_species = host
-                changed.append('host_species')
-            if geo and not sp.geographic_area:
-                sp.geographic_area = geo
-                changed.append('geographic_area')
-            if gbif.get('family') and not sp.host_family:
-                sp.host_family = gbif['family']
-                changed.append('host_family')
-            if gbif.get('order') and not sp.host_order:
-                sp.host_order = gbif['order']
-                changed.append('host_order')
-            if gbif.get('habitat') and not sp.host_habitat:
-                sp.host_habitat = gbif['habitat']
-                changed.append('host_habitat')
-
-            if changed:
-                updated += 1
-                print(f'  {sp.species_name}: {", ".join(changed)}')
-
-        if dry_run:
-            print(f'\n[dry-run] would update {updated} specimen(s); '
-                  f'{skipped_no_accession} without accession; {errors} error(s).')
-            db.session.rollback()
-        else:
-            db.session.commit()
-            print(f'\nUpdated {updated} specimen(s); '
-                  f'{skipped_no_accession} without accession; {errors} error(s).')
+        return run(project_id=project_id, dry_run=dry_run, email=email, delay=delay)
 
 
 if __name__ == '__main__':
