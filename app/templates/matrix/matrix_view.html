@@ -130,9 +130,6 @@
                             <button class="btn btn-sm btn-danger" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
                                 onclick="deleteSpecies('{{ row.specimen.id }}', '{{ row.specimen.species_name | replace("'", "\\'") }}')"
                                 title="Delete">&#10005;</button>
-                            <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
-                                onclick="openHostEdit('{{ row.specimen.id }}')"
-                                title="Edit host &amp; distribution data">&#127757;</button>
                         </span>
                         {% if row.images %}
                         <span class="sp-thumbs" style="display:inline-flex; gap:3px; margin-left:0.45rem; vertical-align:middle;">
@@ -156,11 +153,16 @@
                             <span style="color:#bbb;">—</span>
                         {% endif %}
                     </td>
-                    <td style="white-space:nowrap;" id="host-species-{{ row.specimen.id }}">{{ row.specimen.host_species or '' }}</td>
-                    <td style="white-space:nowrap;" id="host-habitat-{{ row.specimen.id }}">{{ row.habitat or '' }}</td>
-                    <td style="white-space:nowrap;" id="host-family-{{ row.specimen.id }}">{{ row.specimen.host_family or '' }}</td>
-                    <td style="white-space:nowrap;" id="host-order-{{ row.specimen.id }}">{{ row.specimen.host_order or '' }}</td>
-                    <td style="white-space:nowrap;" id="host-locality-{{ row.specimen.id }}">{{ row.specimen.geographic_area or '' }}</td>
+                    <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
+                        onclick="openHostEdit('{{ row.specimen.id }}')" id="host-species-{{ row.specimen.id }}">{{ row.specimen.host_species or '—' }}</td>
+                    <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
+                        onclick="openHostEdit('{{ row.specimen.id }}')" id="host-habitat-{{ row.specimen.id }}">{{ row.habitat or '—' }}</td>
+                    <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
+                        onclick="openHostEdit('{{ row.specimen.id }}')" id="host-family-{{ row.specimen.id }}">{{ row.specimen.host_family or '—' }}</td>
+                    <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
+                        onclick="openHostEdit('{{ row.specimen.id }}')" id="host-order-{{ row.specimen.id }}">{{ row.specimen.host_order or '—' }}</td>
+                    <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
+                        onclick="openHostEdit('{{ row.specimen.id }}')" id="host-locality-{{ row.specimen.id }}">{{ row.specimen.geographic_area or '—' }}</td>
                     {% for c in characters %}
                     {% set val = row.cells[c.code] %}
                     <td class="matrix-cell
@@ -489,7 +491,10 @@ function pollHostEnrichment() {
 
 // ── Host & distribution manual edit ──────────────────────────────────────────
 function openHostEdit(specimenId) {
-    const txt = (id) => (document.getElementById(id)?.textContent || '').trim();
+    const txt = (id) => {
+        const v = (document.getElementById(id)?.textContent || '').trim();
+        return v === '—' ? '' : v;
+    };
     document.getElementById('hostSpecimenId').value    = specimenId;
     document.getElementById('hostSpeciesInput').value  = txt('host-species-' + specimenId);
     document.getElementById('hostFamilyInput').value   = txt('host-family-' + specimenId);
@@ -527,7 +532,7 @@ function saveHostEdit() {
     .then(r => r.json().then(d => ({ok: r.ok, d})))
     .then(({ok, d}) => {
         if (!ok || d.error) { msg.style.color = 'red'; msg.textContent = d.error || 'Save failed'; btn.disabled = false; return; }
-        const set = (cid, v) => { const el = document.getElementById(cid); if (el) el.textContent = v; };
+        const set = (cid, v) => { const el = document.getElementById(cid); if (el) el.textContent = v || '—'; };
         set('host-species-' + id,  d.host_species);
         set('host-habitat-' + id,  d.host_habitat);
         set('host-family-' + id,   d.host_family);
