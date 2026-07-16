@@ -64,6 +64,14 @@ class Specimen(db.Model):
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'))
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
+    # Host/locality metadata enriched from GenBank source qualifiers + GBIF
+    # (see scripts/enrich_host_data.py). Populated once, not live-fetched.
+    host_species = db.Column(db.String(200))       # 'host' qualifier from GenBank source feature
+    host_habitat = db.Column(db.String(100))        # e.g. 'Freshwater', 'Marine', 'Brackish' (GBIF)
+    host_family = db.Column(db.String(100))          # host's family (GBIF backbone)
+    host_order = db.Column(db.String(100))            # host's order (GBIF backbone)
+    geographic_area = db.Column(db.String(200))        # 'geo_loc_name'/'country' qualifier from GenBank
+
     creator = db.relationship('User')
     structures = db.relationship('Structure', backref='specimen', cascade='all, delete-orphan')
     dna_sequences = db.relationship('DNASequence', backref='specimen', cascade='all, delete-orphan')

@@ -548,6 +548,15 @@ def _migrate_specimens():
     with db.engine.connect() as conn:
         if 'synonyms' not in existing:
             conn.execute(text("ALTER TABLE specimens ADD COLUMN synonyms TEXT DEFAULT '[]'"))
+        for col, typ in [
+            ('host_species',     'VARCHAR(200)'),
+            ('host_habitat',     'VARCHAR(100)'),
+            ('host_family',      'VARCHAR(100)'),
+            ('host_order',       'VARCHAR(100)'),
+            ('geographic_area',  'VARCHAR(200)'),
+        ]:
+            if col not in existing:
+                conn.execute(text(f'ALTER TABLE specimens ADD COLUMN {col} {typ}'))
         conn.commit()
 
 

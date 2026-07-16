@@ -98,6 +98,11 @@
                             onclick="openAddSpecies()" title="Add new species row">+ Add</button>
                     </th>
                     <th title="Blind MCO illustration reliability index (mean CRI across scientists)">CRI</th>
+                    <th title="Host species (GenBank 'host' qualifier / registered host)">Host</th>
+                    <th title="Host habitat (GBIF/FishBase)">Habitat</th>
+                    <th title="Host family (GBIF/FishBase)">Host Family</th>
+                    <th title="Host order (GBIF/FishBase)">Host Order</th>
+                    <th title="Geographic area reported in GenBank">Locality</th>
                     {% for c in characters %}
                     <th title="{{ c.name }} ({{ c.structure_type }})">
                         <a href="{{ url_for('matrix.gallery_view', project_id=project.id, char_id=c.id) }}"
@@ -141,6 +146,11 @@
                             <span style="color:#bbb;">—</span>
                         {% endif %}
                     </td>
+                    <td style="white-space:nowrap;">{{ row.specimen.host_species or '' }}</td>
+                    <td style="white-space:nowrap;">{{ row.specimen.host_habitat or '' }}</td>
+                    <td style="white-space:nowrap;">{{ row.specimen.host_family or '' }}</td>
+                    <td style="white-space:nowrap;">{{ row.specimen.host_order or '' }}</td>
+                    <td style="white-space:nowrap;">{{ row.specimen.geographic_area or '' }}</td>
                     {% for c in characters %}
                     {% set val = row.cells[c.code] %}
                     <td class="matrix-cell
