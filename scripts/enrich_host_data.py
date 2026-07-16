@@ -75,17 +75,19 @@ def _gbif_lookup(host_name: str) -> dict:
 
     prof_resp = requests.get(GBIF_PROFILES.format(key=match['usageKey']), timeout=15)
     if prof_resp.ok:
-        habitats = set()
+        # Canonical terms, each used at most once, in a fixed order.
+        order = ['Freshwater', 'Marine', 'Brackish']
+        found = set()
         for p in prof_resp.json().get('results', []):
-            if p.get('habitat'):
-                habitats.add(p['habitat'].strip().title())
-            else:
-                for flag, label in (('marine', 'Marine'), ('freshwater', 'Freshwater'),
-                                     ('terrestrial', 'Terrestrial')):
-                    if p.get(flag):
-                        habitats.add(label)
-        if habitats:
-            out['habitat'] = ' / '.join(sorted(habitats))
+            raw = p.get('habitat') or ''
+            for term in order:
+                if term.lower() in raw.lower():
+                    found.add(term)
+            for flag, term in (('marine', 'Marine'), ('freshwater', 'Freshwater')):
+                if p.get(flag):
+                    found.add(term)
+        if found:
+            out['habitat'] = ' / '.join(t for t in order if t in found)
     return out
 
 

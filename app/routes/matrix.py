@@ -11,6 +11,23 @@ from app.models import (
 matrix_bp = Blueprint('matrix', __name__)
 
 
+def _normalize_habitat(raw):
+    """Collapse a raw GBIF habitat string into the canonical terms
+    Freshwater / Marine / Brackish, each used at most once and in a fixed
+    order. Handles compound / repeated source values like
+    'Freshwater / Marine, Freshwater' -> 'Freshwater / Marine'."""
+    if not raw:
+        return ''
+    order = ['Freshwater', 'Marine', 'Brackish']
+    found = set()
+    for token in re.split(r'[\/,;&+|\-]| and ', raw):
+        t = token.strip().lower()
+        for term in order:
+            if term.lower() in t:
+                found.add(term)
+    return ' / '.join(term for term in order if term in found)
+
+
 @matrix_bp.route('/project/<int:project_id>/matrix')
 @login_required
 def matrix_view(project_id):
@@ -47,7 +64,8 @@ def matrix_view(project_id):
     matrix_data = []
     for specimen in specimens:
         structures = Structure.query.filter_by(specimen_id=specimen.id).all()
-        row = {'specimen': specimen, 'cells': {}}
+        row = {'specimen': specimen, 'cells': {},
+               'habitat': _normalize_habitat(specimen.host_habitat)}
 
         # Distinct images available for this specimen (shown next to the name).
         _seen_img = set()
