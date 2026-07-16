@@ -410,21 +410,41 @@ function uploadTree() {
 
 function runHostEnrichment() {
     const msg = document.getElementById('enrichMsg');
-    if (!confirm('Fill Host/Habitat/Family/Order/Locality for this project from GenBank + GBIF?\n\nOnly empty cells are filled; existing values are never overwritten. May take a few minutes.')) return;
+    if (!confirm('Fill Host/Habitat/Family/Order/Locality for this project from GenBank + GBIF?\n\nOnly empty cells are filled; existing values are never overwritten. Runs in the background and can take several minutes — keep this tab open.')) return;
     msg.style.color = '';
-    msg.textContent = 'Running… (this can take a few minutes)';
-    fetch(`/api/admin/enrich_host_data?project_id=${projectId}`, {method: 'POST'})
+    msg.textContent = 'Starting…';
+    fetch(`/api/admin/enrich_host_data/start?project_id=${projectId}`, {method: 'POST'})
         .then(r => r.json())
         .then(data => {
-            if (data.status === 'ok') {
-                msg.textContent = `Updated ${data.updated}, skipped ${data.skipped_no_accession} (no accession), ${data.errors} error(s). Reloading…`;
-                setTimeout(() => location.reload(), 1500);
+            if (data.status === 'started') {
+                pollHostEnrichment();
             } else {
                 msg.style.color = 'red';
-                msg.textContent = data.error || 'Failed.';
+                msg.textContent = data.error || 'Failed to start.';
             }
         })
-        .catch(err => { msg.style.color = 'red'; msg.textContent = 'Failed: ' + err; });
+        .catch(err => { msg.style.color = 'red'; msg.textContent = 'Failed to start: ' + err; });
+}
+
+function pollHostEnrichment() {
+    const msg = document.getElementById('enrichMsg');
+    fetch(`/api/admin/enrich_host_data/status?project_id=${projectId}`)
+        .then(r => r.json())
+        .then(data => {
+            if (data.status === 'running') {
+                msg.textContent = `Running… ${data.done}/${data.total} checked, ${data.updated} updated so far.`;
+                setTimeout(pollHostEnrichment, 3000);
+            } else if (data.status === 'done') {
+                msg.textContent = `Done. Updated ${data.updated}, skipped ${data.skipped_no_accession} (no accession), ${data.errors} error(s). Reloading…`;
+                setTimeout(() => location.reload(), 1500);
+            } else if (data.status === 'error') {
+                msg.style.color = 'red';
+                msg.textContent = 'Failed: ' + data.message;
+            } else {
+                msg.textContent = 'No run in progress.';
+            }
+        })
+        .catch(err => { msg.style.color = 'red'; msg.textContent = 'Status check failed: ' + err; setTimeout(pollHostEnrichment, 5000); });
 }
 
 const _embeddedNewick = {{ tree_newick | tojson }};

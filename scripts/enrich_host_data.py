@@ -128,10 +128,17 @@ def _tree_accession_for_specimen(specimen):
     return None
 
 
-def run(project_id=None, dry_run=False, email=DEFAULT_EMAIL, delay=0.4, log=print):
+def run(project_id=None, dry_run=False, email=DEFAULT_EMAIL, delay=0.4, log=print,
+        progress_cb=None):
     """Core enrichment loop. Must be called with a Flask app context already
     active (the CLI entry point below provides one; a Flask route already has
-    one)."""
+    one).
+
+    Commits after every specimen (rather than once at the end) — this loop
+    makes ~1 NCBI + ~2 GBIF calls per specimen and can run for minutes; a
+    single multi-minute transaction starves other requests of SQLite's one
+    writer slot ('database is locked') and risks losing all progress if the
+    request is killed by a proxy/worker timeout partway through."""
     query = Specimen.query
     if project_id:
         query = query.filter_by(project_id=project_id)
@@ -140,7 +147,9 @@ def run(project_id=None, dry_run=False, email=DEFAULT_EMAIL, delay=0.4, log=prin
     updated = skipped_no_accession = errors = 0
     changes = []
 
-    for sp in specimens:
+    for i, sp in enumerate(specimens):
+        if progress_cb:
+            progress_cb(i, len(specimens), updated, errors)
         needs = not all([sp.host_species, sp.host_habitat, sp.host_family,
                           sp.host_order, sp.geographic_area])
         if not needs:
@@ -191,11 +200,13 @@ def run(project_id=None, dry_run=False, email=DEFAULT_EMAIL, delay=0.4, log=prin
             updated += 1
             changes.append((sp.species_name, changed))
             log(f'  {sp.species_name}: {", ".join(changed)}')
+            if dry_run:
+                db.session.rollback()
+            else:
+                db.session.commit()
 
-    if dry_run:
-        db.session.rollback()
-    else:
-        db.session.commit()
+    if progress_cb:
+        progress_cb(len(specimens), len(specimens), updated, errors)
     summary = {'updated': updated, 'skipped_no_accession': skipped_no_accession,
                'errors': errors, 'changes': changes}
     log(f'\n{"[dry-run] would update" if dry_run else "Updated"} {updated} specimen(s); '

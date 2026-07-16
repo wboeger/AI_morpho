@@ -147,22 +147,64 @@ def matrix_view(project_id):
                            structure_types=structure_types)
 
 
-@matrix_bp.route('/api/admin/enrich_host_data', methods=['POST'])
+_enrich_progress = {}  # project_id -> {status, done, total, updated, errors, message}
+
+
+def _enrich_thread(app, project_id):
+    with app.app_context():
+        from scripts.enrich_host_data import run
+
+        def on_progress(done, total, updated, errors):
+            _enrich_progress[project_id] = {
+                'status': 'running', 'done': done, 'total': total,
+                'updated': updated, 'errors': errors,
+            }
+
+        try:
+            summary = run(project_id=project_id, progress_cb=on_progress)
+            _enrich_progress[project_id] = {
+                'status': 'done', 'done': summary['updated'] + summary['skipped_no_accession'],
+                'total': summary['updated'] + summary['skipped_no_accession'] + summary['errors'],
+                'updated': summary['updated'],
+                'skipped_no_accession': summary['skipped_no_accession'],
+                'errors': summary['errors'],
+            }
+        except Exception as exc:
+            _enrich_progress[project_id] = {'status': 'error', 'message': str(exc)}
+
+
+@matrix_bp.route('/api/admin/enrich_host_data/start', methods=['POST'])
 @login_required
-def enrich_host_data():
-    """One-off trigger for scripts/enrich_host_data.py against the live DB
-    (production has no shell access to the data volume, so this runs it
-    in-process instead). Admin-only."""
+def enrich_host_data_start():
+    """Kick off scripts/enrich_host_data.py in a background thread (production
+    has no shell access to the data volume, so this runs it in-process
+    instead). Runs for minutes — too long for one HTTP request/gunicorn
+    timeout, so the client polls /status. Admin-only."""
     if current_user.role != 'admin':
         return jsonify({'error': 'Admin access required'}), 403
-    from scripts.enrich_host_data import run
     project_id = request.args.get('project_id', type=int)
-    dry_run = request.args.get('dry_run') == '1'
-    summary = run(project_id=project_id, dry_run=dry_run)
-    return jsonify({'status': 'ok', 'updated': summary['updated'],
-                    'skipped_no_accession': summary['skipped_no_accession'],
-                    'errors': summary['errors'],
-                    'changes': summary['changes']})
+    if not project_id:
+        return jsonify({'error': 'project_id required'}), 400
+    if _enrich_progress.get(project_id, {}).get('status') == 'running':
+        return jsonify({'error': 'Already running for this project'}), 409
+
+    import threading
+    from flask import current_app
+    _enrich_progress[project_id] = {'status': 'running', 'done': 0, 'total': 0,
+                                     'updated': 0, 'errors': 0}
+    threading.Thread(target=_enrich_thread,
+                      args=(current_app._get_current_object(), project_id),
+                      daemon=True).start()
+    return jsonify({'status': 'started'})
+
+
+@matrix_bp.route('/api/admin/enrich_host_data/status', methods=['GET'])
+@login_required
+def enrich_host_data_status():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Admin access required'}), 403
+    project_id = request.args.get('project_id', type=int)
+    return jsonify(_enrich_progress.get(project_id, {'status': 'idle'}))
 
 
 @matrix_bp.route('/project/<int:project_id>/matrix/gallery/<int:char_id>')
