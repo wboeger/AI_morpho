@@ -752,10 +752,16 @@ function renderTree(ch) {
                 cursor: 'pointer'
             });
             const _sp = node.name || '';
-            if (_sp) {
+            const _virtual = String(ch.id).startsWith('v_');
+            if (_sp && !_virtual) {
                 lbl.addEventListener('click', () => openOptCell(ch.id, _sp));
                 const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
                 t.textContent = 'Click to view image / change state';
+                lbl.appendChild(t);
+            } else if (_sp && _virtual) {
+                lbl.style.cursor = 'default';
+                const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+                t.textContent = 'Edit host/distribution data in the Matrix page';
                 lbl.appendChild(t);
             }
         }
@@ -774,7 +780,8 @@ function renderCharList() {
     const typeOrder  = ['hook', 'anchor', 'superficial_bar', 'deep_bar', 'mco'];
     const typeLabels = {
         hook: 'Hook', anchor: 'Anchor',
-        superficial_bar: 'Superficial Bar', deep_bar: 'Deep Bar', mco: 'MCO'
+        superficial_bar: 'Superficial Bar', deep_bar: 'Deep Bar', mco: 'MCO',
+        ecology: 'Host & Distribution'
     };
 
     const groups = {};

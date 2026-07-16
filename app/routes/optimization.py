@@ -11,6 +11,79 @@ from app.models import (Project, Specimen, Structure,
 optimization_bp = Blueprint('optimization', __name__)
 
 
+# ── Specimen-level (ecological) virtual characters ───────────────────────────
+# Host / distribution data live as free-text fields on Specimen, not as
+# Structure-based CharacterValues. These descriptors expose them to the
+# optimization pipeline as discrete, Fitch-optimizable characters. Their ids
+# are strings prefixed "v_" so they never collide with real character ids.
+def _virtual_char_descriptors():
+    from app.routes.matrix import _normalize_habitat
+    return [
+        {'id': 'v_habitat',      'code': 'ECO1',
+         'name': 'Host habitat',           'get': lambda sp: _normalize_habitat(sp.host_habitat)},
+        {'id': 'v_distribution', 'code': 'ECO2',
+         'name': 'Distribution (locality)', 'get': lambda sp: (sp.geographic_area or '').strip()},
+        {'id': 'v_host_family',  'code': 'ECO3',
+         'name': 'Host family',            'get': lambda sp: (sp.host_family or '').strip()},
+        {'id': 'v_host_order',   'code': 'ECO4',
+         'name': 'Host order',             'get': lambda sp: (sp.host_order or '').strip()},
+    ]
+
+
+def _virtual_char_result(desc, specimens, species_to_sp_ids, sp_by_id,
+                         alias_map, tree_root):
+    """Build one optimization result dict for a specimen-level virtual
+    character, or None if no specimen carries a value for it."""
+    getval = desc['get']
+
+    # Distinct non-empty raw values -> stable state codes "0","1",...
+    distinct = []
+    seen = set()
+    for sp in specimens:
+        v = getval(sp)
+        if v and v not in seen:
+            seen.add(v)
+            distinct.append(v)
+    if not distinct:
+        return None
+    distinct.sort()
+    value_to_code = {v: str(i) for i, v in enumerate(distinct)}
+
+    # tip_states: normalized species name -> set of state codes
+    tip_states = {}
+    for norm_sp, sp_ids in species_to_sp_ids.items():
+        observed = set()
+        for sp_id in sp_ids:
+            sp = sp_by_id.get(sp_id)
+            v = getval(sp) if sp else ''
+            if v:
+                observed.add(value_to_code[v])
+        if observed:
+            tip_states[norm_sp] = observed
+
+    if not tip_states:
+        return None
+
+    # Propagate aliases so tree labels resolve to tip_states
+    for lbl_norm, sp_norm in alias_map.items():
+        if sp_norm in tip_states and lbl_norm not in tip_states:
+            tip_states[lbl_norm] = tip_states[sp_norm]
+
+    annotated, pscore = _fitch_parsimony(tree_root, tip_states)
+    signal = _compute_signal(tree_root, tip_states, pscore)
+
+    return {
+        'id':              desc['id'],
+        'code':            desc['code'],
+        'name':            desc['name'],
+        'structure_type':  'ecology',
+        'parsimony_score': pscore,
+        'signal':          signal,
+        'states':          [{'code': c, 'name': v} for v, c in value_to_code.items()],
+        'tree':            annotated,
+    }
+
+
 def _norm_name(s):
     s = (s or '').strip().strip("'\"")
     if '!' in s or '=' in s:
@@ -293,11 +366,13 @@ def run_optimization(project_id):
     # Which characters to optimize
     body = request.get_json(silent=True) or {}
     char_ids = body.get('character_ids') or []
+    virtual_ids = [str(cid) for cid in char_ids if str(cid).startswith('v_')]
+    db_char_ids = [cid for cid in char_ids if not str(cid).startswith('v_')]
     if char_ids:
         chars = (CharacterDefinition.query
-                 .filter(CharacterDefinition.id.in_(char_ids),
+                 .filter(CharacterDefinition.id.in_(db_char_ids),
                          CharacterDefinition.project_id == project_id)
-                 .all())
+                 .all()) if db_char_ids else []
     else:
         chars = (CharacterDefinition.query
                  .filter_by(project_id=project_id, active=True)
@@ -351,6 +426,18 @@ def run_optimization(project_id):
             ],
             'tree': annotated,
         })
+
+    # Specimen-level ecological characters (host habitat, distribution, host
+    # family/order). Included by default; when an explicit selection was sent,
+    # only those whose id was requested.
+    sp_by_id = {sp.id: sp for sp in specimens}
+    for desc in _virtual_char_descriptors():
+        if char_ids and desc['id'] not in virtual_ids:
+            continue
+        vres = _virtual_char_result(desc, specimens, species_to_sp_ids,
+                                    sp_by_id, alias_map, tree_root)
+        if vres:
+            results.append(vres)
 
     return jsonify({'characters': results})
 

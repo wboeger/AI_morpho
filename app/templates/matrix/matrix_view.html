@@ -130,6 +130,9 @@
                             <button class="btn btn-sm btn-danger" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
                                 onclick="deleteSpecies('{{ row.specimen.id }}', '{{ row.specimen.species_name | replace("'", "\\'") }}')"
                                 title="Delete">&#10005;</button>
+                            <button class="btn btn-sm btn-outline" style="font-size:0.65rem; padding:0.05rem 0.3rem;"
+                                onclick="openHostEdit('{{ row.specimen.id }}')"
+                                title="Edit host &amp; distribution data">&#127757;</button>
                         </span>
                         {% if row.images %}
                         <span class="sp-thumbs" style="display:inline-flex; gap:3px; margin-left:0.45rem; vertical-align:middle;">
@@ -153,11 +156,11 @@
                             <span style="color:#bbb;">—</span>
                         {% endif %}
                     </td>
-                    <td style="white-space:nowrap;">{{ row.specimen.host_species or '' }}</td>
-                    <td style="white-space:nowrap;">{{ row.habitat or '' }}</td>
-                    <td style="white-space:nowrap;">{{ row.specimen.host_family or '' }}</td>
-                    <td style="white-space:nowrap;">{{ row.specimen.host_order or '' }}</td>
-                    <td style="white-space:nowrap;">{{ row.specimen.geographic_area or '' }}</td>
+                    <td style="white-space:nowrap;" id="host-species-{{ row.specimen.id }}">{{ row.specimen.host_species or '' }}</td>
+                    <td style="white-space:nowrap;" id="host-habitat-{{ row.specimen.id }}">{{ row.habitat or '' }}</td>
+                    <td style="white-space:nowrap;" id="host-family-{{ row.specimen.id }}">{{ row.specimen.host_family or '' }}</td>
+                    <td style="white-space:nowrap;" id="host-order-{{ row.specimen.id }}">{{ row.specimen.host_order or '' }}</td>
+                    <td style="white-space:nowrap;" id="host-locality-{{ row.specimen.id }}">{{ row.specimen.geographic_area or '' }}</td>
                     {% for c in characters %}
                     {% set val = row.cells[c.code] %}
                     <td class="matrix-cell
@@ -202,6 +205,43 @@
         <div class="modal-actions">
             <button class="btn btn-outline" onclick="closeSpModal()">Cancel</button>
             <button class="btn btn-primary" id="spModalSave" onclick="saveSpModal()">Save</button>
+        </div>
+    </div>
+</div>
+
+<!-- Host & distribution edit modal -->
+<div class="modal-overlay" id="hostModal">
+    <div class="modal" style="max-width:460px;">
+        <h3>Edit Host &amp; Distribution</h3>
+        <input type="hidden" id="hostSpecimenId">
+        <div class="form-group">
+            <label>Host species</label>
+            <input type="text" id="hostSpeciesInput" style="font-style:italic;" placeholder="Genus species">
+        </div>
+        <div class="form-group">
+            <label>Habitat</label>
+            <div style="display:flex; gap:1rem; flex-wrap:wrap; font-size:0.9rem;">
+                <label style="font-weight:normal;"><input type="checkbox" class="hostHab" value="Freshwater"> Freshwater</label>
+                <label style="font-weight:normal;"><input type="checkbox" class="hostHab" value="Marine"> Marine</label>
+                <label style="font-weight:normal;"><input type="checkbox" class="hostHab" value="Brackish"> Brackish</label>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Host family</label>
+            <input type="text" id="hostFamilyInput" placeholder="e.g. Cyprinidae">
+        </div>
+        <div class="form-group">
+            <label>Host order</label>
+            <input type="text" id="hostOrderInput" placeholder="e.g. Cypriniformes">
+        </div>
+        <div class="form-group">
+            <label>Locality / distribution</label>
+            <input type="text" id="hostLocalityInput" placeholder="e.g. Brazil">
+        </div>
+        <div id="hostModalMsg" style="font-size:0.83rem; margin-bottom:0.5rem;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeHostEdit()">Cancel</button>
+            <button class="btn btn-primary" id="hostModalSave" onclick="saveHostEdit()">Save</button>
         </div>
     </div>
 </div>
@@ -445,6 +485,57 @@ function pollHostEnrichment() {
             }
         })
         .catch(err => { msg.style.color = 'red'; msg.textContent = 'Status check failed: ' + err; setTimeout(pollHostEnrichment, 5000); });
+}
+
+// ── Host & distribution manual edit ──────────────────────────────────────────
+function openHostEdit(specimenId) {
+    const txt = (id) => (document.getElementById(id)?.textContent || '').trim();
+    document.getElementById('hostSpecimenId').value    = specimenId;
+    document.getElementById('hostSpeciesInput').value  = txt('host-species-' + specimenId);
+    document.getElementById('hostFamilyInput').value   = txt('host-family-' + specimenId);
+    document.getElementById('hostOrderInput').value    = txt('host-order-' + specimenId);
+    document.getElementById('hostLocalityInput').value = txt('host-locality-' + specimenId);
+    const hab = txt('host-habitat-' + specimenId).toLowerCase();
+    document.querySelectorAll('.hostHab').forEach(cb => {
+        cb.checked = hab.includes(cb.value.toLowerCase());
+    });
+    document.getElementById('hostModalMsg').textContent = '';
+    document.getElementById('hostModal').classList.add('active');
+}
+
+function closeHostEdit() {
+    document.getElementById('hostModal').classList.remove('active');
+}
+
+function saveHostEdit() {
+    const id  = document.getElementById('hostSpecimenId').value;
+    const msg = document.getElementById('hostModalMsg');
+    const btn = document.getElementById('hostModalSave');
+    const habitat = Array.from(document.querySelectorAll('.hostHab'))
+        .filter(cb => cb.checked).map(cb => cb.value).join(' / ');
+    msg.style.color = ''; msg.textContent = 'Saving…'; btn.disabled = true;
+    fetch(`/api/project/${projectId}/matrix/specimen/${id}/host_edit`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            host_species:    document.getElementById('hostSpeciesInput').value,
+            host_habitat:    habitat,
+            host_family:     document.getElementById('hostFamilyInput').value,
+            host_order:      document.getElementById('hostOrderInput').value,
+            geographic_area: document.getElementById('hostLocalityInput').value,
+        })
+    })
+    .then(r => r.json().then(d => ({ok: r.ok, d})))
+    .then(({ok, d}) => {
+        if (!ok || d.error) { msg.style.color = 'red'; msg.textContent = d.error || 'Save failed'; btn.disabled = false; return; }
+        const set = (cid, v) => { const el = document.getElementById(cid); if (el) el.textContent = v; };
+        set('host-species-' + id,  d.host_species);
+        set('host-habitat-' + id,  d.host_habitat);
+        set('host-family-' + id,   d.host_family);
+        set('host-order-' + id,    d.host_order);
+        set('host-locality-' + id, d.geographic_area);
+        closeHostEdit(); btn.disabled = false;
+    })
+    .catch(err => { msg.style.color = 'red'; msg.textContent = 'Network error: ' + err; btn.disabled = false; });
 }
 
 const _embeddedNewick = {{ tree_newick | tojson }};
