@@ -65,7 +65,8 @@ def matrix_view(project_id):
     for specimen in specimens:
         structures = Structure.query.filter_by(specimen_id=specimen.id).all()
         row = {'specimen': specimen, 'cells': {},
-               'habitat': _normalize_habitat(specimen.host_habitat)}
+               'habitat': _normalize_habitat(specimen.host_habitat),
+               'parasite_habitat': _normalize_habitat(specimen.parasite_habitat)}
 
         # Distinct images available for this specimen (shown next to the name).
         _seen_img = set()
@@ -1324,18 +1325,20 @@ def edit_host_data(project_id, specimen_id):
     sp = Specimen.query.filter_by(id=specimen_id, project_id=project_id).first_or_404()
     data = request.get_json() or {}
 
-    sp.host_species    = (data.get('host_species') or '').strip() or None
-    sp.host_habitat    = _normalize_habitat(data.get('host_habitat') or '') or None
-    sp.host_family     = (data.get('host_family') or '').strip() or None
-    sp.host_order      = (data.get('host_order') or '').strip() or None
-    sp.geographic_area = (data.get('geographic_area') or '').strip() or None
+    sp.host_species      = (data.get('host_species') or '').strip() or None
+    sp.host_habitat      = _normalize_habitat(data.get('host_habitat') or '') or None
+    sp.host_family       = (data.get('host_family') or '').strip() or None
+    sp.host_order        = (data.get('host_order') or '').strip() or None
+    sp.geographic_area   = (data.get('geographic_area') or '').strip() or None
+    sp.parasite_habitat  = _normalize_habitat(data.get('parasite_habitat') or '') or None
     db.session.commit()
 
     return jsonify({
-        'status':          'ok',
-        'host_species':    sp.host_species or '',
-        'host_habitat':    sp.host_habitat or '',
-        'host_family':     sp.host_family or '',
-        'host_order':      sp.host_order or '',
-        'geographic_area': sp.geographic_area or '',
+        'status':            'ok',
+        'host_species':      sp.host_species or '',
+        'host_habitat':      sp.host_habitat or '',
+        'host_family':       sp.host_family or '',
+        'host_order':        sp.host_order or '',
+        'geographic_area':   sp.geographic_area or '',
+        'parasite_habitat':  sp.parasite_habitat or '',
     })

@@ -71,6 +71,7 @@ class Specimen(db.Model):
     host_family = db.Column(db.String(100))          # host's family (GBIF backbone)
     host_order = db.Column(db.String(100))            # host's order (GBIF backbone)
     geographic_area = db.Column(db.String(200))        # 'geo_loc_name'/'country' qualifier from GenBank
+    parasite_habitat = db.Column(db.String(100))       # water type where the parasite itself was collected (manual)
 
     creator = db.relationship('User')
     structures = db.relationship('Structure', backref='specimen', cascade='all, delete-orphan')

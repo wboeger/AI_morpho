@@ -27,6 +27,8 @@ def _virtual_char_descriptors():
          'name': 'Host family',            'get': lambda sp: (sp.host_family or '').strip()},
         {'id': 'v_host_order',   'code': 'ECO4',
          'name': 'Host order',             'get': lambda sp: (sp.host_order or '').strip()},
+        {'id': 'v_parasite_habitat', 'code': 'ECO5',
+         'name': 'Parasite habitat',       'get': lambda sp: _normalize_habitat(sp.parasite_habitat)},
     ]
 
 

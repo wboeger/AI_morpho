@@ -110,6 +110,7 @@
                     <th title="Host family (GBIF/FishBase)">Host Family</th>
                     <th title="Host order (GBIF/FishBase)">Host Order</th>
                     <th title="Geographic area reported in GenBank">Locality</th>
+                    <th title="Water type where the parasite itself was collected (manual)">Parasite Habitat</th>
                     {% for c in characters %}
                     <th title="{{ c.name }} ({{ c.structure_type }})">
                         <a href="{{ url_for('matrix.gallery_view', project_id=project.id, char_id=c.id) }}"
@@ -163,6 +164,8 @@
                         onclick="openHostEdit('{{ row.specimen.id }}')" id="host-order-{{ row.specimen.id }}">{{ row.specimen.host_order or '—' }}</td>
                     <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
                         onclick="openHostEdit('{{ row.specimen.id }}')" id="host-locality-{{ row.specimen.id }}">{{ row.specimen.geographic_area or '—' }}</td>
+                    <td class="host-cell" style="white-space:nowrap; cursor:pointer;" title="Click to edit host &amp; distribution"
+                        onclick="openHostEdit('{{ row.specimen.id }}')" id="host-parasite-habitat-{{ row.specimen.id }}">{{ row.parasite_habitat or '—' }}</td>
                     {% for c in characters %}
                     {% set val = row.cells[c.code] %}
                     <td class="matrix-cell
@@ -239,6 +242,14 @@
         <div class="form-group">
             <label>Locality / distribution</label>
             <input type="text" id="hostLocalityInput" placeholder="e.g. Brazil">
+        </div>
+        <div class="form-group">
+            <label>Parasite habitat</label>
+            <div style="display:flex; gap:1rem; flex-wrap:wrap; font-size:0.9rem;">
+                <label style="font-weight:normal;"><input type="checkbox" class="parHab" value="Freshwater"> Freshwater</label>
+                <label style="font-weight:normal;"><input type="checkbox" class="parHab" value="Marine"> Marine</label>
+                <label style="font-weight:normal;"><input type="checkbox" class="parHab" value="Brackish"> Brackish</label>
+            </div>
         </div>
         <div id="hostModalMsg" style="font-size:0.83rem; margin-bottom:0.5rem;"></div>
         <div class="modal-actions">
@@ -504,6 +515,10 @@ function openHostEdit(specimenId) {
     document.querySelectorAll('.hostHab').forEach(cb => {
         cb.checked = hab.includes(cb.value.toLowerCase());
     });
+    const parHab = txt('host-parasite-habitat-' + specimenId).toLowerCase();
+    document.querySelectorAll('.parHab').forEach(cb => {
+        cb.checked = parHab.includes(cb.value.toLowerCase());
+    });
     document.getElementById('hostModalMsg').textContent = '';
     document.getElementById('hostModal').classList.add('active');
 }
@@ -518,15 +533,18 @@ function saveHostEdit() {
     const btn = document.getElementById('hostModalSave');
     const habitat = Array.from(document.querySelectorAll('.hostHab'))
         .filter(cb => cb.checked).map(cb => cb.value).join(' / ');
+    const parasiteHabitat = Array.from(document.querySelectorAll('.parHab'))
+        .filter(cb => cb.checked).map(cb => cb.value).join(' / ');
     msg.style.color = ''; msg.textContent = 'Saving…'; btn.disabled = true;
     fetch(`/api/project/${projectId}/matrix/specimen/${id}/host_edit`, {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({
-            host_species:    document.getElementById('hostSpeciesInput').value,
-            host_habitat:    habitat,
-            host_family:     document.getElementById('hostFamilyInput').value,
-            host_order:      document.getElementById('hostOrderInput').value,
-            geographic_area: document.getElementById('hostLocalityInput').value,
+            host_species:      document.getElementById('hostSpeciesInput').value,
+            host_habitat:      habitat,
+            host_family:       document.getElementById('hostFamilyInput').value,
+            host_order:        document.getElementById('hostOrderInput').value,
+            geographic_area:   document.getElementById('hostLocalityInput').value,
+            parasite_habitat:  parasiteHabitat,
         })
     })
     .then(r => r.json().then(d => ({ok: r.ok, d})))
@@ -538,6 +556,7 @@ function saveHostEdit() {
         set('host-family-' + id,   d.host_family);
         set('host-order-' + id,    d.host_order);
         set('host-locality-' + id, d.geographic_area);
+        set('host-parasite-habitat-' + id, d.parasite_habitat);
         closeHostEdit(); btn.disabled = false;
     })
     .catch(err => { msg.style.color = 'red'; msg.textContent = 'Network error: ' + err; btn.disabled = false; });

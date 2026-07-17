@@ -554,6 +554,7 @@ def _migrate_specimens():
             ('host_family',      'VARCHAR(100)'),
             ('host_order',       'VARCHAR(100)'),
             ('geographic_area',  'VARCHAR(200)'),
+            ('parasite_habitat', 'VARCHAR(100)'),
         ]:
             if col not in existing:
                 conn.execute(text(f'ALTER TABLE specimens ADD COLUMN {col} {typ}'))
