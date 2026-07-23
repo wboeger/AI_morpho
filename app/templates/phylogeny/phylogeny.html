@@ -24,6 +24,12 @@
     <button class="btn btn-sm btn-outline" onclick="viewTree({{ job.id }})">View Tree</button>
     <button class="btn btn-sm btn-outline" onclick="openNjModalRevise({{ job.id }})" title="Review sequences and resubmit to Galaxy">Revise &amp; Resubmit</button>
     {% endif %}
+    {# Unaligned GenBank sequences — always one click away once they exist #}
+    {% if job.raw_fasta_path or job.fragments %}
+    <a class="btn btn-sm btn-outline"
+       href="/api/project/{{ job.project_id }}/phylogeny/{{ job.id }}/file/unaligned"
+       title="Download the unaligned sequences fetched from GenBank (FASTA)">&#8595; Unaligned FASTA</a>
+    {% endif %}
     {# Download dropdown — visible once there are any files #}
     {% set has_files = job.raw_fasta_path or job.aligned_fasta_path or job.trimmed_fasta_path or job.nj_newick or job.tree_newick %}
     {% if has_files %}
@@ -710,6 +716,8 @@
         <div style="padding:0.75rem 1rem; border-top:1px solid var(--gray-200); display:flex; gap:0.75rem; align-items:center; flex-shrink:0;">
             <button class="btn btn-success" id="fetchApproveBtn" onclick="approveAndAlign()">Approve &amp; Align</button>
             <button class="btn btn-outline" onclick="openAddSpeciesModal()">+ Add Species</button>
+            <a class="btn btn-outline" id="fetchDownloadBtn" href="#"
+               title="Download these unaligned GenBank sequences (FASTA)">&#8595; Unaligned FASTA</a>
             <button class="btn btn-outline" onclick="closeFetchModal()">Cancel</button>
             <span id="fetchModalMsg" style="font-size:0.85rem; color:var(--gray-500); margin-left:0.5rem;"></span>
         </div>
@@ -1023,6 +1031,10 @@ function buildActions(jobId, status) {
         html += `<button class="btn btn-sm btn-success" onclick="importTree(${jobId})">Import into Project</button> `;
         html += `<button class="btn btn-sm btn-outline" onclick="viewTree(${jobId})">View Tree</button> `;
         html += `<button class="btn btn-sm btn-outline" onclick="openNjModalRevise(${jobId})" title="Review sequences and resubmit to Galaxy">Revise &amp; Resubmit</button> `;
+    }
+    if (!['created','fetching','discovered'].includes(status)) {
+        html += `<a class="btn btn-sm btn-outline" href="/api/project/${PROJECT_ID}/phylogeny/${jobId}/file/unaligned" ` +
+                `title="Download the unaligned sequences fetched from GenBank (FASTA)">&#8595; Unaligned FASTA</a> `;
     }
     html += `<button class="btn btn-sm btn-danger" style="margin-left:0.25rem;" onclick="deleteJob(${jobId})">Delete</button>`;
     return html;
@@ -1915,6 +1927,8 @@ async function openFetchPreview(jobId) {
     tbody.innerHTML = '';
     msg.textContent = '';
     document.getElementById('fetchApproveBtn').disabled = false;
+    document.getElementById('fetchDownloadBtn').href =
+        `/api/project/${PROJECT_ID}/phylogeny/${jobId}/file/unaligned`;
     document.getElementById('fetchModal').classList.add('active');
 
     try {

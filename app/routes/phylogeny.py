@@ -3541,6 +3541,37 @@ def download_file(project_id, job_id, filetype):
             return send_file(path, as_attachment=True,
                              download_name=f'{code}_{stage}.fasta', mimetype='text/plain')
 
+    # Unaligned sequences exactly as fetched from GenBank. Single-marker jobs
+    # have one raw FASTA; multi-fragment jobs keep one file per fragment, so
+    # concatenate them into a single download.
+    if filetype == 'unaligned':
+        paths = []
+        if job.raw_fasta_path and os.path.exists(job.raw_fasta_path):
+            paths.append(job.raw_fasta_path)
+        else:
+            for code in (job.fragments or []):
+                p = os.path.join(job.result_dir or '', f'{code}_raw.fa')
+                if os.path.exists(p):
+                    paths.append(p)
+        if not paths:
+            return jsonify({'error': 'Unaligned FASTA not found.'}), 404
+        if len(paths) == 1:
+            return send_file(paths[0], as_attachment=True,
+                             download_name='unaligned_sequences.fasta',
+                             mimetype='text/plain')
+        from io import BytesIO
+        buf = BytesIO()
+        for p in paths:
+            with open(p, 'rb') as fh:
+                data = fh.read()
+            buf.write(data)
+            if not data.endswith(b'\n'):
+                buf.write(b'\n')
+        buf.seek(0)
+        return send_file(buf, as_attachment=True,
+                         download_name='unaligned_sequences.fasta',
+                         mimetype='text/plain')
+
     if filetype in file_map:
         path, download_name, mimetype = file_map[filetype]
         if not path or not os.path.exists(path):
