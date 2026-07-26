@@ -614,6 +614,16 @@ def _load_alias_map(project_id: int) -> dict:
             for a in SpeciesAlias.query.filter_by(project_id=project_id).all()}
 
 
+_INDETERMINATE_EPITHETS = {'sp', 'spp', 'cf', 'aff', 'nr', 'gen'}
+
+
+def _is_indeterminate_epithet(epithet: str) -> bool:
+    """True for placeholder 'epithets' like 'sp', 'sp1', 'sp.', 'cf', 'aff2' —
+    these identify an *undetermined* species within a genus, not a specific
+    name, so they must never be treated as a diagnostic match on their own."""
+    return re.sub(r'\d+$', '', epithet) in _INDETERMINATE_EPITHETS
+
+
 def _match_leaf(leaf_label: str, species_name: str, alias_map: dict = None) -> bool:
     """Check if a tree leaf label matches a specimen species name.
 
@@ -634,6 +644,14 @@ def _match_leaf(leaf_label: str, species_name: str, alias_map: dict = None) -> b
         return True
     leaf_parts = leaf_norm.split()
     sn_parts = sn_norm.split()
+    # The epithet-only fallback below assumes a shared second word is a
+    # diagnostic species name (useful when the genus was renamed/resynonymized).
+    # For indeterminate placeholders ('sp', 'sp1', 'cf', 'aff', ...) that word
+    # carries no taxonomic identity, so require the genus to match too — else
+    # every "Genus sp." in the project would falsely match every other one.
+    if (len(leaf_parts) >= 2 and len(sn_parts) >= 2
+            and _is_indeterminate_epithet(leaf_parts[1])):
+        return leaf_parts[0] == sn_parts[0] and leaf_parts[1] == sn_parts[1]
     if len(leaf_parts) >= 2 and len(sn_parts) >= 2:
         return leaf_parts[1] == sn_parts[1]
     return False
