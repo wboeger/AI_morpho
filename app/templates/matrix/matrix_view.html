@@ -658,7 +658,11 @@ function normName(s) {
     if (s.includes('!') || s.includes('=')) return '\x00';
     if (s.includes('|')) s = s.split('|').pop();
     s = s.replace(/^_R_/i, '');
-    return s.toLowerCase().replace(/_/g, ' ').trim();
+    // Drop periods too — tree tips commonly write 'sp'/'cf'/'aff' without the
+    // dot that specimen names keep (e.g. 'Genus_sp' vs 'Genus sp.'), and
+    // without this they compared unequal and the tree panel/matrix rows
+    // never aligned even though the backend matcher (mirrored below) matched.
+    return s.toLowerCase().replace(/_/g, ' ').replace(/\./g, '').trim();
 }
 
 // Build a set of normalized species names in the matrix
