@@ -586,21 +586,26 @@ def _parse_leaf_order(newick: str) -> list:
 
 
 def _normalize_leaf_label(label: str) -> str:
-    """Normalize a Newick leaf label for species matching.
+    """Normalize a Newick leaf label (or a plain specimen name) for species matching.
 
     Handles formats like:
       - 'KX981461.1|Aglaiogyrodactylus_forficulatus'
       - '_R_HF548677.1|Gyrodactyloides_sp.'
       - 'Gyrodactylus_derjavinoides'
-    Returns a lowercase, space-separated species name.
+    Returns a lowercase, space-separated species name with trailing/abbreviation
+    periods removed (e.g. both 'Anacanthocotyle_sp' and 'Anacanthocotyle sp.'
+    normalize to 'anacanthocotyle sp') — tree tip labels commonly drop the dot
+    from 'sp.'/'cf.'/'aff.' abbreviations that specimen names keep, and without
+    this the two forms compared unequal and were treated as separate species.
     """
     # Take the part after the last '|' if present (accession|species format)
     if '|' in label:
         label = label.split('|')[-1]
     # Strip leading _R_ (FigTree rotation flag)
     label = re.sub(r'^_R_', '', label, flags=re.IGNORECASE)
-    # Replace underscores with spaces
-    return label.replace('_', ' ').strip().lower()
+    # Replace underscores with spaces, drop periods (abbreviation punctuation
+    # such as 'sp.'/'cf.'/'aff.' that tree tips often lack)
+    return label.replace('_', ' ').replace('.', '').strip().lower()
 
 
 def _load_alias_map(project_id: int) -> dict:
@@ -623,8 +628,8 @@ def _match_leaf(leaf_label: str, species_name: str, alias_map: dict = None) -> b
         target = alias_map[leaf_norm]
         if target == '_IGNORE_':
             return False
-        return target.strip().lower() == species_name.strip().lower()
-    sn_norm = species_name.strip().lower()
+        return _normalize_leaf_label(target) == _normalize_leaf_label(species_name)
+    sn_norm = _normalize_leaf_label(species_name)
     if leaf_norm == sn_norm:
         return True
     leaf_parts = leaf_norm.split()

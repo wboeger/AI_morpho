@@ -213,7 +213,7 @@ function normalizeLabel(raw) {
     let s = raw;
     if (s.includes('|')) s = s.split('|').pop();
     s = s.replace(/^_R_/i, '');
-    return s.replace(/_/g, ' ').trim().toLowerCase();
+    return s.replace(/_/g, ' ').replace(/\./g, '').trim().toLowerCase();
 }
 
 function updatePreview() {
