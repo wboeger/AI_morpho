@@ -93,7 +93,11 @@ def _norm_name(s):
     if '|' in s:
         s = s.split('|')[-1]
     s = re.sub(r'^_R_', '', s, flags=re.IGNORECASE)
-    return s.lower().replace('_', ' ').strip()
+    # Drop periods too — tree tips write 'sp'/'cf'/'aff' without the dot that
+    # specimen names keep (e.g. 'Genus_sp' vs 'Genus sp.'); without this a
+    # specimen's species-name key never matched its own tree tip, so its
+    # states were silently dropped from the parsimony/optimization inputs.
+    return s.lower().replace('_', ' ').replace('.', '').strip()
 
 
 def _parse_newick(s):
