@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from xml.etree import ElementTree as ET
 
-from flask import Blueprint, render_template, request, jsonify, current_app, send_file
+from flask import Blueprint, render_template, request, jsonify, current_app, send_file, url_for
 from flask_login import login_required, current_user
 from werkzeug.utils import secure_filename
 
@@ -3196,13 +3196,24 @@ def download_and_root(project_id, job_id):
 
 
 def _sync_specimens_from_newick(newick, project_id):
-    """Parse tip labels from a newick string and create any missing Specimen rows.
+    """Parse tip labels from a newick string and report ones with no matching
+    Specimen — but do NOT create anything automatically.
 
-    Tip labels are expected to follow the pipeline format  accession|Genus_species
-    (underscores → spaces for the species name).  Plain labels are also handled.
-    Returns (added, already_present) counts.
+    Matching reuses the matrix page's normalized/alias-aware matcher
+    (case-insensitive, strips accession prefixes, honors manual aliases,
+    falls back to species-epithet match). Earlier versions of this function
+    auto-created a Specimen for every unmatched leaf, which silently spawned
+    duplicate species rows whenever a re-imported tree's label differed even
+    slightly (case, punctuation, accession format) from the stored name —
+    orphaning the original specimen's images/landmarks/character values under
+    the new duplicate. Mismatches must now be resolved by hand on the
+    Name Mappings page (link to an existing specimen, add as new, or ignore)
+    via matrix.aliases_page / matrix.add_specimen_from_tree.
+
+    Returns (unmatched_count, matched_count).
     """
     from app.models import Specimen as _Specimen
+    from app.routes.matrix import _normalize_leaf_label, _load_alias_map, _match_leaf
 
     # Extract tip labels via BioPython
     try:
@@ -3214,36 +3225,30 @@ def _sync_specimens_from_newick(newick, project_id):
         # Fallback: regex for quoted and unquoted labels before ':'
         tip_names = re.findall(r"['\"]?([A-Za-z0-9_.|]+)['\"]?(?::\d)", newick)
 
-    # Normalize to species names
-    species_set = []
-    seen = set()
+    # Dedupe tip labels by normalized form, keep first-seen raw label
+    labels = []
+    seen_norm = set()
     for label in tip_names:
-        # "accession|Genus_species"  or  "Genus_species"
-        part = label.split('|')[-1]
-        species = part.replace('_', ' ').strip()
-        if species and species not in seen:
-            seen.add(species)
-            species_set.append(species)
+        norm = _normalize_leaf_label(label)
+        if norm and norm not in seen_norm:
+            seen_norm.add(norm)
+            labels.append(label)
 
-    # Fetch existing
-    existing = {s.species_name for s in
-                _Specimen.query.filter_by(project_id=project_id).all()}
+    existing_specimens = _Specimen.query.filter_by(project_id=project_id).all()
+    alias_map = _load_alias_map(project_id)
 
-    added = 0
-    for species in species_set:
-        if species not in existing:
-            sp = _Specimen(
-                project_id=project_id,
-                species_name=species,
-                created_by=current_user.id,
-            )
-            db.session.add(sp)
-            added += 1
+    unmatched = 0
+    matched = 0
+    for label in labels:
+        norm = _normalize_leaf_label(label)
+        if alias_map.get(norm) == '_IGNORE_':
+            continue
+        if any(_match_leaf(label, sp.species_name, alias_map) for sp in existing_specimens):
+            matched += 1
+        else:
+            unmatched += 1
 
-    if added:
-        db.session.flush()   # get IDs, commit handled by caller
-
-    return added, len(existing)
+    return unmatched, matched
 
 
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/import',
@@ -3256,12 +3261,14 @@ def import_tree(project_id, job_id):
     project = Project.query.get_or_404(project_id)
     project.tree_newick = job.tree_newick
     project.tree_fragments = job.partition_presence or None
-    added, existing = _sync_specimens_from_newick(job.tree_newick, project_id)
+    unmatched, matched = _sync_specimens_from_newick(job.tree_newick, project_id)
     db.session.commit()
     msg = 'ML tree imported into project.'
-    if added:
-        msg += f' {added} new specimen(s) added to Specimens.'
-    return jsonify({'status': 'ok', 'message': msg, 'specimens_added': added})
+    if unmatched:
+        msg += (f' {unmatched} tree label(s) have no matching specimen — nothing was '
+                f'created automatically. Resolve them on the Name Mappings page '
+                f'({url_for("matrix.aliases_page", project_id=project_id)}).')
+    return jsonify({'status': 'ok', 'message': msg, 'unmatched_count': unmatched})
 
 
 @phylo_bp.route('/api/project/<int:project_id>/phylogeny/<int:job_id>/import_nj',
@@ -3501,18 +3508,22 @@ def upload_tree_as_job(project_id):
         )
         db.session.add(job)
 
-        added = 0
+        unmatched = 0
         if import_to_project:
             project.tree_newick = newick
             project.tree_fragments = None   # uploaded tree — no fragment info
-            added, _ = _sync_specimens_from_newick(newick, project_id)
+            unmatched, _ = _sync_specimens_from_newick(newick, project_id)
 
         db.session.commit()
-        msg = f'Tree uploaded successfully.'
+        msg = 'Tree uploaded successfully.'
         if import_to_project:
-            msg += f' Imported into project ({added} new specimen(s)).'
+            msg += ' Imported into project.'
+            if unmatched:
+                msg += (f' {unmatched} tree label(s) have no matching specimen — nothing '
+                        f'was created automatically. Resolve them on the Name Mappings page '
+                        f'({url_for("matrix.aliases_page", project_id=project_id)}).')
         return jsonify({'status': 'ok', 'job_id': job.id,
-                        'message': msg, 'specimens_added': added})
+                        'message': msg, 'unmatched_count': unmatched})
     except Exception as e:
         db.session.rollback()
         return jsonify({'error': str(e)}), 500
@@ -4202,11 +4213,37 @@ def upload_tree(project_id):
             return jsonify({'has_tree': False, 'message': 'No Newick tree found in file.'})
         project.tree_newick = newick
         project.tree_fragments = None   # uploaded tree — no fragment info
-        added, _ = _sync_specimens_from_newick(newick, project_id)
+        unmatched, _ = _sync_specimens_from_newick(newick, project_id)
         db.session.commit()
-        return jsonify({'has_tree': True, 'specimens_added': added})
+        message = None
+        if unmatched:
+            message = (f'{unmatched} tree label(s) have no matching specimen — nothing was '
+                       f'created automatically. Resolve them on the Name Mappings page '
+                       f'({url_for("matrix.aliases_page", project_id=project_id)}).')
+        return jsonify({'has_tree': True, 'unmatched_count': unmatched, 'message': message})
     except Exception as e:
         return jsonify({'has_tree': False, 'message': str(e)}), 500
+
+
+_SUPPORT_COMMENT_KEYS = ('support', 'label', 'prob', 'posterior', 'bootstrap')
+
+
+def _promote_support_comments(newick):
+    """Rescue bootstrap/posterior support values encoded as NHX/BEAST-style
+    bracket comments on internal nodes (e.g. ')[&support=95]:0.1',
+    ')[&&NHX:support=95]:0.1', ')[&prob=0.95]:0.1') by copying the numeric
+    value into a plain internal-node label before bracket comments are
+    stripped. Without this, the blanket '[...]' strip below silently
+    discards support values that arrive in comment form instead of as a
+    bare number after ')'."""
+    def _sub(m):
+        comment = m.group(1)
+        for key in _SUPPORT_COMMENT_KEYS:
+            km = re.search(rf'{key}\s*=\s*([\d.]+)', comment, re.IGNORECASE)
+            if km:
+                return ')' + km.group(1)
+        return ')'
+    return re.sub(r'\)\[(&[^\]]*)\]', _sub, newick)
 
 
 def _extract_newick(content):
@@ -4218,12 +4255,14 @@ def _extract_newick(content):
                       re.IGNORECASE | re.DOTALL)
         if m:
             newick = m.group(2).strip()
-            newick = re.sub(r'\[.*?\]', '', newick)  # strip bracket annotations
+            newick = _promote_support_comments(newick)
+            newick = re.sub(r'\[.*?\]', '', newick)  # strip remaining bracket annotations
             return newick.strip()
         return None
     # Plain Newick
     for line in content.splitlines():
         line = line.strip()
         if line.startswith('(') or (line and not line.startswith('#')):
-            return line
+            line = _promote_support_comments(line)
+            return re.sub(r'\[.*?\]', '', line).strip()  # strip any other bracket comments
     return None

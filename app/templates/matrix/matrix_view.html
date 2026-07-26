@@ -451,6 +451,9 @@ function uploadTree() {
         .then(r => r.json())
         .then(data => {
             if (data.has_tree) {
+                if (data.unmatched_count) {
+                    alert(data.message);
+                }
                 msg.textContent = 'Uploaded. Reloading…';
                 location.reload();
             } else {
