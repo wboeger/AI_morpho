@@ -717,11 +717,18 @@ function renderTree(ch) {
             mk('line', { x1: nx, y1: yTop, x2: nx, y2: yBot, stroke: '#c0c0c0', 'stroke-width': 1 });
 
             children.forEach(c => {
-                // A change is only shown when both endpoints have a definite
-                // (non-equivocal, non-missing) state; equivocal reconstructions
-                // are displayed as "?" and not counted as visible transitions.
-                const changeShown = c.changed && !node.equivocal && !c.equivocal
-                                    && node.state != null && c.state != null;
+                // A change is shown whenever both endpoints resolved to a
+                // concrete state (top_down always picks one along the
+                // max-parsimony path, even at an equivocal node — that's the
+                // same value used to color its circle and propagate to its
+                // own children). Requiring BOTH endpoints non-equivocal used
+                // to also gate this, but with sparse/missing data equivocal
+                // ancestors are the norm, not the exception — on a real
+                // project (253 taxa, ~150 scored) that hid 100% of changes
+                // for every character. Equivocal nodes still render as "?"
+                // circles (see eq/fill below); only the change tick itself
+                // no longer requires an unambiguous ancestor.
+                const changeShown = c.changed && node.state != null && c.state != null;
                 mk('line', {
                     x1: nx, y1: c._y, x2: xS(c._d), y2: c._y,
                     stroke: changeShown ? '#e53935' : '#c0c0c0',
@@ -946,8 +953,10 @@ function renderCombinedTree(ids) {
                 childNodes.forEach((cN, k) => {
                     const pN = nodes[k];
                     if (!cN || !pN) return;
-                    const shown = cN.changed && !pN.equivocal && !cN.equivocal
-                                  && pN.state != null && cN.state != null;
+                    // See renderTree()'s changeShown for why equivocal is not
+                    // part of this condition — it hid ~100% of changes on
+                    // sparse real data.
+                    const shown = cN.changed && pN.state != null && cN.state != null;
                     if (shown) changedHere.push({ k, from: pN.state, to: cN.state });
                 });
                 const span = Math.max(x2 - nx, 1);
