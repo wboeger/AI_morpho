@@ -487,14 +487,25 @@ def _mk_er_optimize(tree_root, tip_states):
         tot = sum(marg)
         marg = [m / tot for m in marg] if tot > 0 else [1.0 / k] * k
 
+        is_leaf   = not n.get('children')
+        is_missing = is_leaf and _norm_name(n.get('name', '')) not in tip_states
+
         best_i = max(range(k), key=lambda i: marg[i])
-        n['state']       = states[best_i]
         n['states_list'] = states
         n['probs']       = {states[i]: round(marg[i], 4) for i in range(k)}
-        n['missing']     = _norm_name(n.get('name', '')) not in tip_states if not n.get('children') else False
-        # "Equivocal" mirrors Fitch's meaning (no confident single state) —
-        # here: the ML posterior doesn't clearly favor one state.
-        n['equivocal'] = marg[best_i] < 0.5
+        n['missing']     = is_missing
+        if is_missing:
+            # Same convention as Fitch/Liebermann: a tip with no data shows as
+            # missing ("?", dashed circle), not our best (diffuse-prior) guess.
+            # The renderer's own missing-check is `!node.state`, so this must
+            # actually be None, not just an informational flag.
+            n['state'] = None
+            n['equivocal'] = True
+        else:
+            n['state'] = states[best_i]
+            # "Equivocal" mirrors Fitch's meaning (no confident single state) —
+            # here: the ML posterior doesn't clearly favor one state.
+            n['equivocal'] = marg[best_i] < 0.5
 
         children = n.get('children', [])
         child_msgs = n.pop('_child_msgs', [])

@@ -335,13 +335,19 @@
 <div class="opt-header" style="display:flex; align-items:flex-start; justify-content:space-between; gap:1rem;">
     <div>
         <h1>Character Optimization</h1>
-        <p>Fitch parsimony ancestral state reconstruction mapped onto the molecular phylogeny</p>
+        <p id="methodDesc">Fitch parsimony ancestral state reconstruction mapped onto the molecular phylogeny</p>
     </div>
     {% if has_tree %}
     <div style="display:flex; align-items:center; gap:0.6rem; flex-shrink:0;">
+        <select id="methodSelect" class="btn-sm" style="font-size:0.78rem; padding:0.2rem 0.4rem;"
+                onchange="onMethodChange()" title="Ancestral-state optimization method">
+            <option value="fitch">Parsimony (Fitch)</option>
+            <option value="liebermann">Liebermann (polymorphic)</option>
+            <option value="mk_er">Likelihood (Mk, equal rates)</option>
+        </select>
         <span id="runStamp" style="font-size:11px; color:var(--ink-3,#999); font-style:italic;"></span>
         <button id="rerunBtn" class="btn btn-primary btn-sm" onclick="rerun()"
-                title="Recompute parsimony from the current character states">
+                title="Recompute from the current character states">
             &#8635; Re-run optimization
         </button>
     </div>
@@ -443,6 +449,26 @@ const PALETTE = [
 let allData  = {};   // id → character result
 let ordering = [];   // character ids in server order
 let selectedId = null;
+
+// ── Optimization method selection ───────────────────────────────────────────
+const METHOD_DESC = {
+    fitch:      'Fitch parsimony ancestral state reconstruction mapped onto the molecular phylogeny',
+    liebermann: 'Liebermann polymorphic optimization — ambiguous nodes retain their full plausible state set instead of collapsing to one choice',
+    mk_er:      'Maximum-likelihood ancestral state reconstruction under an equal-rates Mk model (single ML-fit rate, marginal posterior state probabilities)',
+};
+let currentMethod = 'fitch';
+
+function onMethodChange() {
+    currentMethod = document.getElementById('methodSelect').value;
+    document.getElementById('methodDesc').textContent = METHOD_DESC[currentMethod] || '';
+    rerun();
+}
+
+// "3 steps" / "12.935 -logL" / "1 ambiguity" — generic across methods.
+function fmtScore(ch) {
+    if (ch.score == null) return 'no data';
+    return `${ch.score} ${ch.score_label || ''}`.trim();
+}
 
 // ── Combined-view state (multiple characters mapped onto one tree) ─────────
 const checkedIds  = new Set();
@@ -571,6 +597,14 @@ function labelColor(hex) {
 
 function renderSignalBox(ch) {
     const box = document.getElementById('signalBox');
+    if (!ch.signal && ch.method && ch.method !== 'fitch') {
+        box.innerHTML = `<span class="sig-heading">Signal</span>
+            <span style="color:#999; font-size:0.78rem; font-style:italic;">
+                CI/RI/permutation test is defined for parsimony steps — not shown for
+                ${ch.method === 'liebermann' ? 'Liebermann' : 'likelihood'} results.
+            </span>`;
+        return;
+    }
     const sig = ch.signal || {};
     const { ci, ri, p_value, note } = sig;
 
@@ -706,6 +740,26 @@ function renderTree(ch) {
         return el;
     }
 
+    function titled(el, text) {
+        const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+        t.textContent = text;
+        el.appendChild(t);
+        return el;
+    }
+
+    // Liebermann: full retained (possibly polymorphic) state set.
+    // Mk-ER: posterior probability of each state, most likely first.
+    function nodeExtraInfo(node) {
+        if (node.states_list && node.states_list.length > 1 && !node.probs) {
+            return `Retained states: ${node.states_list.join(', ')}`;
+        }
+        if (node.probs) {
+            const entries = Object.entries(node.probs).sort((a, b) => b[1] - a[1]);
+            return 'P(state): ' + entries.map(([s, p]) => `${s}=${p}`).join(', ');
+        }
+        return null;
+    }
+
     function draw(node) {
         const nx = xS(node._d);
         const ny = node._y;
@@ -766,7 +820,9 @@ function renderTree(ch) {
             // resolved to a single state) are shown as "?" with a neutral fill.
             const eq   = node.equivocal || node.state == null;
             const fill = eq ? '#ececec' : (colorMap[node.state] || '#ececec');
-            mk('circle', { cx: nx, cy: ny, r: 5, fill, stroke: '#fff', 'stroke-width': 1 });
+            const nodeCircle = mk('circle', { cx: nx, cy: ny, r: 5, fill, stroke: '#fff', 'stroke-width': 1 });
+            const extraInfo = nodeExtraInfo(node);
+            if (extraInfo) titled(nodeCircle, extraInfo);
             svgTxt(eq ? '?' : node.state, {
                 x: nx, y: ny + 2.5,
                 'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
@@ -784,13 +840,15 @@ function renderTree(ch) {
             });
 
             // Leaf circle
-            mk('circle', {
+            const leafCircle = mk('circle', {
                 cx: nx, cy: ny, r: 6.5,
                 fill: missing ? '#f5f5f5' : fill,
                 stroke: missing ? '#bbb' : '#fff',
                 'stroke-width': missing ? 1.5 : 1.2,
                 ...(missing ? { 'stroke-dasharray': '2,2' } : {})
             });
+            const leafExtraInfo = nodeExtraInfo(node);
+            if (leafExtraInfo) titled(leafCircle, leafExtraInfo);
 
             // State code inside circle; "?" for tips missing in the matrix
             if (node.state) {
@@ -853,8 +911,10 @@ function renderCombinedTree(ids) {
 
     document.getElementById('charTitle').textContent =
         `Combined view — ${chars.length} character${chars.length !== 1 ? 's' : ''}`;
-    const totalSteps = chars.reduce((sum, ch) => sum + (ch.parsimony_score || 0), 0);
-    document.getElementById('stepBadge').textContent = `${totalSteps} total steps`;
+    const totalScore = chars.reduce((sum, ch) => sum + (ch.score || 0), 0);
+    const scoreLabel  = (chars[0] && chars[0].score_label) || '';
+    document.getElementById('stepBadge').textContent =
+        `${Math.round(totalScore * 1000) / 1000} total ${scoreLabel}`;
 
     // Legend: one swatch per character, color = its tick-mark color
     const legend = document.getElementById('legend');
@@ -1045,6 +1105,23 @@ function renderCharList() {
     const types = typeOrder.filter(t => groups[t])
         .concat(Object.keys(groups).filter(t => !typeOrder.includes(t)));
 
+    // Badge color is relative to the other loaded characters (rank-based),
+    // not fixed absolute thresholds — those were tuned for Fitch step counts
+    // (0-4ish) and would paint everything red for e.g. -logL scores that
+    // routinely run into the hundreds.
+    const allScores = ordering.map(id => allData[id].score).filter(v => v != null);
+    const minS = allScores.length ? Math.min(...allScores) : 0;
+    const maxS = allScores.length ? Math.max(...allScores) : 0;
+    const scoreColor = (s) => {
+        if (s == null) return '#aaa';
+        if (maxS === minS) return '#59A14F';
+        const frac = (s - minS) / (maxS - minS);   // 0 = best (lowest), 1 = worst
+        if (frac <= 0.15) return '#59A14F';
+        if (frac <= 0.4)  return '#4E79A7';
+        if (frac <= 0.7)  return '#F28E2B';
+        return '#E15759';
+    };
+
     for (const type of types) {
         const hdr = document.createElement('div');
         hdr.className = 'opt-group-header';
@@ -1052,17 +1129,13 @@ function renderCharList() {
         sidebar.appendChild(hdr);
 
         for (const ch of groups[type]) {
-            const s = ch.parsimony_score;
-            let bg = '#aaa';
-            if (s === 0)  bg = '#59A14F';
-            else if (s <= 2) bg = '#4E79A7';
-            else if (s <= 4) bg = '#F28E2B';
-            else             bg = '#E15759';
+            const s  = ch.score;
+            const bg = scoreColor(s);
 
             const row = document.createElement('div');
             row.className   = 'opt-char-row';
             row.id          = `crow-${ch.id}`;
-            row.title       = ch.name;
+            row.title       = `${ch.name} — ${s} ${ch.score_label || ''}`;
             row.innerHTML   = `
                 <input type="checkbox" class="opt-char-check" id="cchk-${ch.id}">
                 <span class="opt-char-code">${ch.code}</span>
@@ -1098,9 +1171,7 @@ function selectChar(id) {
     document.getElementById('treeContainer').style.display = 'flex';
 
     document.getElementById('charTitle').textContent = `${ch.code}: ${ch.name}`;
-    const s = ch.parsimony_score;
-    document.getElementById('stepBadge').textContent =
-        `${s} parsimony step${s !== 1 ? 's' : ''}`;
+    document.getElementById('stepBadge').textContent = fmtScore(ch);
 
     renderSignalBox(ch);
     renderTree(ch);
@@ -1139,7 +1210,7 @@ function _buildExportSVG() {
     titleEl.setAttribute('x', 10); titleEl.setAttribute('y', 19);
     titleEl.setAttribute('font-size', '13'); titleEl.setAttribute('font-weight', 'bold');
     titleEl.setAttribute('fill', '#222');
-    titleEl.textContent = `${ch.code}: ${ch.name}  (${ch.parsimony_score} parsimony step${ch.parsimony_score !== 1 ? 's' : ''})`;
+    titleEl.textContent = `${ch.code}: ${ch.name}  (${fmtScore(ch)})`;
     svg.appendChild(titleEl);
 
     // Tree group (translated down by TITLE_H)
@@ -1219,12 +1290,13 @@ function _buildCombinedExportSVG() {
     bg.setAttribute('width', w); bg.setAttribute('height', TOTAL_H); bg.setAttribute('fill', '#fff');
     svg.appendChild(bg);
 
-    const totalSteps = chars.reduce((sum, ch) => sum + (ch.parsimony_score || 0), 0);
+    const totalScore = chars.reduce((sum, ch) => sum + (ch.score || 0), 0);
+    const scoreLabel  = (chars[0] && chars[0].score_label) || '';
     const titleEl = document.createElementNS(ns, 'text');
     titleEl.setAttribute('x', 10); titleEl.setAttribute('y', 19);
     titleEl.setAttribute('font-size', '13'); titleEl.setAttribute('font-weight', 'bold');
     titleEl.setAttribute('fill', '#222');
-    titleEl.textContent = `Combined view — ${chars.length} characters (${totalSteps} total steps)`;
+    titleEl.textContent = `Combined view — ${chars.length} characters (${Math.round(totalScore*1000)/1000} total ${scoreLabel})`;
     svg.appendChild(titleEl);
 
     const g = document.createElementNS(ns, 'g');
@@ -1244,7 +1316,7 @@ function _buildCombinedExportSVG() {
         const lbl = document.createElementNS(ns, 'text');
         lbl.setAttribute('x', 28); lbl.setAttribute('y', ly);
         lbl.setAttribute('font-size', '11'); lbl.setAttribute('fill', '#333');
-        lbl.textContent = `${ch.code}: ${ch.name}  (${ch.parsimony_score} steps)`;
+        lbl.textContent = `${ch.code}: ${ch.name}  (${fmtScore(ch)})`;
         svg.appendChild(lbl);
         ly += LEG_ROW;
     });
@@ -1318,12 +1390,13 @@ function exportPDF() {
     if (combinedMode) {
         if (!combinedIds.length) return;
         const chars = combinedIds.map(id => allData[id]);
-        const totalSteps = chars.reduce((sum, ch) => sum + (ch.parsimony_score || 0), 0);
-        pt.textContent = `Combined view — ${chars.length} characters — ${totalSteps} total steps`;
+        const totalScore = chars.reduce((sum, ch) => sum + (ch.score || 0), 0);
+        const scoreLabel  = (chars[0] && chars[0].score_label) || '';
+        pt.textContent = `Combined view — ${chars.length} characters — ${Math.round(totalScore*1000)/1000} total ${scoreLabel}`;
     } else {
         if (!selectedId) return;
         const ch = allData[selectedId];
-        pt.textContent = `${ch.code}: ${ch.name}  —  ${ch.parsimony_score} parsimony step${ch.parsimony_score !== 1 ? 's' : ''}`;
+        pt.textContent = `${ch.code}: ${ch.name}  —  ${fmtScore(ch)}`;
     }
     window.print();
     setTimeout(() => { pt.textContent = ''; }, 500);
@@ -1344,7 +1417,7 @@ async function init() {
         const resp = await fetch(`/api/project/${PROJECT_ID}/optimization/run`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({})
+            body: JSON.stringify({ method: currentMethod })
         });
         const data = await resp.json();
 
