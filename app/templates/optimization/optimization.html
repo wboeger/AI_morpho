@@ -760,6 +760,31 @@ function renderTree(ch) {
         return null;
     }
 
+    // Split-color pie wedge for a polymorphic Liebermann node (equal-sized
+    // slices, one per retained state) instead of the generic grey "?" used
+    // for genuinely ambiguous/equivocal reconstructions — Liebermann's whole
+    // point is that these states are KNOWN to be plausible, not unknown.
+    function drawPie(cx, cy, r, statesList, colorMap) {
+        const n = statesList.length;
+        const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+        svgEl.appendChild(g);
+        for (let i = 0; i < n; i++) {
+            const a0 = (i / n) * 2 * Math.PI - Math.PI / 2;
+            const a1 = ((i + 1) / n) * 2 * Math.PI - Math.PI / 2;
+            const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+            const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
+            const largeArc = (a1 - a0) > Math.PI ? 1 : 0;
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d',
+                `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${largeArc} 1 ${x1},${y1} Z`);
+            path.setAttribute('fill', colorMap[statesList[i]] || '#ccc');
+            path.setAttribute('stroke', '#fff');
+            path.setAttribute('stroke-width', 0.6);
+            g.appendChild(path);
+        }
+        return g;
+    }
+
     function draw(node) {
         const nx = xS(node._d);
         const ny = node._y;
@@ -816,18 +841,27 @@ function renderTree(ch) {
                 });
             }
 
-            // Internal node circle. Equivocal reconstructions (Fitch set not
-            // resolved to a single state) are shown as "?" with a neutral fill.
-            const eq   = node.equivocal || node.state == null;
-            const fill = eq ? '#ececec' : (colorMap[node.state] || '#ececec');
-            const nodeCircle = mk('circle', { cx: nx, cy: ny, r: 5, fill, stroke: '#fff', 'stroke-width': 1 });
-            const extraInfo = nodeExtraInfo(node);
-            if (extraInfo) titled(nodeCircle, extraInfo);
-            svgTxt(eq ? '?' : node.state, {
-                x: nx, y: ny + 2.5,
-                'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
-                fill: eq ? '#999' : labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
-            });
+            // Internal node circle. Fitch/Mk-ER: equivocal reconstructions
+            // (genuinely unknown) show as "?" with a neutral fill. Liebermann:
+            // a polymorphic node is a KNOWN set of plausible states, not an
+            // unknown one — show it as a split pie instead of hiding it behind "?".
+            const isLiebermannPoly = ch.method === 'liebermann'
+                && node.states_list && node.states_list.length > 1 && !node.missing;
+            if (isLiebermannPoly) {
+                const pie = drawPie(nx, ny, 6, node.states_list, colorMap);
+                titled(pie, nodeExtraInfo(node));
+            } else {
+                const eq   = node.equivocal || node.state == null;
+                const fill = eq ? '#ececec' : (colorMap[node.state] || '#ececec');
+                const nodeCircle = mk('circle', { cx: nx, cy: ny, r: 5, fill, stroke: '#fff', 'stroke-width': 1 });
+                const extraInfo = nodeExtraInfo(node);
+                if (extraInfo) titled(nodeCircle, extraInfo);
+                svgTxt(eq ? '?' : node.state, {
+                    x: nx, y: ny + 2.5,
+                    'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                    fill: eq ? '#999' : labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
+                });
+            }
 
         } else {
             const fill    = node.state ? (colorMap[node.state] || '#ccc') : null;
@@ -839,30 +873,40 @@ function renderTree(ch) {
                 stroke: '#ddd', 'stroke-width': 0.8, 'stroke-dasharray': '2,3'
             });
 
-            // Leaf circle
-            const leafCircle = mk('circle', {
-                cx: nx, cy: ny, r: 6.5,
-                fill: missing ? '#f5f5f5' : fill,
-                stroke: missing ? '#bbb' : '#fff',
-                'stroke-width': missing ? 1.5 : 1.2,
-                ...(missing ? { 'stroke-dasharray': '2,2' } : {})
-            });
-            const leafExtraInfo = nodeExtraInfo(node);
-            if (leafExtraInfo) titled(leafCircle, leafExtraInfo);
+            const isLiebermannPolyLeaf = ch.method === 'liebermann'
+                && node.states_list && node.states_list.length > 1 && !missing;
 
-            // State code inside circle; "?" for tips missing in the matrix
-            if (node.state) {
-                svgTxt(node.state, {
-                    x: nx, y: ny + 3,
-                    'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
-                    fill: labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
-                });
+            if (isLiebermannPolyLeaf) {
+                // A tip that's genuinely polymorphic in the source data (e.g.
+                // multiple specimens of the same species scored differently).
+                const pie = drawPie(nx, ny, 7.5, node.states_list, colorMap);
+                titled(pie, nodeExtraInfo(node));
             } else {
-                svgTxt('?', {
-                    x: nx, y: ny + 3,
-                    'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
-                    fill: '#999', 'text-anchor': 'middle', 'pointer-events': 'none'
+                // Leaf circle
+                const leafCircle = mk('circle', {
+                    cx: nx, cy: ny, r: 6.5,
+                    fill: missing ? '#f5f5f5' : fill,
+                    stroke: missing ? '#bbb' : '#fff',
+                    'stroke-width': missing ? 1.5 : 1.2,
+                    ...(missing ? { 'stroke-dasharray': '2,2' } : {})
                 });
+                const leafExtraInfo = nodeExtraInfo(node);
+                if (leafExtraInfo) titled(leafCircle, leafExtraInfo);
+
+                // State code inside circle; "?" for tips missing in the matrix
+                if (node.state) {
+                    svgTxt(node.state, {
+                        x: nx, y: ny + 3,
+                        'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                        fill: labelColor(fill), 'text-anchor': 'middle', 'pointer-events': 'none'
+                    });
+                } else {
+                    svgTxt('?', {
+                        x: nx, y: ny + 3,
+                        'font-size': 7.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                        fill: '#999', 'text-anchor': 'middle', 'pointer-events': 'none'
+                    });
+                }
             }
 
             // Species name (italic, right side) — colored by DNA fragment(s).
