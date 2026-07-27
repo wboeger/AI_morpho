@@ -1,5 +1,6 @@
 import re
 import copy
+import math
 import random
 from flask import Blueprint, render_template, jsonify, request
 from flask_login import login_required
@@ -33,7 +34,7 @@ def _virtual_char_descriptors():
 
 
 def _virtual_char_result(desc, specimens, species_to_sp_ids, sp_by_id,
-                         alias_map, tree_root):
+                         alias_map, tree_root, method='fitch'):
     """Build one optimization result dict for a specimen-level virtual
     character, or None if no specimen carries a value for it."""
     getval = desc['get']
@@ -71,19 +72,23 @@ def _virtual_char_result(desc, specimens, species_to_sp_ids, sp_by_id,
         if sp_norm in tip_states and lbl_norm not in tip_states:
             tip_states[lbl_norm] = tip_states[sp_norm]
 
-    annotated, pscore = _fitch_parsimony(tree_root, tip_states)
-    signal = _compute_signal(tree_root, tip_states, pscore)
+    annotated, score, score_label, signal, extra = _run_method(method, tree_root, tip_states)
 
-    return {
+    result = {
         'id':              desc['id'],
         'code':            desc['code'],
         'name':            desc['name'],
         'structure_type':  'ecology',
-        'parsimony_score': pscore,
+        'method':          method,
+        'score':           score,
+        'score_label':     score_label,
+        'parsimony_score': score,   # back-compat alias for existing JS reading this field
         'signal':          signal,
         'states':          [{'code': c, 'name': v} for v, c in value_to_code.items()],
         'tree':            annotated,
     }
+    result.update(extra)
+    return result
 
 
 def _norm_name(s):
@@ -217,6 +222,312 @@ def _fitch_parsimony(tree_root, tip_states):
     return tree, changes[0]
 
 
+def _liebermann_optimize(tree_root, tip_states):
+    """Two-pass polymorphic ancestral-state optimization, ported from
+    lieberman6.R (downward_pass + upward_pass). Unlike Fitch, which always
+    forces a single state at ambiguous nodes, this keeps the full retained
+    state set at every node — the point being to preserve genuine
+    polymorphism (e.g. "this ancestor plausibly used either host A or B")
+    instead of arbitrarily picking one.
+
+    Downward pass: postorder Fitch-style intersection/union, generalized to
+    N-ary nodes (the R script assumes strictly bifurcating).
+
+    Upward pass: the R script tightens/expands each node's state set using
+    its parent's (already-processed) set, iterating over ape's internal
+    node-index order. That order isn't a portable concept outside ape's
+    specific numbering, so this is a direct, order-independent
+    generalization of the same rule via a preorder (root-to-tip) recursion:
+    each node is refined using its parent's *already finalized* state
+    before its own children are visited, which is the same information-flow
+    direction ("push the parent's resolution down") the R code relies on.
+
+    tip_states: {normalized_species_name: set_of_state_codes}
+    Returns (annotated_tree, stats) where stats has ambiguity/counts instead
+    of a single parsimony-style step count (polymorphism isn't a step count).
+    """
+    tree = copy.deepcopy(tree_root)
+    node_states = {}
+
+    def downward(n):
+        children = n.get('children', [])
+        if not children:
+            name = _norm_name(n.get('name', ''))
+            s = tip_states.get(name)
+            node_states[id(n)] = set(s) if s else None
+            return node_states[id(n)]
+        child_sets = [downward(c) for c in children]
+        non_null = [cs for cs in child_sets if cs is not None]
+        if not non_null:
+            node_states[id(n)] = None
+        elif len(non_null) == 1:
+            node_states[id(n)] = set(non_null[0])
+        else:
+            inter = non_null[0].copy()
+            for cs in non_null[1:]:
+                inter &= cs
+            if inter:
+                node_states[id(n)] = inter
+            else:
+                union = set()
+                for cs in non_null:
+                    union |= cs
+                node_states[id(n)] = union
+        return node_states[id(n)]
+
+    downward(tree)
+
+    def upward(n, parent_state):
+        ns = node_states.get(id(n))
+        if parent_state is not None and ns is not None:
+            if parent_state <= ns:
+                # Parent's set is already consistent with (a subset of) this
+                # node's set — tighten to their intersection if that narrows it.
+                if len(ns) > len(parent_state):
+                    ns = ns & parent_state
+                    node_states[id(n)] = ns
+            else:
+                children = n.get('children', [])
+                child_sets = [node_states.get(id(c)) for c in children]
+                non_null = [cs for cs in child_sets if cs is not None]
+                if len(non_null) >= 2:
+                    pairwise_inter = non_null[0].copy()
+                    for cs in non_null[1:]:
+                        pairwise_inter &= cs
+                    if pairwise_inter:
+                        union_children = set()
+                        for cs in non_null:
+                            union_children |= cs
+                        additional = parent_state & union_children
+                    else:
+                        additional = parent_state - ns
+                    ns = ns | additional
+                    node_states[id(n)] = ns
+        for c in n.get('children', []):
+            upward(c, ns)
+
+    upward(tree, None)
+
+    stats = {'ambiguity': 0, 'n_polymorphic': 0, 'n_monomorphic': 0, 'n_missing': 0}
+
+    def annotate(n, parent_state):
+        s = node_states.get(id(n))
+        if s is None:
+            n['state'] = None
+            n['states_list'] = []
+            n['missing'] = True
+            n['equivocal'] = True
+            stats['n_missing'] += 1
+        else:
+            slist = sorted(s)
+            n['states_list'] = slist
+            n['state'] = slist[0]           # primary state, for coloring/continuity
+            polymorphic = len(slist) > 1
+            n['equivocal'] = polymorphic    # shown as "?" like Fitch's ambiguous nodes,
+                                             # full set is still in states_list for the UI
+            if polymorphic:
+                stats['n_polymorphic'] += 1
+                stats['ambiguity'] += len(slist) - 1
+            else:
+                stats['n_monomorphic'] += 1
+        n['changed'] = bool(
+            parent_state is not None
+            and n.get('state') is not None
+            and n['state'] != parent_state
+        )
+        child_state = n['state'] if n.get('state') is not None else parent_state
+        for c in n.get('children', []):
+            annotate(c, child_state)
+
+    annotate(tree, None)
+    return tree, stats
+
+
+# ── Mk equal-rates likelihood ancestral-state reconstruction ────────────────
+# Closed-form transition probabilities for the symmetric k-state Mk model
+# (Lewis 2001 / "Neyman k-state" model): instantaneous rate matrix Q has
+# off-diagonal r/(k-1), diagonal -r. Q = c(J - kI) with c = r/(k-1) has
+# eigenvalues 0 (the stationary/all-ones direction) and -rk/(k-1)
+# (multiplicity k-1), giving exp(Qt) = J/k + exp(-rkt/(k-1))*(I - J/k):
+#   P_same(t) = 1/k + (k-1)/k * exp(-rkt/(k-1))
+#   P_diff(t) = 1/k -   1/k   * exp(-rkt/(k-1))
+# Verified against a hand-derived 2-taxon closed form during development.
+def _er_probs(k, r, t):
+    if k <= 1:
+        return 1.0, 0.0
+    t = max(t or 0.0, 1e-8)
+    decay = math.exp(-r * k * t / (k - 1))
+    p_same = 1.0 / k + (k - 1) / k * decay
+    p_diff = 1.0 / k - 1.0 / k * decay
+    return p_same, p_diff
+
+
+def _er_transmit(vec, k, p_same, p_diff):
+    """Apply the (symmetric) ER transition matrix to a likelihood/message vector."""
+    total = sum(vec)
+    return [p_diff * (total - vec[i]) + p_same * vec[i] for i in range(k)]
+
+
+def _mk_tip_vector(node, tip_states, states, idx, k):
+    name = _norm_name(node.get('name', ''))
+    obs = tip_states.get(name)
+    if not obs:
+        return [1.0] * k   # missing data: fully ambiguous, contributes no information
+    vec = [0.0] * k
+    for s in obs:
+        if s in idx:
+            vec[idx[s]] = 1.0
+    return vec if sum(vec) > 0 else [1.0] * k
+
+
+def _mk_pruning_loglik(tree_root, tip_states, states, r, down=None):
+    """Felsenstein pruning under the ER model. If `down` (a dict) is given,
+    records each node's downward conditional-likelihood vector and each
+    internal node's per-child transmitted message (needed for the marginal
+    reconstruction belief-propagation pass) — otherwise just returns logL,
+    used during rate-fitting where per-node detail isn't needed.
+    """
+    k = len(states)
+    idx = {s: i for i, s in enumerate(states)}
+
+    def rec(n):
+        children = n.get('children', [])
+        if not children:
+            vec = _mk_tip_vector(n, tip_states, states, idx, k)
+            if down is not None:
+                down[id(n)] = vec
+            return vec
+        acc = [1.0] * k
+        child_msgs = []
+        for c in children:
+            t = c.get('length', 1.0) or 1.0
+            p_same, p_diff = _er_probs(k, r, t)
+            cl = rec(c)
+            msg = _er_transmit(cl, k, p_same, p_diff)
+            child_msgs.append(msg)
+            for i in range(k):
+                acc[i] *= msg[i]
+        if down is not None:
+            down[id(n)] = acc
+            n['_child_msgs'] = child_msgs
+        return acc
+
+    root_vec = rec(tree_root)
+    prior = 1.0 / k
+    total = sum(prior * v for v in root_vec)
+    logl = math.log(total) if total > 0 else float('-inf')
+    return logl
+
+
+def _fit_er_rate(tree_root, tip_states, states, iters=40):
+    """1-D golden-section search for the ML rate r > 0. A single symmetric
+    rate is the only free parameter of the ER model, so a derivative-free
+    bracketed search is sufficient — no need for scipy (not a dependency
+    of this project)."""
+    f = lambda r: _mk_pruning_loglik(tree_root, tip_states, states, r)
+    gr = (math.sqrt(5) - 1) / 2
+    lo, hi = 1e-4, 50.0
+    c  = hi - gr * (hi - lo)
+    dp = lo + gr * (hi - lo)
+    fc, fd = f(c), f(dp)
+    for _ in range(iters):
+        if fc > fd:
+            hi, dp, fd = dp, c, fc
+            c = hi - gr * (hi - lo)
+            fc = f(c)
+        else:
+            lo, c, fc = c, dp, fd
+            dp = lo + gr * (hi - lo)
+            fd = f(dp)
+    r_best = (lo + hi) / 2
+    return r_best, f(r_best)
+
+
+def _mk_er_optimize(tree_root, tip_states):
+    """ML ancestral-state reconstruction under the equal-rates Mk model.
+    Fits a single rate by ML, then computes marginal posterior state
+    probabilities at every node via belief propagation (mathematically the
+    rerooting method: a downward/postorder pass plus an upward/preorder
+    pass sending each node its parent-side "outside" evidence, built from
+    the parent's incoming message times the product of sibling messages —
+    the standard sum-product algorithm on a tree). Verified during
+    development: marginals sum to 1 at every node, tips pin to their
+    observed state, and a fully-consistent toy dataset produces strongly
+    peaked ancestral posteriors as expected.
+
+    tip_states: {normalized_species_name: set_of_state_codes}
+    Returns (annotated_tree, info) with info = {'rate', 'log_likelihood'}.
+    """
+    tree = copy.deepcopy(tree_root)
+    states = sorted({s for vals in tip_states.values() for s in vals})
+    k = len(states)
+    if k < 2:
+        # Invariant or no data: nothing to optimize: mark every node missing/
+        # unresolved and bail out cheaply rather than dividing by zero below.
+        def mark_missing(n):
+            n['state'] = states[0] if states else None
+            n['states_list'] = states
+            n['missing'] = not tip_states
+            n['equivocal'] = False
+            n['changed'] = False
+            for c in n.get('children', []):
+                mark_missing(c)
+        mark_missing(tree)
+        return tree, {'rate': None, 'log_likelihood': None}
+
+    r_best, logl = _fit_er_rate(tree, tip_states, states)
+
+    down = {}
+    _mk_pruning_loglik(tree, tip_states, states, r_best, down=down)
+
+    def marginal(n, parent_up):
+        up_here = parent_up if parent_up is not None else [1.0 / k] * k
+        down_here = down[id(n)]
+        marg = [up_here[i] * down_here[i] for i in range(k)]
+        tot = sum(marg)
+        marg = [m / tot for m in marg] if tot > 0 else [1.0 / k] * k
+
+        best_i = max(range(k), key=lambda i: marg[i])
+        n['state']       = states[best_i]
+        n['states_list'] = states
+        n['probs']       = {states[i]: round(marg[i], 4) for i in range(k)}
+        n['missing']     = _norm_name(n.get('name', '')) not in tip_states if not n.get('children') else False
+        # "Equivocal" mirrors Fitch's meaning (no confident single state) —
+        # here: the ML posterior doesn't clearly favor one state.
+        n['equivocal'] = marg[best_i] < 0.5
+
+        children = n.get('children', [])
+        child_msgs = n.pop('_child_msgs', [])
+        for ci, c in enumerate(children):
+            combined = up_here[:]
+            for cj, msg in enumerate(child_msgs):
+                if cj == ci:
+                    continue
+                for i in range(k):
+                    combined[i] *= msg[i]
+            t = c.get('length', 1.0) or 1.0
+            p_same, p_diff = _er_probs(k, r_best, t)
+            msg_to_child = _er_transmit(combined, k, p_same, p_diff)
+            tot2 = sum(msg_to_child)
+            if tot2 > 0:
+                msg_to_child = [m / tot2 for m in msg_to_child]
+            marginal(c, msg_to_child)
+
+    marginal(tree, None)
+
+    def flag_changes(n, parent_state):
+        n['changed'] = bool(
+            parent_state is not None
+            and n.get('state') is not None
+            and n['state'] != parent_state
+        )
+        for c in n.get('children', []):
+            flag_changes(c, n['state'])
+    flag_changes(tree, None)
+
+    return tree, {'rate': round(r_best, 4), 'log_likelihood': round(logl, 3)}
+
+
 def _fitch_score_only(node, tip_states):
     """Fast two-pass Fitch that returns only the branch-change count.
     Does not modify the tree. Used for permutation testing.
@@ -323,6 +634,34 @@ def _compute_signal(tree_root, tip_states, observed_score, n_perm=499):
     return {'ci': ci, 'ri': ri, 'p_value': p_value, 'note': None}
 
 
+OPTIMIZATION_METHODS = {'fitch', 'liebermann', 'mk_er'}
+
+
+def _run_method(method, tree_root, tip_states):
+    """Dispatch to the selected optimization method. Returns
+    (annotated_tree, score, score_label, signal, extra) where `score` is
+    whatever summary number that method reports (lower isn't universally
+    "better" across methods — score_label says what it is), `signal` is the
+    CI/RI/permutation-test block (Fitch-specific, None otherwise — a
+    permutation test against parsimony-step nulls wouldn't mean anything for
+    a likelihood or polymorphism score), and `extra` carries method-specific
+    fields (e.g. the fitted rate for Mk-ER) merged into the result dict.
+    """
+    if method == 'liebermann':
+        annotated, stats = _liebermann_optimize(tree_root, tip_states)
+        return (annotated, stats['ambiguity'], 'ambiguity', None,
+                {'liebermann_stats': stats})
+    if method == 'mk_er':
+        annotated, info = _mk_er_optimize(tree_root, tip_states)
+        score = -info['log_likelihood'] if info['log_likelihood'] is not None else None
+        return (annotated, score, '-logL', None,
+                {'rate': info['rate'], 'log_likelihood': info['log_likelihood']})
+    # default: fitch
+    annotated, pscore = _fitch_parsimony(tree_root, tip_states)
+    signal = _compute_signal(tree_root, tip_states, pscore)
+    return annotated, pscore, 'steps', signal, {}
+
+
 @optimization_bp.route('/project/<int:project_id>/optimization')
 @login_required
 def optimization_view(project_id):
@@ -371,6 +710,9 @@ def run_optimization(project_id):
 
     # Which characters to optimize
     body = request.get_json(silent=True) or {}
+    method = body.get('method') or 'fitch'
+    if method not in OPTIMIZATION_METHODS:
+        return jsonify({'error': f'Unknown optimization method "{method}".'}), 400
     char_ids = body.get('character_ids') or []
     virtual_ids = [str(cid) for cid in char_ids if str(cid).startswith('v_')]
     db_char_ids = [cid for cid in char_ids if not str(cid).startswith('v_')]
@@ -416,22 +758,26 @@ def run_optimization(project_id):
             if sp_norm in tip_states and lbl_norm not in tip_states:
                 tip_states[lbl_norm] = tip_states[sp_norm]
 
-        annotated, pscore = _fitch_parsimony(tree_root, tip_states)
-        signal = _compute_signal(tree_root, tip_states, pscore)
+        annotated, score, score_label, signal, extra = _run_method(method, tree_root, tip_states)
 
-        results.append({
+        result = {
             'id': char.id,
             'code': char.code,
             'name': char.name,
             'structure_type': char.structure_type,
-            'parsimony_score': pscore,
+            'method': method,
+            'score': score,
+            'score_label': score_label,
+            'parsimony_score': score,   # back-compat alias for existing JS reading this field
             'signal': signal,
             'states': [
                 {'code': s.get('code', ''), 'name': s.get('name', '')}
                 for s in (char.states_json or [])
             ],
             'tree': annotated,
-        })
+        }
+        result.update(extra)
+        results.append(result)
 
     # Specimen-level ecological characters (host habitat, distribution, host
     # family/order). Included by default; when an explicit selection was sent,
@@ -441,7 +787,7 @@ def run_optimization(project_id):
         if char_ids and desc['id'] not in virtual_ids:
             continue
         vres = _virtual_char_result(desc, specimens, species_to_sp_ids,
-                                    sp_by_id, alias_map, tree_root)
+                                    sp_by_id, alias_map, tree_root, method)
         if vres:
             results.append(vres)
 
