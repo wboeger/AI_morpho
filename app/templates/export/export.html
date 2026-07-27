@@ -23,7 +23,12 @@
         <div style="display:flex; flex-direction:column; gap:0.5rem;">
             <a href="{{ url_for('export.download_descriptions', project_id=project.id) }}" class="btn btn-outline">Species Descriptions (text)</a>
             <a href="{{ url_for('export.download_diagnoses', project_id=project.id) }}" class="btn btn-outline">Group Diagnoses (text)</a>
+            <a href="{{ url_for('descriptions.new_group', project_id=project.id) }}" class="btn btn-outline">+ Create Taxonomic Group</a>
         </div>
+        <p style="font-size:0.8rem; color:var(--gray-500); margin-top:0.5rem;">
+            Group Diagnoses exports one entry per <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}">taxonomic group</a> —
+            create groups first if none exist yet.
+        </p>
     </div>
 
     <div class="card">
