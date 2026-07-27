@@ -195,7 +195,8 @@ def new_group(project_id):
             return redirect(url_for('descriptions.diagnoses', project_id=project_id))
 
     return render_template('descriptions/new_group.html',
-                           project=project, all_species=all_species)
+                           project=project, all_species=all_species,
+                           tree_newick=project.tree_newick or '')
 
 
 @descriptions_bp.route('/project/<int:project_id>/diagnoses/<int:group_id>')

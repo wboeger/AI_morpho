@@ -2,32 +2,246 @@
 {% block title %}New Taxonomic Group - {{ project.name }}{% endblock %}
 {% block content %}
 <h1>Define Taxonomic Group</h1>
-<div class="card" style="max-width:600px;">
-    <form method="POST">
-        <div class="form-group">
-            <label>Group Name</label>
-            <input type="text" name="name" required placeholder="e.g., Gyrodactylus">
-        </div>
-        <div class="form-group">
-            <label>Rank</label>
-            <select name="rank">
-                <option value="genus">Genus</option>
-                <option value="subgenus">Subgenus</option>
-                <option value="subfamily">Subfamily</option>
-                <option value="family">Family</option>
-                <option value="other">Other</option>
-            </select>
-        </div>
-        <div class="form-group">
-            <label>Included Species</label>
-            <div class="checkbox-list">
-                {% for sp in all_species %}
-                <label><input type="checkbox" name="species" value="{{ sp }}"> <em>{{ sp }}</em></label>
-                {% endfor %}
+
+<div style="display:flex; gap:1rem; align-items:flex-start; flex-wrap:wrap;">
+    <div class="card" style="max-width:520px; flex:1 1 420px;">
+        <form method="POST" id="groupForm">
+            <div class="form-group">
+                <label>Group Name</label>
+                <input type="text" name="name" required placeholder="e.g., Gyrodactylus">
             </div>
+            <div class="form-group">
+                <label>Rank</label>
+                <select name="rank">
+                    <option value="genus">Genus</option>
+                    <option value="subgenus">Subgenus</option>
+                    <option value="subfamily">Subfamily</option>
+                    <option value="family">Family</option>
+                    <option value="other">Other</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Included Species
+                    {% if tree_newick %}
+                    <span style="font-weight:normal; color:var(--gray-500); font-size:0.8rem;">
+                        — click a clade on the tree to select/deselect it
+                    </span>
+                    {% endif %}
+                </label>
+                <div style="margin-bottom:0.4rem; display:flex; gap:0.5rem;">
+                    <button type="button" class="btn btn-sm btn-outline" onclick="setAllSpecies(true)">Select all</button>
+                    <button type="button" class="btn btn-sm btn-outline" onclick="setAllSpecies(false)">Clear all</button>
+                </div>
+                <div class="checkbox-list" id="speciesCheckboxList">
+                    {% for sp in all_species %}
+                    <label><input type="checkbox" name="species" value="{{ sp }}" data-species="{{ sp }}"> <em>{{ sp }}</em></label>
+                    {% endfor %}
+                </div>
+            </div>
+            <button type="submit" class="btn btn-primary">Create & Generate Diagnosis</button>
+            <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
+        </form>
+    </div>
+
+    {% if tree_newick %}
+    <div class="card" style="flex:1 1 420px; min-width:360px;">
+        <h3 style="margin-top:0;">Phylogeny</h3>
+        <p style="font-size:0.8rem; color:var(--gray-500); margin-top:0;">
+            Click an internal node to select every species in that clade; click again to deselect.
+            Click a tip to toggle just that species.
+        </p>
+        <div style="overflow:auto; max-height:70vh;">
+            <svg id="groupTreeSvg"></svg>
         </div>
-        <button type="submit" class="btn btn-primary">Create & Generate Diagnosis</button>
-        <a href="{{ url_for('descriptions.diagnoses', project_id=project.id) }}" class="btn btn-outline">Cancel</a>
-    </form>
+    </div>
+    {% endif %}
 </div>
+
+{% if tree_newick %}
+<script>
+const TREE_NEWICK = {{ tree_newick | tojson }};
+
+function normName(s) {
+    s = (s || '').trim().replace(/^['"]|['"]$/g, '');
+    if (s.includes('|')) s = s.split('|').pop();
+    s = s.replace(/^_R_/i, '');
+    return s.replace(/_/g, ' ').replace(/\./g, '').trim().toLowerCase();
+}
+
+function parseNewick(s) {
+    s = s.trim().replace(/;$/, '');
+    s = s.replace(/\[[^\]]*\]/g, '');
+    let i = 0;
+    function parse() {
+        const node = {children: []};
+        if (s[i] === '(') {
+            i++;
+            node.children.push(parse());
+            while (s[i] === ',') { i++; node.children.push(parse()); }
+            i++; // skip )
+        }
+        let name = '';
+        while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ':' && s[i] !== ';') {
+            name += s[i++];
+        }
+        node.name = name.trim().replace(/^['"]|['"]$/g, '').replace(/_/g, ' ');
+        if (s[i] === ':') {
+            i++;
+            let len = '';
+            while (i < s.length && s[i] !== ',' && s[i] !== ')' && s[i] !== ';') { len += s[i++]; }
+            node.length = parseFloat(len) || 1;
+        } else {
+            node.length = 1;
+        }
+        return node;
+    }
+    try { return parse(); } catch(e) { return null; }
+}
+
+function getLeaves(node) {
+    if (!node.children || node.children.length === 0) return [node];
+    return node.children.flatMap(getLeaves);
+}
+function countLeaves(node) {
+    if (!node.children || node.children.length === 0) return 1;
+    return node.children.reduce((s, c) => s + countLeaves(c), 0);
+}
+function ladderize(node) {
+    if (!node.children || !node.children.length) return;
+    node.children.forEach(ladderize);
+    node.children.sort((a, b) => countLeaves(a) - countLeaves(b));
+}
+function assignY(node) {
+    if (!node.children || !node.children.length) return;
+    node.children.forEach(assignY);
+    const ys = node.children.map(c => c._y);
+    node._y = (Math.min(...ys) + Math.max(...ys)) / 2;
+}
+
+// checkbox lookup by normalized species name
+const checkboxByNorm = new Map();
+document.querySelectorAll('#speciesCheckboxList input[type=checkbox]').forEach(cb => {
+    checkboxByNorm.set(normName(cb.dataset.species), cb);
+});
+
+function setAllSpecies(checked) {
+    document.querySelectorAll('#speciesCheckboxList input[type=checkbox]').forEach(cb => {
+        cb.checked = checked;
+    });
+    renderGroupTree();
+}
+
+function leavesOf(node) {
+    return getLeaves(node).map(l => normName(l.name)).filter(n => checkboxByNorm.has(n));
+}
+
+function toggleClade(node) {
+    const norms = leavesOf(node);
+    if (!norms.length) return;
+    const allChecked = norms.every(n => checkboxByNorm.get(n).checked);
+    norms.forEach(n => { checkboxByNorm.get(n).checked = !allChecked; });
+    renderGroupTree();
+}
+
+function renderGroupTree() {
+    const svgEl = document.getElementById('groupTreeSvg');
+    svgEl.innerHTML = '';
+    const raw = parseNewick(TREE_NEWICK);
+    if (!raw) return;
+    ladderize(raw);
+    const leaves = getLeaves(raw);
+    const N = leaves.length;
+    if (!N) return;
+
+    const ROW_H = 16, PAD_TOP = 8, PAD_BOT = 8, LABEL_W = 190, PAD_R = 8, PAD_L = 12;
+    const SVG_W = 560;
+    const SVG_H = PAD_TOP + N * ROW_H + PAD_BOT;
+    const X_L = PAD_L, X_R = SVG_W - LABEL_W - PAD_R;
+    svgEl.setAttribute('width', SVG_W);
+    svgEl.setAttribute('height', SVG_H);
+
+    (function H(n){ if (!n.children || !n.children.length) { n._h = 0; return 0; }
+        n._h = 1 + Math.max(...n.children.map(H)); return n._h; })(raw);
+    const maxD = raw._h || 1;
+    (function X(n){ n._d = maxD - n._h; (n.children || []).forEach(X); })(raw);
+    const xS = v => X_L + (v / maxD) * (X_R - X_L);
+
+    leaves.forEach((lf, i) => { lf._y = PAD_TOP + i * ROW_H + ROW_H / 2; });
+    assignY(raw);
+    if (raw._y === undefined) raw._y = SVG_H / 2;
+
+    function mk(tag, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+        svgEl.appendChild(el);
+        return el;
+    }
+    function svgTxt(content, attrs) {
+        const el = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+        for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
+        el.textContent = content;
+        svgEl.appendChild(el);
+        return el;
+    }
+
+    function cladeState(node) {
+        const norms = leavesOf(node);
+        if (!norms.length) return 'none';
+        const checked = norms.filter(n => checkboxByNorm.get(n).checked).length;
+        if (checked === 0) return 'none';
+        if (checked === norms.length) return 'all';
+        return 'some';
+    }
+    const cladeColor = (state) => state === 'all' ? '#59A14F' : state === 'some' ? '#F28E2B' : '#ccc';
+
+    function draw(node) {
+        const nx = xS(node._d), ny = node._y;
+        const children = node.children || [];
+        if (children.length) {
+            const yTop = Math.min(...children.map(c => c._y));
+            const yBot = Math.max(...children.map(c => c._y));
+            mk('line', { x1: nx, y1: yTop, x2: nx, y2: yBot, stroke: '#c0c0c0', 'stroke-width': 1 });
+            children.forEach(c => {
+                mk('line', { x1: nx, y1: c._y, x2: xS(c._d), y2: c._y, stroke: '#c0c0c0', 'stroke-width': 1 });
+                draw(c);
+            });
+            const state = cladeState(node);
+            const dot = mk('circle', {
+                cx: nx, cy: ny, r: 5, fill: cladeColor(state),
+                stroke: '#fff', 'stroke-width': 1, cursor: 'pointer'
+            });
+            dot.addEventListener('click', () => toggleClade(node));
+            const t = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+            t.textContent = `${leavesOf(node).length} species in this clade — click to ${state === 'all' ? 'deselect' : 'select'} all`;
+            dot.appendChild(t);
+        } else {
+            const norm = normName(node.name);
+            const cb = checkboxByNorm.get(norm);
+            const checked = cb ? cb.checked : false;
+            mk('line', {
+                x1: nx + 6, y1: ny, x2: X_R + PAD_R, y2: ny,
+                stroke: '#ddd', 'stroke-width': 0.8, 'stroke-dasharray': '2,3'
+            });
+            const dot = mk('circle', {
+                cx: nx, cy: ny, r: 4.5, fill: checked ? '#59A14F' : '#eee',
+                stroke: '#fff', 'stroke-width': 1, cursor: cb ? 'pointer' : 'default'
+            });
+            if (cb) dot.addEventListener('click', () => { cb.checked = !cb.checked; renderGroupTree(); });
+            const lbl = svgTxt(node.name || '', {
+                x: X_R + PAD_R + 4, y: ny + 3,
+                'font-size': 9.5, 'font-family': 'sans-serif', 'font-style': 'italic',
+                fill: cb ? '#333' : '#bbb', cursor: cb ? 'pointer' : 'default'
+            });
+            if (cb) lbl.addEventListener('click', () => { cb.checked = !cb.checked; renderGroupTree(); });
+        }
+    }
+    draw(raw);
+}
+
+document.querySelectorAll('#speciesCheckboxList input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', renderGroupTree);
+});
+renderGroupTree();
+</script>
+{% endif %}
 {% endblock %}
