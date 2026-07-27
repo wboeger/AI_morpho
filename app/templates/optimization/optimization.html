@@ -970,6 +970,22 @@ function renderCombinedTree(ids) {
                         stroke: col, 'stroke-width': 2.5
                     });
                     titled(tick, `${ch.code}: ${ch.name}\n${info.from} → ${info.to}`);
+
+                    // Visible from→to label above the tick (staggered per tick
+                    // on this branch so multiple simultaneous changes don't
+                    // overlap) — the tooltip alone wasn't discoverable enough.
+                    const txt = `${ch.code} ${info.from}→${info.to}`;
+                    const ly  = c0._y - 8 - idx * 9;
+                    const w   = txt.length * 4.2 + 4;
+                    mk('rect', {
+                        x: tx - w / 2, y: ly - 7, width: w, height: 8,
+                        rx: 1.5, fill: '#fff', stroke: col, 'stroke-width': 0.6
+                    });
+                    svgTxt(txt, {
+                        x: tx, y: ly - 0.5,
+                        'font-size': 6.5, 'font-family': 'sans-serif', 'font-weight': 'bold',
+                        fill: col, 'text-anchor': 'middle', 'pointer-events': 'none'
+                    });
                 });
 
                 draw(childNodes);
