@@ -764,19 +764,32 @@ function renderTree(ch) {
     // slices, one per retained state) instead of the generic grey "?" used
     // for genuinely ambiguous/equivocal reconstructions — Liebermann's whole
     // point is that these states are KNOWN to be plausible, not unknown.
-    function drawPie(cx, cy, r, statesList, colorMap) {
+    // weights: optional array parallel to statesList (e.g. Mk-ER posterior
+    // probabilities) — slice angle is proportional to weight instead of equal
+    // shares. Omit for Liebermann's equal-share polymorphic display.
+    function drawPie(cx, cy, r, statesList, colorMap, weights) {
         const n = statesList.length;
+        const w = weights && weights.length === n ? weights : new Array(n).fill(1 / n);
+        const total = w.reduce((s, v) => s + v, 0) || 1;
         const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
         svgEl.appendChild(g);
+        let cum = 0;
         for (let i = 0; i < n; i++) {
-            const a0 = (i / n) * 2 * Math.PI - Math.PI / 2;
-            const a1 = ((i + 1) / n) * 2 * Math.PI - Math.PI / 2;
+            const frac = w[i] / total;
+            if (frac <= 0) continue;
+            const a0 = (cum / total) * 2 * Math.PI - Math.PI / 2;
+            cum += w[i];
+            const a1 = (cum / total) * 2 * Math.PI - Math.PI / 2;
             const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
             const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
             const largeArc = (a1 - a0) > Math.PI ? 1 : 0;
             const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-            path.setAttribute('d',
-                `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${largeArc} 1 ${x1},${y1} Z`);
+            // Full circle (single state, frac≈1) needs two arcs — a single
+            // A-command with identical start/end points draws nothing.
+            const d = frac >= 0.9999
+                ? `M${cx},${cy - r} A${r},${r} 0 1 1 ${cx - 0.001},${cy - r} Z`
+                : `M${cx},${cy} L${x0},${y0} A${r},${r} 0 ${largeArc} 1 ${x1},${y1} Z`;
+            path.setAttribute('d', d);
             path.setAttribute('fill', colorMap[statesList[i]] || '#ccc');
             path.setAttribute('stroke', '#fff');
             path.setAttribute('stroke-width', 0.6);
@@ -841,14 +854,18 @@ function renderTree(ch) {
                 });
             }
 
-            // Internal node circle. Fitch/Mk-ER: equivocal reconstructions
-            // (genuinely unknown) show as "?" with a neutral fill. Liebermann:
-            // a polymorphic node is a KNOWN set of plausible states, not an
-            // unknown one — show it as a split pie instead of hiding it behind "?".
+            // Internal node circle. Fitch: equivocal reconstructions (genuinely
+            // unknown) show as "?" with a neutral fill. Liebermann: a polymorphic
+            // node is a KNOWN set of plausible states — split pie, equal slices.
+            // Mk-ER: an uncertain node's posterior is a real probability
+            // distribution — same pie treatment, but slice size = probability.
             const isLiebermannPoly = ch.method === 'liebermann'
                 && node.states_list && node.states_list.length > 1 && !node.missing;
-            if (isLiebermannPoly) {
-                const pie = drawPie(nx, ny, 6, node.states_list, colorMap);
+            const isMkErPoly = ch.method === 'mk_er'
+                && node.probs && node.equivocal && !node.missing;
+            if (isLiebermannPoly || isMkErPoly) {
+                const weights = isMkErPoly ? node.states_list.map(s => node.probs[s]) : null;
+                const pie = drawPie(nx, ny, 6, node.states_list, colorMap, weights);
                 titled(pie, nodeExtraInfo(node));
             } else {
                 const eq   = node.equivocal || node.state == null;
@@ -875,11 +892,16 @@ function renderTree(ch) {
 
             const isLiebermannPolyLeaf = ch.method === 'liebermann'
                 && node.states_list && node.states_list.length > 1 && !missing;
+            const isMkErPolyLeaf = ch.method === 'mk_er'
+                && node.probs && node.equivocal && !missing;
 
-            if (isLiebermannPolyLeaf) {
-                // A tip that's genuinely polymorphic in the source data (e.g.
-                // multiple specimens of the same species scored differently).
-                const pie = drawPie(nx, ny, 7.5, node.states_list, colorMap);
+            if (isLiebermannPolyLeaf || isMkErPolyLeaf) {
+                // Liebermann: a tip genuinely polymorphic in the source data
+                // (e.g. multiple specimens of the same species scored
+                // differently). Mk-ER: a tip whose posterior didn't confidently
+                // resolve — slice size = probability, same as internal nodes.
+                const weights = isMkErPolyLeaf ? node.states_list.map(s => node.probs[s]) : null;
+                const pie = drawPie(nx, ny, 7.5, node.states_list, colorMap, weights);
                 titled(pie, nodeExtraInfo(node));
             } else {
                 // Leaf circle
