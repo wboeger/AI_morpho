@@ -43,7 +43,7 @@ def register():
         email = request.form.get('email', '').strip()
         password = request.form.get('password', '')
         role = request.form.get('role', 'annotator')
-        if role not in ('admin', 'annotator', 'reviewer'):
+        if role not in ('admin', 'annotator', 'reviewer', 'observer'):
             role = 'annotator'
 
         if not username:
@@ -117,7 +117,7 @@ def grant_membership(user_id):
     user = User.query.get_or_404(user_id)
     project = Project.query.get_or_404(int(request.form.get('project_id', 0) or 0))
     role = request.form.get('role', 'annotator')
-    if role not in ('admin', 'annotator', 'reviewer'):
+    if role not in ('admin', 'annotator', 'reviewer', 'observer'):
         role = 'annotator'
     existing = ProjectMembership.query.filter_by(user_id=user.id, project_id=project.id).first()
     if existing:
@@ -158,7 +158,7 @@ def set_role(user_id):
         return guard
     user = User.query.get_or_404(user_id)
     role = request.form.get('role', '')
-    if role not in ('admin', 'annotator', 'reviewer'):
+    if role not in ('admin', 'annotator', 'reviewer', 'observer'):
         flash('Invalid role.', 'error')
     elif user.id == current_user.id and role != 'admin':
         flash('You cannot remove your own admin role.', 'error')

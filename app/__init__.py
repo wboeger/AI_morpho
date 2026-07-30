@@ -113,6 +113,36 @@ def create_app(config_class=None):
     app.register_blueprint(optimization_bp)
     app.register_blueprint(reliability_bp)
 
+    # ── Read-only "observer" guard ──────────────────────────────────────────────
+    # An observer can view everything but cannot change anything. Enforce this
+    # globally by rejecting every state-changing HTTP method, regardless of which
+    # route it targets — far more robust than gating each route individually.
+    from flask import request, jsonify, redirect, url_for, flash
+    from flask_login import current_user
+
+    WRITE_METHODS = {'POST', 'PUT', 'PATCH', 'DELETE'}
+    # Endpoints an observer may still POST to (session lifecycle only).
+    OBSERVER_ALLOWED_ENDPOINTS = {'auth.login', 'auth.logout'}
+
+    @app.before_request
+    def block_observer_writes():
+        if request.method not in WRITE_METHODS:
+            return None
+        if not current_user.is_authenticated:
+            return None
+        if getattr(current_user, 'role', None) != 'observer':
+            return None
+        if request.endpoint in OBSERVER_ALLOWED_ENDPOINTS:
+            return None
+        msg = 'Your account is read-only (observer). This action is not permitted.'
+        wants_json = (request.path.startswith('/api/')
+                      or request.accept_mimetypes.best == 'application/json'
+                      or request.is_json)
+        if wants_json:
+            return jsonify(error=msg, read_only=True), 403
+        flash(msg, 'error')
+        return redirect(request.referrer or url_for('project.dashboard'))
+
     with app.app_context():
         # Enable SQLite WAL mode and busy timeout to prevent "database is locked" errors
         from sqlalchemy import event
