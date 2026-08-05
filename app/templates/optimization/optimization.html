@@ -597,16 +597,14 @@ function labelColor(hex) {
 
 function renderSignalBox(ch) {
     const box = document.getElementById('signalBox');
-    if (!ch.signal && ch.method && ch.method !== 'fitch') {
+    const sig = ch.signal || {};
+    if (!ch.signal) {
         box.innerHTML = `<span class="sig-heading">Signal</span>
-            <span style="color:#999; font-size:0.78rem; font-style:italic;">
-                CI/RI/permutation test is defined for parsimony steps — not shown for
-                ${ch.method === 'liebermann' ? 'Liebermann' : 'likelihood'} results.
-            </span>`;
+            <span style="color:#999; font-size:0.78rem; font-style:italic;">No signal data.</span>`;
         return;
     }
-    const sig = ch.signal || {};
     const { ci, ri, p_value, note } = sig;
+    const hasCiRi = ci !== null && ci !== undefined;
 
     let interpClass = 'sig-nd';
     let interpText  = 'Insufficient data';
@@ -627,9 +625,10 @@ function renderSignalBox(ch) {
     const barC  = v => (v === null || v === undefined) ? '#ccc'
                       : v > 0.7 ? '#59A14F' : v > 0.4 ? '#F28E2B' : '#E15759';
 
-    box.innerHTML = `
-        <span class="sig-heading" title="Phylogenetic signal statistics (499-permutation test)">Signal</span>
-        <span class="sig-divider"></span>
+    const scoreLabel = { liebermann: 'ambiguity', mk_er: '-logL' }[ch.method] || 'parsimony steps';
+    const pTitle = `Permutation test p-value: proportion of random tip shuffles with ≤ observed ${scoreLabel}`;
+
+    const ciRiHtml = hasCiRi ? `
         <span class="sig-group" title="Consistency Index: ratio of minimum possible steps to observed steps (1 = no homoplasy)">
             <span class="sig-label">CI</span>
             <span class="sig-val">${fmt(ci)}</span>
@@ -640,8 +639,13 @@ function renderSignalBox(ch) {
             <span class="sig-val">${fmt(ri)}</span>
             <span class="sig-bar"><span class="sig-bar-fill" style="width:${pct(ri)};background:${barC(ri)}"></span></span>
         </span>
+        <span class="sig-divider"></span>` : '';
+
+    box.innerHTML = `
+        <span class="sig-heading" title="Phylogenetic signal statistics (499-permutation test)">Signal</span>
         <span class="sig-divider"></span>
-        <span class="sig-group" title="Permutation test p-value: proportion of random tip shuffles with ≤ observed parsimony steps">
+        ${ciRiHtml}
+        <span class="sig-group" title="${pTitle}">
             <span class="sig-label">p</span>
             <span class="sig-pval">${fmtP(p_value)}</span>
         </span>

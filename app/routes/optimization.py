@@ -595,12 +595,101 @@ def _fitch_score_only(node, tip_states):
     return n_changes[0]
 
 
-def _compute_signal(tree_root, tip_states, observed_score, n_perm=499):
-    """Compute CI, RI, and permutation p-value for phylogenetic signal.
+def _liebermann_score_only(tree_root, tip_states):
+    """Fast downward+upward Liebermann pass that returns only the ambiguity
+    score (sum of |state set| - 1 over all polymorphic nodes). Operates
+    directly on tree_root without copying/annotating it — mirrors
+    _fitch_score_only. Used for permutation testing.
+    """
+    node_states = {}
 
-    CI (Consistency Index) = m / s  (m = min possible steps, s = observed steps).
-    RI (Retention Index)   = (g - s) / (g - m)  (g = max possible steps).
-    p-value: proportion of random tip permutations with score <= observed.
+    def downward(n):
+        children = n.get('children', [])
+        if not children:
+            name = _norm_name(n.get('name', ''))
+            s = tip_states.get(name)
+            r = set(s) if s else None
+            node_states[id(n)] = r
+            return r
+        child_sets = [downward(c) for c in children]
+        non_null = [cs for cs in child_sets if cs is not None]
+        if not non_null:
+            node_states[id(n)] = None
+        elif len(non_null) == 1:
+            node_states[id(n)] = set(non_null[0])
+        else:
+            inter = non_null[0].copy()
+            for cs in non_null[1:]:
+                inter &= cs
+            if inter:
+                node_states[id(n)] = inter
+            else:
+                union = set()
+                for cs in non_null:
+                    union |= cs
+                node_states[id(n)] = union
+        return node_states[id(n)]
+
+    downward(tree_root)
+
+    def upward(n, parent_state):
+        ns = node_states.get(id(n))
+        if parent_state is not None and ns is not None:
+            if parent_state <= ns:
+                if len(ns) > len(parent_state):
+                    ns = ns & parent_state
+                    node_states[id(n)] = ns
+            else:
+                children = n.get('children', [])
+                child_sets = [node_states.get(id(c)) for c in children]
+                non_null = [cs for cs in child_sets if cs is not None]
+                if len(non_null) >= 2:
+                    pairwise_inter = non_null[0].copy()
+                    for cs in non_null[1:]:
+                        pairwise_inter &= cs
+                    if pairwise_inter:
+                        union_children = set()
+                        for cs in non_null:
+                            union_children |= cs
+                        additional = parent_state & union_children
+                    else:
+                        additional = parent_state - ns
+                    ns = ns | additional
+                    node_states[id(n)] = ns
+        for c in n.get('children', []):
+            upward(c, ns)
+
+    upward(tree_root, None)
+
+    ambiguity = 0
+    for s in node_states.values():
+        if s is not None and len(s) > 1:
+            ambiguity += len(s) - 1
+    return ambiguity
+
+
+def _compute_signal(method, tree_root, tip_states, observed_score, extra=None, n_perm=499):
+    """Permutation-based phylogenetic-signal test, generalized across the
+    three optimization methods.
+
+    All three share the same null model: shuffle which tip gets which
+    (canonical, single-valued) observed state, keep the tree fixed, and see
+    how often a random assignment scores at least as well as the real data.
+    A low p-value means the real distribution of states on the tree is
+    unlikely to arise by chance — i.e. there is phylogenetic signal.
+
+    CI/RI (Consistency/Retention Index) are specific to parsimony step
+    counts, so they are only computed for method='fitch'; other methods get
+    ci=ri=None and only the p-value.
+
+    For 'mk_er', re-fitting the ML rate for every one of n_perm permutations
+    would be far too slow, so the rate fitted on the *observed* data
+    (extra['rate']) is reused as a fixed nuisance parameter when scoring each
+    permutation — the same approximation classically used for parametric
+    permutation tests where refitting is prohibitive.
+
+    tip_states: {normalized_species_name: set_of_state_codes}
+    Returns {'ci', 'ri', 'p_value', 'note'}.
     """
     if not tip_states:
         return {'ci': None, 'ri': None, 'p_value': None, 'note': 'no_data'}
@@ -615,29 +704,43 @@ def _compute_signal(tree_root, tip_states, observed_score, n_perm=499):
     n_taxa = len(canon)
 
     if k < 2:
-        return {'ci': 1.0, 'ri': 1.0, 'p_value': None, 'note': 'invariant'}
+        ci = ri = 1.0 if method == 'fitch' else None
+        return {'ci': ci, 'ri': ri, 'p_value': None, 'note': 'invariant'}
     if n_taxa < 3:
         return {'ci': None, 'ri': None, 'p_value': None, 'note': 'insufficient_data'}
 
-    m = k - 1                                   # minimum possible steps
-    g = n_taxa - max(state_counts.values())     # maximum possible steps
+    ci = ri = None
+    if method == 'fitch':
+        m = k - 1                                   # minimum possible steps
+        g = n_taxa - max(state_counts.values())     # maximum possible steps
+        s = observed_score
+        ci = round(m / s, 3) if s > 0 else 1.0
+        ri_denom = g - m
+        ri_raw   = ((g - s) / ri_denom) if ri_denom > 0 else 1.0
+        ri       = round(max(0.0, min(1.0, ri_raw)), 3)
 
-    s  = observed_score
-    ci = round(m / s, 3) if s > 0 else 1.0
-    ri_denom = g - m
-    ri_raw   = ((g - s) / ri_denom) if ri_denom > 0 else 1.0
-    ri       = round(max(0.0, min(1.0, ri_raw)), 3)
+    if observed_score is None:
+        return {'ci': ci, 'ri': ri, 'p_value': None, 'note': None}
 
     # Permutation test
     leaf_names   = list(canon.keys())
     leaf_states  = [canon[nm] for nm in leaf_names]
     shuffled     = leaf_states[:]
 
+    if method == 'liebermann':
+        score_fn = lambda perm_tip: _liebermann_score_only(tree_root, perm_tip)
+    elif method == 'mk_er':
+        states_list = sorted(state_counts.keys())
+        r_fixed = (extra or {}).get('rate') or 0.1
+        score_fn = lambda perm_tip: -_mk_pruning_loglik(tree_root, perm_tip, states_list, r_fixed)
+    else:
+        score_fn = lambda perm_tip: _fitch_score_only(tree_root, perm_tip)
+
     n_le = 0
     for _ in range(n_perm):
         random.shuffle(shuffled)
         perm_tip = {leaf_names[i]: {shuffled[i]} for i in range(len(leaf_names))}
-        if _fitch_score_only(tree_root, perm_tip) <= s:
+        if score_fn(perm_tip) <= observed_score:
             n_le += 1
 
     p_value = round((n_le + 1) / (n_perm + 1), 4)
@@ -660,16 +763,19 @@ def _run_method(method, tree_root, tip_states):
     """
     if method == 'liebermann':
         annotated, stats = _liebermann_optimize(tree_root, tip_states)
-        return (annotated, stats['ambiguity'], 'ambiguity', None,
+        signal = _compute_signal('liebermann', tree_root, tip_states, stats['ambiguity'])
+        return (annotated, stats['ambiguity'], 'ambiguity', signal,
                 {'liebermann_stats': stats})
     if method == 'mk_er':
         annotated, info = _mk_er_optimize(tree_root, tip_states)
         score = -info['log_likelihood'] if info['log_likelihood'] is not None else None
-        return (annotated, score, '-logL', None,
+        signal = _compute_signal('mk_er', tree_root, tip_states, score,
+                                  extra={'rate': info['rate']})
+        return (annotated, score, '-logL', signal,
                 {'rate': info['rate'], 'log_likelihood': info['log_likelihood']})
     # default: fitch
     annotated, pscore = _fitch_parsimony(tree_root, tip_states)
-    signal = _compute_signal(tree_root, tip_states, pscore)
+    signal = _compute_signal('fitch', tree_root, tip_states, pscore)
     return annotated, pscore, 'steps', signal, {}
 
 
