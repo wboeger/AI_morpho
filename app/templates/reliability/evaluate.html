@@ -13,6 +13,9 @@
 <div style="display:flex; gap:0.4rem; margin-bottom:1rem;">
   <button class="btn btn-primary btn-sm" onclick="showTab('evaluate')" id="tab-evaluate">Evaluate</button>
   <button class="btn btn-outline btn-sm" onclick="showTab('results')" id="tab-results">Results</button>
+  {% if current_user.role == 'admin' %}
+  <button class="btn btn-outline btn-sm" onclick="showTab('responses')" id="tab-responses">Responses (admin)</button>
+  {% endif %}
   <button class="btn btn-outline btn-sm" onclick="showTab('criteria')" id="tab-criteria">Criteria</button>
   <button class="btn btn-outline btn-sm" onclick="printCriteria()" style="margin-left:auto;" title="Open a printable summary of the criteria used to determine the CRI">🖨 Print criteria</button>
 </div>
@@ -50,6 +53,19 @@
   </div>
 </div>
 
+{% if current_user.role == 'admin' %}
+<!-- ── Responses (admin, unblinded) ─────────────────────────────────────── -->
+<div id="pane-responses" style="display:none;">
+  <div class="card" style="max-width:80rem;">
+    <p style="font-size:0.8rem; color:var(--gray-500,#777); margin-bottom:0.6rem;">
+      Every scientist's individual rating, unblinded — for oversight only.
+      Not visible to non-admin raters, who see only the aggregated Results tab.
+    </p>
+    <div id="responsesBody"></div>
+  </div>
+</div>
+{% endif %}
+
 <!-- ── Criteria manager ─────────────────────────────────────────────────── -->
 <div id="pane-criteria" style="display:none;">
   <div class="card" style="max-width:70rem;">
@@ -86,16 +102,19 @@
 {% block scripts %}
 <script>
 const PID = {{ project.id }};
+const ADMIN = {{ 'true' if current_user.role == 'admin' else 'false' }};
+const TABS = ['evaluate','results','criteria'].concat(ADMIN ? ['responses'] : []);
 let _queue = [], _idx = 0, _criteria = [];
 
 function showTab(name) {
-  for (const t of ['evaluate','results','criteria']) {
+  for (const t of TABS) {
     document.getElementById('pane-'+t).style.display = (t===name) ? '' : 'none';
     const b = document.getElementById('tab-'+t);
     b.className = 'btn btn-sm ' + (t===name ? 'btn-primary' : 'btn-outline');
   }
   if (name==='results') loadResults();
   if (name==='criteria') loadCriteria();
+  if (name==='responses') loadResponses();
 }
 
 async function jget(u){ const r=await fetch(u); return r.json(); }
@@ -197,6 +216,54 @@ async function loadResults() {
       <td style="padding:0.3rem 0.5rem;">${r.k_flag?'<span title="MCO-count vs M05 inconsistency" style="color:#c0392b;">⚠</span>':''}</td>
     </tr>`);
   }
+}
+
+// ── Responses (admin, unblinded) ─────────────────────────────────────────
+async function loadResponses() {
+  const box = document.getElementById('responsesBody');
+  box.innerHTML = '<p style="color:var(--gray-500,#777);">Loading…</p>';
+  const d = await jget(`/api/project/${PID}/reliability/responses`);
+  if (d.error) { box.innerHTML = `<p style="color:#c0392b;">${d.error}</p>`; return; }
+  const rows = d.rows || [];
+  if (!rows.length) { box.innerHTML = '<p style="color:var(--gray-500,#777);">No ratings submitted yet.</p>'; return; }
+  const bySpecies = {};
+  for (const r of rows) (bySpecies[r.species] = bySpecies[r.species] || []).push(r);
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let html = '';
+  for (const sp of Object.keys(bySpecies).sort()) {
+    const items = bySpecies[sp];
+    const img = items[0].image_url;
+    html += `<div style="margin:0 0 1rem; padding-bottom:0.8rem; border-bottom:1px solid var(--gray-200,#eee);">
+      <div style="display:flex; align-items:center; gap:0.6rem; margin-bottom:0.3rem;">
+        ${img ? `<img src="${img}" style="height:34px; border-radius:3px;">` : ''}
+        <span style="font-style:italic; font-weight:600;">${esc(sp)}</span>
+      </div>
+      <table style="border-collapse:collapse; width:100%; font-size:0.8rem;">
+        <thead><tr style="text-align:left; border-bottom:1px solid var(--gray-300,#ccc);">
+          <th style="padding:0.2rem 0.5rem;">Scientist</th>
+          <th style="padding:0.2rem 0.5rem; text-align:right;">CRI</th>
+          <th style="padding:0.2rem 0.5rem;">Band</th>
+          <th style="padding:0.2rem 0.5rem;">Scores</th>
+          <th style="padding:0.2rem 0.5rem;">Notes</th>
+          <th style="padding:0.2rem 0.5rem;">Updated</th>
+        </tr></thead>
+        <tbody>${items.map(it => {
+          const band = it.band ? `<span style="color:${BAND_COLOR[it.band]||'#555'}; font-weight:600;">${it.band}</span>` : '—';
+          const scores = (it.scores||[]).map(s => `${esc(s.code)}=${s.score}/${s.max}`).join(', ') || '—';
+          const when = it.updated_at ? new Date(it.updated_at).toLocaleString() : '—';
+          return `<tr style="border-bottom:1px solid var(--gray-100,#f5f5f5);">
+            <td style="padding:0.25rem 0.5rem;">${esc(it.rater)}</td>
+            <td style="padding:0.25rem 0.5rem; text-align:right;">${it.cri!==null?it.cri:'—'}</td>
+            <td style="padding:0.25rem 0.5rem;">${band}</td>
+            <td style="padding:0.25rem 0.5rem;">${scores}</td>
+            <td style="padding:0.25rem 0.5rem; white-space:pre-wrap;">${esc(it.notes)}</td>
+            <td style="padding:0.25rem 0.5rem; white-space:nowrap;">${when}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div>`;
+  }
+  box.innerHTML = html;
 }
 
 // ── Criteria manager ──────────────────────────────────────────────────────

@@ -474,3 +474,41 @@ def results(project_id):
         'n_rated': sum(1 for r in rows if r['n'] > 0),
         'n_total': len(mco),
     })
+
+
+@reliability_bp.route('/api/project/<int:project_id>/reliability/responses')
+@login_required
+def responses(project_id):
+    """Admin-only: every individual scientist's rating — unblinded, with per-
+    criterion scores and notes — for oversight of the blind evaluation. Regular
+    raters only ever see the aggregated per-species results (see `results`
+    above); this exposes who scored what and why."""
+    _project_or_403(project_id)
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Admin access required'}), 403
+    crit_by_id = {c.id: c for c in _criteria(project_id)}
+    mco = _species_mco(project_id)
+
+    rows = []
+    for r in MCOReliabilityRating.query.filter_by(project_id=project_id).all():
+        cri = _compute_cri(r.scores or {}, crit_by_id)
+        scores_out = []
+        for cid_str, val in (r.scores or {}).items():
+            c = crit_by_id.get(int(cid_str))
+            if c:
+                scores_out.append({'code': c.code, 'name': c.name,
+                                   'score': val, 'max': c.max_score})
+        scores_out.sort(key=lambda s: s['code'])
+        rows.append({
+            'species': r.species_display,
+            'rater': r.rater.username if r.rater else f'user#{r.rater_id}',
+            'rater_id': r.rater_id,
+            'cri': round(cri, 3) if cri is not None else None,
+            'band': _band(cri),
+            'scores': scores_out,
+            'notes': r.notes or '',
+            'updated_at': r.updated_at.isoformat() if r.updated_at else None,
+            'image_url': mco.get(r.species_norm, {}).get('image_url'),
+        })
+    rows.sort(key=lambda x: ((x['species'] or ''), (x['rater'] or '')))
+    return jsonify({'rows': rows})
