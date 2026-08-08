@@ -161,6 +161,7 @@ def create_app(config_class=None):
         _migrate_a06_names()
         _migrate_structures()
         _migrate_specimens()
+        _migrate_reliability_ratings()
         _migrate_users()
         _backfill_no_image_unknown()
         _ensure_admin()
@@ -589,6 +590,21 @@ def _migrate_specimens():
             if col not in existing:
                 conn.execute(text(f'ALTER TABLE specimens ADD COLUMN {col} {typ}'))
         conn.commit()
+
+
+def _migrate_reliability_ratings():
+    """Add the mco_reliability_ratings.skipped_at column if missing (persisted
+    per-rater Skip state — see docs/adr/0001-persisted-per-rater-skip-state.md)."""
+    from sqlalchemy import text, inspect as sa_inspect
+    inspector = sa_inspect(db.engine)
+    if 'mco_reliability_ratings' not in inspector.get_table_names():
+        return
+    existing = {c['name'] for c in inspector.get_columns('mco_reliability_ratings')}
+    if 'skipped_at' not in existing:
+        with db.engine.connect() as conn:
+            conn.execute(text('ALTER TABLE mco_reliability_ratings ADD COLUMN skipped_at DATETIME'))
+            conn.commit()
+        print('[migrate] mco_reliability_ratings.skipped_at column added.')
 
 
 def _migrate_a06_states():

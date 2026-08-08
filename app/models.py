@@ -375,7 +375,8 @@ class ReliabilityCriterion(db.Model):
 
 
 class MCOReliabilityRating(db.Model):
-    """One scientist's blind reliability scoring of a species' MCO illustration.
+    """One scientist's blind reliability scoring of a species' MCO illustration —
+    or, if skipped_at is set and scores is empty, a deferral instead of a rating.
     scores is {criterion_id: score}; cri is the snapshot composite in [0,1]."""
     __tablename__ = 'mco_reliability_ratings'
     id = db.Column(db.Integer, primary_key=True)
@@ -384,6 +385,8 @@ class MCOReliabilityRating(db.Model):
     species_norm = db.Column(db.String(200), nullable=False)   # normalized species key
     species_display = db.Column(db.String(200))                # human-readable name
     structure_id = db.Column(db.Integer, db.ForeignKey('structures.id'))  # MCO image scored
+    skipped_at = db.Column(db.DateTime)   # set when this rater deferred scoring;
+                                           # cleared the moment scores are recorded
     scores = db.Column(db.JSON, default=dict)                  # {criterion_id: score}
     cri = db.Column(db.Float)                                  # snapshot composite [0,1]
     notes = db.Column(db.Text)

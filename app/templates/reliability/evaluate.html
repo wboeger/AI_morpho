@@ -24,6 +24,10 @@
 <div id="pane-evaluate">
   <div class="card" style="max-width:60rem;">
     <div id="evalProgress" style="font-size:0.8rem; color:var(--gray-500,#777); margin-bottom:0.5rem;"></div>
+    <div style="display:flex; gap:0.4rem; margin-bottom:0.75rem;">
+      <button class="btn btn-primary btn-sm" id="qmode-new" onclick="setQueueMode('new')">New</button>
+      <button class="btn btn-outline btn-sm" id="qmode-skipped" onclick="setQueueMode('skipped')">Skipped</button>
+    </div>
     <div id="evalBody">
       <p style="color:var(--gray-500,#777);">Loading…</p>
     </div>
@@ -104,7 +108,8 @@
 const PID = {{ project.id }};
 const ADMIN = {{ 'true' if current_user.role == 'admin' else 'false' }};
 const TABS = ['evaluate','results','criteria'].concat(ADMIN ? ['responses'] : []);
-let _queue = [], _idx = 0, _criteria = [];
+let _queue = [], _idx = 0, _criteria = [], _qmode = 'new';
+let _counts = {rated: 0, never_seen: 0, skipped: 0, total: 0};
 
 function showTab(name) {
   for (const t of TABS) {
@@ -121,20 +126,31 @@ async function jget(u){ const r=await fetch(u); return r.json(); }
 async function jsend(u,m,b){ const r=await fetch(u,{method:m,headers:{'Content-Type':'application/json'},body:JSON.stringify(b||{})}); return {ok:r.ok, data:await r.json().catch(()=>({}))}; }
 
 // ── Evaluate ──────────────────────────────────────────────────────────────
+function setQueueMode(mode) {
+  _qmode = mode;
+  document.getElementById('qmode-new').className = 'btn btn-sm ' + (mode==='new' ? 'btn-primary' : 'btn-outline');
+  document.getElementById('qmode-skipped').className = 'btn btn-sm ' + (mode==='skipped' ? 'btn-primary' : 'btn-outline');
+  loadQueue();
+}
 async function loadQueue() {
-  const d = await jget(`/api/project/${PID}/reliability/queue`);
+  const d = await jget(`/api/project/${PID}/reliability/queue?mode=${_qmode}`);
   _queue = d.items || []; _criteria = d.criteria || []; _idx = 0;
-  renderProgress(d.done, d.total);
+  _counts = {rated: d.rated, never_seen: d.never_seen, skipped: d.skipped, total: d.total};
+  renderProgress();
   renderItem();
 }
-function renderProgress(done, total) {
+function renderProgress() {
   document.getElementById('evalProgress').textContent =
-    `You have scored ${done} of ${total} species · ${_queue.length} remaining`;
+    `You have rated ${_counts.rated} of ${_counts.total} species · ${_counts.never_seen} never seen · ${_counts.skipped} skipped`;
+  document.getElementById('qmode-new').textContent = `New (${_counts.never_seen})`;
+  document.getElementById('qmode-skipped').textContent = `Skipped (${_counts.skipped})`;
 }
 function renderItem() {
   const body = document.getElementById('evalBody');
   if (!_queue.length) {
-    body.innerHTML = '<p style="color:#155724;">All available MCO illustrations scored. See the Results tab.</p>';
+    body.innerHTML = _qmode === 'skipped'
+      ? '<p style="color:var(--gray-500,#777);">No skipped illustrations to revisit.</p>'
+      : '<p style="color:#155724;">All available MCO illustrations rated or skipped. Check the Skipped queue, or see the Results tab.</p>';
     return;
   }
   const it = _queue[_idx];
@@ -169,7 +185,15 @@ function renderItem() {
       </div>
     </div>`;
 }
-function skipItem() { _idx = (_idx+1) % _queue.length; renderItem(); }
+async function skipItem() {
+  const it = _queue[_idx];
+  const {ok, data} = await jsend(`/api/project/${PID}/reliability/skip`, 'POST', {token: it.token});
+  if (!ok || data.error) { document.getElementById('evalMsg').textContent = data.error || 'Error'; return; }
+  _queue.splice(_idx, 1);
+  if (_idx >= _queue.length) _idx = 0;
+  renderItem();
+  loadQueueCounts();
+}
 async function submitRating() {
   const it = _queue[_idx];
   const scores = {};
@@ -187,13 +211,13 @@ async function submitRating() {
   if (!ok || data.error) { document.getElementById('evalMsg').textContent = data.error || 'Error'; return; }
   _queue.splice(_idx, 1);
   if (_idx >= _queue.length) _idx = 0;
-  const p = document.getElementById('evalProgress');
   renderItem();
   loadQueueCounts();
 }
 async function loadQueueCounts(){
-  const d = await jget(`/api/project/${PID}/reliability/queue`);
-  renderProgress(d.done, d.total);
+  const d = await jget(`/api/project/${PID}/reliability/queue?mode=${_qmode}`);
+  _counts = {rated: d.rated, never_seen: d.never_seen, skipped: d.skipped, total: d.total};
+  renderProgress();
 }
 
 // ── Results ───────────────────────────────────────────────────────────────
@@ -249,7 +273,7 @@ async function loadResponses() {
         </tr></thead>
         <tbody>${items.map(it => {
           const band = it.band ? `<span style="color:${BAND_COLOR[it.band]||'#555'}; font-weight:600;">${it.band}</span>` : '—';
-          const scores = (it.scores||[]).map(s => `${esc(s.code)}=${s.score}/${s.max}`).join(', ') || '—';
+          const scores = it.skipped ? '<span style="color:var(--gray-500,#777);">(skipped)</span>' : ((it.scores||[]).map(s => `${esc(s.code)}=${s.score}/${s.max}`).join(', ') || '—');
           const when = it.updated_at ? new Date(it.updated_at).toLocaleString() : '—';
           return `<tr style="border-bottom:1px solid var(--gray-100,#f5f5f5);">
             <td style="padding:0.25rem 0.5rem;">${esc(it.rater)}</td>

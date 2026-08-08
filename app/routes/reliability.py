@@ -5,10 +5,16 @@ against a set of user-editable criteria. A composite reliability index (CRI, in
 [0,1]) is computed per rating and averaged across raters into a per-species
 index, with inter-observer agreement (average pairwise weighted Cohen's kappa on
 the confidence band) and an automatic count-concordance (K) flag.
+
+Per rater x species, a species is Never seen, Skipped, or Rated (see
+CONTEXT.md's "Rating status"). Skip is a persisted deferral distinct from
+the default queue's never-seen pool — see docs/adr/0001-persisted-per-rater-
+skip-state.md.
 """
 import re
 import base64
 import itertools
+from datetime import datetime, timezone
 
 from flask import (Blueprint, render_template, request, jsonify, abort)
 from flask_login import login_required, current_user
@@ -369,23 +375,64 @@ def reorder_criteria(project_id):
 @reliability_bp.route('/api/project/<int:project_id>/reliability/queue')
 @login_required
 def queue(project_id):
-    """Blind queue for the current rater: species with an MCO image not yet
-    scored by this user. Species identity is not returned — only an opaque token
-    and the image. Deterministic-random order per user."""
+    """Blind queue for the current rater. mode=new (default) returns species
+    with an MCO image this rater has never seen; mode=skipped returns species
+    this rater deliberately skipped (see CONTEXT.md's Rating status / Skip).
+    Species identity is not returned — only an opaque token and the image.
+    Deterministic-random order per user within whichever pool is requested."""
     _project_or_403(project_id)
     mco = _species_mco(project_id)
-    done = {r.species_norm for r in MCOReliabilityRating.query.filter_by(
-        project_id=project_id, rater_id=current_user.id).all()}
-    pending = [n for n in mco if n not in done]
+    rows = MCOReliabilityRating.query.filter_by(
+        project_id=project_id, rater_id=current_user.id).all()
+    rated = {r.species_norm for r in rows if r.scores}
+    skipped = {r.species_norm for r in rows if not r.scores and r.skipped_at}
+    never_seen = [n for n in mco if n not in rated and n not in skipped]
+
+    mode = request.args.get('mode', 'new')
+    pool = list(skipped) if mode == 'skipped' else never_seen
     # stable shuffle keyed by user so the order is fixed for this rater
-    pending.sort(key=lambda n: (hash((current_user.id, n)) & 0xffffffff))
-    items = [{'token': _tok(n), 'image_url': mco[n]['image_url']} for n in pending]
+    pool.sort(key=lambda n: (hash((current_user.id, n)) & 0xffffffff))
+    items = [{'token': _tok(n), 'image_url': mco[n]['image_url']} for n in pool]
     return jsonify({
         'items': items,
         'total': len(mco),
-        'done': len(done),
+        'rated': len(rated),
+        'never_seen': len(never_seen),
+        'skipped': len(skipped),
         'criteria': [_crit_dict(c) for c in _criteria(project_id, active_only=True)],
     })
+
+
+@reliability_bp.route('/api/project/<int:project_id>/reliability/skip',
+                      methods=['POST'])
+@login_required
+def skip(project_id):
+    """Persist that the current rater is deferring this species' MCO
+    illustration — removes it from their 'new' queue and surfaces it in their
+    'skipped' queue until they rate it (see ADR 0001)."""
+    _project_or_403(project_id)
+    d = request.get_json(silent=True) or {}
+    species_norm = _untok(d.get('token'))
+    if not species_norm:
+        return jsonify({'error': 'Invalid item token.'}), 400
+    mco = _species_mco(project_id)
+    if species_norm not in mco:
+        return jsonify({'error': 'Species has no MCO image to score.'}), 404
+
+    row = MCOReliabilityRating.query.filter_by(
+        project_id=project_id, rater_id=current_user.id,
+        species_norm=species_norm).first()
+    if row and row.scores:
+        return jsonify({'error': 'Already rated; rate again to change your score.'}), 400
+    if not row:
+        row = MCOReliabilityRating(project_id=project_id, rater_id=current_user.id,
+                                   species_norm=species_norm)
+        db.session.add(row)
+    row.species_display = mco[species_norm]['display']
+    row.structure_id = mco[species_norm]['structure_id']
+    row.skipped_at = datetime.now(timezone.utc)
+    db.session.commit()
+    return jsonify({'status': 'ok'})
 
 
 @reliability_bp.route('/api/project/<int:project_id>/reliability/rate',
@@ -428,6 +475,7 @@ def rate(project_id):
     row.structure_id = mco[species_norm]['structure_id']
     row.scores = scores
     row.cri = cri
+    row.skipped_at = None
     row.notes = (d.get('notes') or '').strip() or None
     db.session.commit()
     return jsonify({'status': 'ok', 'cri': round(cri, 3) if cri is not None else None,
@@ -501,6 +549,7 @@ def responses(project_id):
         scores_out.sort(key=lambda s: s['code'])
         rows.append({
             'species': r.species_display,
+            'skipped': bool(r.skipped_at and not r.scores),
             'rater': r.rater.username if r.rater else f'user#{r.rater_id}',
             'rater_id': r.rater_id,
             'cri': round(cri, 3) if cri is not None else None,
