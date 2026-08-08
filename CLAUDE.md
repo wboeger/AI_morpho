@@ -55,3 +55,18 @@ No linter/formatter config is present in this repo.
 - `phylogeny/*.R` are reference R pipeline scripts (not invoked by the app directly) — the app's own Python-orchestrated pipeline lives in `app/routes/phylogeny.py`.
 - Publication Methods & Materials text is maintained at `docs/methods_section.md` — update it after any change to the pipeline or the character library, per project convention.
 - Git pushes to `origin/main` in this repo do not require confirmation before running.
+
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live as GitHub issues on `wboeger/AI_morpho`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), label strings equal to role names. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context. See `docs/agents/domain.md`.
